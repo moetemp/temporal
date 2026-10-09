@@ -2223,6 +2223,10 @@ func (h *Handler) CompleteNexusOperationChasm(
 		completion.Outcome = &persistencespb.ChasmNexusCompletion_Success{
 			Success: variant.Success,
 		}
+	case *historyservice.CompleteNexusOperationChasmRequest_Progress:
+		completion.Outcome = &persistencespb.ChasmNexusCompletion_Progress{
+			Progress: variant.Progress,
+		}
 	default:
 		return nil, serviceerror.NewUnimplemented("unhandled Nexus operation outcome")
 	}

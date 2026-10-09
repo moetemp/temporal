@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
+	notificationpb "go.temporal.io/api/notification/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/api/historyservice/v1"
 	tokenspb "go.temporal.io/server/api/token/v1"
@@ -36,6 +38,7 @@ import (
 	"go.temporal.io/server/service/history/consts"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -210,6 +213,10 @@ func (h *nexusCompletionHandler) CompleteOperation(ctx context.Context, r *nexus
 	}
 
 	links := commonnexus.ConvertNexusLinksToProtoLinks(r.Links, logger)
+
+	if r.State == nexus.OperationStateRunning {
+		return h.deliverProgress(ctx, logger, ns, completion, r)
+	}
 
 	var successPayload *commonpb.Payload
 	switch r.State { // nolint:exhaustive
@@ -402,6 +409,65 @@ func (h *nexusCompletionHandler) completeChasmOperation(
 	return err
 }
 
+// maxProgressMetadataBytes bounds the metadata of one progress delivery, so progress stays a
+// notification and the data travels on the read path.
+const maxProgressMetadataBytes = 2 * 1024
+
+// deliverProgress hands a non-terminal progress delivery to the caller's CHASM operation. A 400
+// tells the handler to stop sending progress for this callback, so every refusal that is not
+// transient is a BadRequest.
+func (h *nexusCompletionHandler) deliverProgress(
+	ctx context.Context,
+	logger log.Logger,
+	ns *namespace.Namespace,
+	completion *tokenspb.NexusOperationCompletion,
+	r *nexusrpc.CompletionRequest,
+) error {
+	if !h.Config.EnableNexusOperationProgress(ns.Name().String()) {
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "operation progress is not enabled")
+	}
+	if len(completion.GetComponentRef()) == 0 {
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "operation progress is not supported for this caller")
+	}
+	body, err := io.ReadAll(r.Result.Reader)
+	if err != nil {
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "failed to read progress body")
+	}
+	progress := &notificationpb.Notification{}
+	if err := protojson.Unmarshal(body, progress); err != nil {
+		logger.Warn("cannot decode progress body", tag.Error(err))
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid progress content")
+	}
+	metadataBytes := 0
+	for _, payload := range progress.GetMetadata() {
+		metadataBytes += payload.Size()
+	}
+	if metadataBytes > maxProgressMetadataBytes {
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress metadata exceeds %d bytes", maxProgressMetadataBytes)
+	}
+	// The caller names the source, from the operation it delivers to.
+	progress.Channel = ""
+
+	_, err = h.HistoryClient.CompleteNexusOperationChasm(ctx, &historyservice.CompleteNexusOperationChasmRequest{
+		Completion: &tokenspb.NexusOperationCompletion{
+			RequestId:    completion.GetRequestId(),
+			ComponentRef: completion.GetComponentRef(),
+		},
+		OperationToken: r.OperationToken,
+		Outcome: &historyservice.CompleteNexusOperationChasmRequest_Progress{
+			Progress: progress,
+		},
+	})
+	if err == nil {
+		return nil
+	}
+	logger.Error("failed to process nexus progress request", tag.Error(err))
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return commonnexus.ConvertGRPCError(err, true)
+	}
+	return commonnexus.ConvertGRPCError(err, false)
+}
+
 func (h *nexusCompletionHandler) forwardCompleteOperation(ctx context.Context, r *nexusrpc.CompletionRequest, rCtx *requestContext) error {
 	targetCluster := rCtx.namespace.ActiveClusterName(namespace.RoutingKey{ID: rCtx.businessID})
 	logger := log.With(
@@ -449,6 +515,10 @@ func (h *nexusCompletionHandler) forwardCompleteOperation(ctx context.Context, r
 			CloseTime:      r.CloseTime,
 			Links:          r.Links,
 		}
+	case nexus.OperationStateRunning:
+		// A 400 would turn progress off for the callback. Progress is not forwarded, and the next
+		// delivery after a failover reaches the active cluster.
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeUnavailable, "operation progress is not forwarded")
 	default:
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid operation state: %q", r.State)
 	}
