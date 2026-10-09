@@ -10,6 +10,7 @@ import "temporal/api/common/v1/message.proto";
 import "temporal/api/deployment/v1/message.proto";
 import "temporal/api/enums/v1/workflow.proto";
 import "temporal/api/failure/v1/message.proto";
+import "temporal/api/notification/v1/message.proto";
 import "temporal/api/history/v1/message.proto";
 import "temporal/api/nexus/v1/message.proto";
 import "temporal/api/protocol/v1/message.proto";
@@ -1245,6 +1246,8 @@ message CompleteNexusOperationChasmRequest {
     temporal.api.common.v1.Payload success = 2;
     // Operation failure, only set if state != successful.
     temporal.api.failure.v1.Failure failure = 3;
+    // Non-terminal progress for a running operation. The operation stays open.
+    temporal.api.notification.v1.Notification progress = 8;
   }
   // Time when the operation was closed.
   google.protobuf.Timestamp close_time = 4;
