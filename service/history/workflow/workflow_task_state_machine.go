@@ -367,6 +367,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 			attempt,
 			scheduleTime,
 		)
+		m.ms.attachNexusProgress(scheduledEvent)
 		scheduledEventID = scheduledEvent.GetEventId()
 	} else {
 		// WorkflowTaskScheduledEvent will be created later.
@@ -584,6 +585,8 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskStartedEvent(
 			workflowTask.Attempt,
 			startTime,
 		)
+		// The worker has not seen this task yet, so its scheduled event can carry what is pending.
+		m.ms.attachNexusProgress(scheduledEvent)
 		scheduledEventID = scheduledEvent.GetEventId()
 	}
 

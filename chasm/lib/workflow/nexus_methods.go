@@ -1,6 +1,9 @@
 package workflow
 
 import (
+	"maps"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -8,12 +11,14 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	notificationpb "go.temporal.io/api/notification/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/nexusoperation"
 	nexusoperationpb "go.temporal.io/server/chasm/lib/nexusoperation/gen/nexusoperationpb/v1"
 	chasmworkflowpb "go.temporal.io/server/chasm/lib/workflow/gen/workflowpb/v1"
+	"go.temporal.io/server/common"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -36,6 +41,43 @@ func (w *Workflow) addNexusOperation(
 // removeNexusOperation removes a Nexus operation from the workflow.
 func (w *Workflow) removeNexusOperation(key int64) {
 	delete(w.Operations, key)
+}
+
+// HasPendingNexusProgress reports whether any Nexus operation holds progress for the next
+// Workflow Task scheduled event.
+func (w *Workflow) HasPendingNexusProgress(ctx chasm.Context) bool {
+	for _, field := range w.Operations {
+		if op, ok := field.TryGet(ctx); ok && op.HasPendingProgress(ctx) {
+			return true
+		}
+	}
+	return false
+}
+
+// TakeNexusProgress returns the pending progress of every Nexus operation, ordered by scheduled
+// event ID, each named by its operation's scheduled event ID.
+func (w *Workflow) TakeNexusProgress(ctx chasm.MutableContext) []*notificationpb.Notification {
+	var taken []*notificationpb.Notification
+	for _, key := range slices.Sorted(maps.Keys(w.Operations)) {
+		op, ok := w.Operations[key].TryGet(ctx)
+		if !ok {
+			continue
+		}
+		progress, ok := op.TakePendingProgress(ctx)
+		if !ok {
+			continue
+		}
+		named := common.CloneProto(progress)
+		named.Channel = NexusProgressChannel(key)
+		taken = append(taken, named)
+	}
+	return taken
+}
+
+// NexusProgressChannel names a Nexus operation's progress on a scheduled event, so a Workflow
+// matches it to the operation it scheduled.
+func NexusProgressChannel(scheduledEventID int64) string {
+	return "nexus-operation:" + strconv.FormatInt(scheduledEventID, 10)
 }
 
 // pendingNexusOperationCount returns the number of pending Nexus operations in the workflow.

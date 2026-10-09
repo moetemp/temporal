@@ -14,6 +14,7 @@ import (
 	failurepb "go.temporal.io/api/failure/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	apinexusoperationpb "go.temporal.io/api/nexusoperation/v1" //nolint:importas
+	notificationpb "go.temporal.io/api/notification/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
@@ -108,6 +109,12 @@ type Operation struct {
 	// Callbacks holds completion callbacks to be invoked when this reaches a terminal state.
 	// Keyed by completionCallbackID(requestID, index).
 	Callbacks chasm.Map[string, *callback.Callback]
+
+	// PendingProgress is the latest progress not yet put on a Workflow Task scheduled event.
+	PendingProgress chasm.Field[*notificationpb.Notification]
+	// DeliveredProgress is the last progress put on a scheduled event. A delivery with a counter
+	// at or below it is stale.
+	DeliveredProgress chasm.Field[*notificationpb.Notification]
 }
 
 // NewOperation creates a new Operation component with the given persisted state.
@@ -298,6 +305,10 @@ func (o *Operation) HandleNexusCompletion(
 		return serviceerror.NewNotFound("operation not found")
 	}
 
+	if progress := completion.GetProgress(); progress != nil {
+		return o.onProgress(ctx, progress)
+	}
+
 	links := completion.GetLinks()
 
 	// For completion-before-start, apply the started transition first.
@@ -321,6 +332,43 @@ func (o *Operation) HandleNexusCompletion(
 	default:
 		return serviceerror.NewInvalidArgument("invalid completion outcome")
 	}
+}
+
+// onProgress keeps the progress with the highest counter for the caller Workflow's next Workflow
+// Task. Progress is dropped when the operation is not started, since a running delivery cannot
+// stand in for the start response, and when it is closed, since completion supersedes it. A
+// standalone operation has no Workflow Task to fold onto, so it drops progress too.
+func (o *Operation) onProgress(ctx chasm.MutableContext, progress *notificationpb.Notification) error {
+	if o.Status != nexusoperationpb.OPERATION_STATUS_STARTED {
+		return nil
+	}
+	if _, ok := o.Store.TryGet(ctx); !ok {
+		return nil
+	}
+	for _, seen := range []chasm.Field[*notificationpb.Notification]{o.PendingProgress, o.DeliveredProgress} {
+		if previous, ok := seen.TryGet(ctx); ok && previous.GetCounter() >= progress.GetCounter() {
+			return nil
+		}
+	}
+	o.PendingProgress = chasm.NewDataField(ctx, progress)
+	return nil
+}
+
+// HasPendingProgress reports whether progress waits for a Workflow Task scheduled event.
+func (o *Operation) HasPendingProgress(ctx chasm.Context) bool {
+	_, ok := o.PendingProgress.TryGet(ctx)
+	return ok
+}
+
+// TakePendingProgress returns the pending progress and records it as delivered.
+func (o *Operation) TakePendingProgress(ctx chasm.MutableContext) (*notificationpb.Notification, bool) {
+	progress, ok := o.PendingProgress.TryGet(ctx)
+	if !ok {
+		return nil, false
+	}
+	o.DeliveredProgress = chasm.NewDataField(ctx, progress)
+	o.PendingProgress = chasm.NewEmptyField[*notificationpb.Notification]()
+	return progress, true
 }
 
 // loadStartArgs is a ReadComponent callback that loads the start arguments from the operation.

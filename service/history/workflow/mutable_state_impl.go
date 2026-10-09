@@ -7963,6 +7963,19 @@ func (ms *MutableStateImpl) closeTransactionHandleWorkflowTaskScheduling(
 		}
 	}
 
+	// Nexus operation progress writes no event, so it schedules its own task. A task already
+	// pending carries it if its scheduled event is still to be written, otherwise the next one does.
+	if !ms.HasPendingWorkflowTask() &&
+		!ms.IsWorkflowExecutionStatusPaused() &&
+		ms.hasPendingNexusProgress() {
+		if _, err := ms.AddWorkflowTaskScheduledEvent(
+			false,
+			enumsspb.WORKFLOW_TASK_TYPE_NORMAL,
+		); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
