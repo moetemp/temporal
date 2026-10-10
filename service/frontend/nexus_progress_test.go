@@ -69,15 +69,13 @@ func TestParseNexusProgress(t *testing.T) {
 
 func TestNexusProgressProto(t *testing.T) {
 	t.Parallel()
-	progress, err := nexusProgressProto(nexusProgress{
+	progress := nexusProgressProto(nexusProgress{
 		Position: "cursor-7",
 		Counter:  3,
 		Metadata: map[string]string{"topic": "tokens"},
 	})
-	require.NoError(t, err)
-	require.Equal(t, []byte("cursor-7"), progress.GetPosition())
+	require.Equal(t, "cursor-7", progress.GetPosition())
 	require.Equal(t, int64(3), progress.GetCounter())
-	require.Equal(t, []byte(`"tokens"`), progress.GetMetadata()["topic"].GetData())
-	require.Equal(t, []byte("json/plain"), progress.GetMetadata()["topic"].GetMetadata()["encoding"])
+	require.Equal(t, map[string]string{"topic": "tokens"}, progress.GetMetadata())
 	require.Nil(t, progress.GetOperation(), "the caller's server names the operation, not the handler")
 }

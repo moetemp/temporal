@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strconv"
 
-	commonpb "go.temporal.io/api/common/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 )
 
@@ -68,26 +67,11 @@ func parseNexusProgressCounter(raw json.RawMessage) (int64, error) {
 	return counter, nil
 }
 
-// nexusProgressProto is the progress as History carries it. Metadata values become JSON string
-// payloads, so an SDK decodes them with its default data converter.
-func nexusProgressProto(progress nexusProgress) (*nexuspb.NexusOperationProgress, error) {
-	var metadata map[string]*commonpb.Payload
-	if len(progress.Metadata) > 0 {
-		metadata = make(map[string]*commonpb.Payload, len(progress.Metadata))
-		for key, value := range progress.Metadata {
-			data, err := json.Marshal(value)
-			if err != nil {
-				return nil, err
-			}
-			metadata[key] = &commonpb.Payload{
-				Metadata: map[string][]byte{"encoding": []byte("json/plain")},
-				Data:     data,
-			}
-		}
-	}
+// nexusProgressProto is the progress as History carries it.
+func nexusProgressProto(progress nexusProgress) *nexuspb.NexusOperationProgress {
 	return &nexuspb.NexusOperationProgress{
-		Position: []byte(progress.Position),
+		Position: progress.Position,
 		Counter:  progress.Counter,
-		Metadata: metadata,
-	}, nil
+		Metadata: progress.Metadata,
+	}
 }

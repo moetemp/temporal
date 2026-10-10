@@ -135,8 +135,8 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 				s.Len(carried, 1)
 				s.Equal(scheduledEventID, carried[0].GetScheduledEventId())
 				s.Equal(int64(2), carried[0].GetCounter())
-				s.Equal([]byte("cursor-2"), carried[0].GetPosition())
-				s.Equal([]byte(`"t"`), carried[0].GetMetadata()["topic"].GetData())
+				s.Equal("cursor-2", carried[0].GetPosition())
+				s.Equal("t", carried[0].GetMetadata()["topic"])
 			}, 10*time.Second, 50*time.Millisecond)
 		}
 

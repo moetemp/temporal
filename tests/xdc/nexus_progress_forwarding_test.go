@@ -176,7 +176,7 @@ func (s *NexusProgressForwardingSuite) TestProgressForwardedFromStandbyToActive(
 	s.Len(carried, 1)
 	s.Equal(startedTask.History.Events[scheduledIdx].GetEventId(), carried[0].GetScheduledEventId())
 	s.Equal(int64(1), carried[0].GetCounter())
-	s.Equal([]byte("p1"), carried[0].GetPosition())
+	s.Equal("p1", carried[0].GetPosition())
 	respond(progressTask, &commandpb.Command{
 		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
 		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{

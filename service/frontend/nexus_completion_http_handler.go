@@ -436,10 +436,7 @@ func (h *nexusCompletionHandler) deliverProgress(
 		logger.Warn("refused a Nexus progress delivery", tag.Error(err))
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "%v", err)
 	}
-	progress, err := nexusProgressProto(parsed)
-	if err != nil {
-		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "%v", err)
-	}
+	progress := nexusProgressProto(parsed)
 
 	_, err = h.HistoryClient.CompleteNexusOperationChasm(ctx, &historyservice.CompleteNexusOperationChasmRequest{
 		Completion: &tokenspb.NexusOperationCompletion{
