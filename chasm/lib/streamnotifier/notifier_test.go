@@ -388,13 +388,38 @@ func TestStreamNotifier(t *testing.T) {
 
 	t.Run("AnIdleNotifierWithNoCallersEndsAndANewOneStarts", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
-		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.attach("a"))
+		_, err := nt.handler.DetachStreamCallback(nt.ctx, &streamnotifierpb.DetachStreamCallbackRequest{
+			NamespaceId: "namespace-id",
+			BusinessId:  BusinessID(nt.ref),
+			FrontendRequest: &workflowservice.DetachStreamCallbackRequest{
+				Namespace: "ns", StreamRef: nt.ref, RequestId: "a",
+			},
+		})
+		require.NoError(t, err)
 		nt.expire()
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
 			require.Equal(t, chasm.LifecycleStateFailed, n.LifecycleState(ctx))
 		})
+		require.NoError(t, nt.notify(1, false), "a notification to an ended notifier is dropped")
 		require.NoError(t, nt.attach("later"), "a later attach starts a new notifier")
 		require.Contains(t, nt.callbacks(), "later")
+	})
+
+	t.Run("ANotificationWithoutACallerStartsNoNotifier", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.notify(1, false))
+		_, err := nt.handler.DescribeStreamNotifier(nt.ctx, &streamnotifierpb.DescribeStreamNotifierRequest{
+			NamespaceId:     "namespace-id",
+			BusinessId:      BusinessID(nt.ref),
+			FrontendRequest: &workflowservice.DescribeStreamNotifierRequest{Namespace: "ns", StreamRef: nt.ref},
+		})
+		var notFound *serviceerror.NotFound
+		require.ErrorAs(t, err, &notFound, "no caller waits, so nothing needs the notification")
+
+		require.NoError(t, nt.attach("a"))
+		require.NoError(t, nt.notify(2, false))
+		require.Equal(t, int64(2), nt.describe().GetCounter(), "a notifier a caller started takes it")
 	})
 
 	t.Run("AClosedStreamStaysClosed", func(t *testing.T) {

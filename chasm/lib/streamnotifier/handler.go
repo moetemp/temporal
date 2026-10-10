@@ -95,20 +95,43 @@ func (h *handler) NotifyStream(
 	defer log.CapturePanic(h.logger, &retErr)
 	fe := req.GetFrontendRequest()
 	ns := fe.GetNamespace()
-	err := startOrUpdate(ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(),
-		func(n *StreamNotifier, mctx chasm.MutableContext, r *workflowservice.NotifyStreamRequest) (struct{}, error) {
-			return struct{}{}, n.notify(mctx, notifyInput{
-				position:    r.GetPosition(),
-				counter:     r.GetCounter(),
-				metadata:    r.GetMetadata(),
-				close:       r.GetClose(),
-				closeResult: r.GetCloseResult(),
-				idleTimeout: h.config.IdleTimeout(ns),
-				retention:   h.config.ClosedRetention(ns),
-			})
-		},
-		fe,
-	)
+	update := func(
+		n *StreamNotifier,
+		mctx chasm.MutableContext,
+		r *workflowservice.NotifyStreamRequest,
+	) (struct{}, error) {
+		return struct{}{}, n.notify(mctx, notifyInput{
+			position:    r.GetPosition(),
+			counter:     r.GetCounter(),
+			metadata:    r.GetMetadata(),
+			close:       r.GetClose(),
+			closeResult: r.GetCloseResult(),
+			idleTimeout: h.config.IdleTimeout(ns),
+			retention:   h.config.ClosedRetention(ns),
+		})
+	}
+	if fe.GetClose() {
+		// A late attach must find the stream closed, so a close starts a notifier if none runs.
+		if err := startOrUpdate(
+			ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(), update, fe,
+		); err != nil {
+			return nil, err
+		}
+		return &streamnotifierpb.NotifyStreamResponse{
+			FrontendResponse: &workflowservice.NotifyStreamResponse{},
+		}, nil
+	}
+	// No notifier means no caller waits, and a caller that attaches later reads from its start
+	// position. So a notification starts no notifier, and one that names the wrong run of the
+	// owner's chain leaves nothing behind.
+	ref := chasm.NewComponentRef[*StreamNotifier](chasm.ExecutionKey{
+		NamespaceID: req.GetNamespaceId(),
+		BusinessID:  req.GetBusinessId(),
+	})
+	_, _, err := chasm.UpdateComponent(ctx, ref, update, fe)
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
