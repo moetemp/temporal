@@ -50,7 +50,10 @@ func (w *Workflow) setNexusProgressIndex(
 // OnNexusOperationProgress records that an operation holds progress for the next Workflow Task
 // scheduled event. Progress for an operation that rides a scheduled Workflow Task that has not
 // started folds into that task: it asks for no task of its own until that one starts.
-func (w *Workflow) OnNexusOperationProgress(ctx chasm.MutableContext, op *nexusoperation.Operation) error {
+func (w *Workflow) OnNexusOperationProgress(
+	ctx chasm.MutableContext,
+	op *nexusoperation.Operation,
+) error {
 	key, ok := nexusProgressKey(op)
 	if !ok {
 		op.DropPendingProgress(ctx)
@@ -136,7 +139,11 @@ func (w *Workflow) HoldNexusProgress(ctx chasm.MutableContext, readyAt time.Time
 	index = common.CloneProto(index)
 	index.ReleaseTime = timestamppb.New(readyAt)
 	w.setNexusProgressIndex(ctx, index)
-	ctx.AddTask(w, chasm.TaskAttributes{ScheduledTime: readyAt}, &chasmworkflowpb.NexusProgressReleaseTask{})
+	ctx.AddTask(
+		w,
+		chasm.TaskAttributes{ScheduledTime: readyAt},
+		&chasmworkflowpb.NexusProgressReleaseTask{},
+	)
 }
 
 // releaseNexusProgress lets held progress schedule a Workflow Task. It changes the Workflow, so

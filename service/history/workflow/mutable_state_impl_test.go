@@ -2337,17 +2337,27 @@ func (s *mutableStateSuite) TestNexusProgressAcrossFailoverConversion() {
 		versionHistory, err := versionhistory.GetCurrentVersionHistory(
 			s.mutableState.GetExecutionInfo().GetVersionHistories())
 		s.NoError(err)
-		s.NoError(versionhistory.AddOrUpdateVersionHistoryItem(versionHistory, &historyspb.VersionHistoryItem{
-			EventId: s.mutableState.GetNextEventID() - 1,
-			Version: version,
-		}))
+		s.NoError(
+			versionhistory.AddOrUpdateVersionHistoryItem(
+				versionHistory,
+				&historyspb.VersionHistoryItem{
+					EventId: s.mutableState.GetNextEventID() - 1,
+					Version: version,
+				},
+			),
+		)
 
 		registry := chasm.NewRegistry(s.logger)
 		s.NoError(registry.Register(&chasm.CoreLibrary{}))
 		s.NoError(registry.Register(chasmworkflow.NewLibrary(chasmworkflow.NewRegistry())))
 		s.NoError(registry.Register(chasmnexus.NewNilLibrary()))
 		tree := chasm.NewEmptyTree(
-			registry, s.mutableState, chasm.DefaultPathEncoder, s.logger, metrics.NoopMetricsHandler)
+			registry,
+			s.mutableState,
+			chasm.DefaultPathEncoder,
+			s.logger,
+			metrics.NoopMetricsHandler,
+		)
 		s.mutableState.chasmTree = tree
 		ctx := chasm.NewMutableContext(context.Background(), tree)
 		wf := chasmworkflow.NewWorkflow(ctx, chasm.NewMSPointer(s.mutableState))
@@ -2396,8 +2406,16 @@ func (s *mutableStateSuite) TestNexusProgressAcrossFailoverConversion() {
 		_, started, err := s.mutableState.AddWorkflowTaskStartedEvent(
 			wt.ScheduledEventID,
 			uuid.NewString(),
-			&taskqueuepb.TaskQueue{Name: f.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).NormalPartition(5).RpcName()},
-			"random identity", nil, nil, nil, false, nil, 0,
+			&taskqueuepb.TaskQueue{
+				Name: f.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).NormalPartition(5).RpcName(),
+			},
+			"random identity",
+			nil,
+			nil,
+			nil,
+			false,
+			nil,
+			0,
 		)
 		s.NoError(err)
 		s.NotNil(started)

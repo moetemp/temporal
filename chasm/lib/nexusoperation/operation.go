@@ -345,7 +345,10 @@ func (o *Operation) HandleNexusCompletion(
 // onProgress keeps the progress with the highest counter for the caller. Progress before the
 // operation started is dropped, since it cannot stand in for the start response, and so is progress
 // after it closed, since its completion supersedes it.
-func (o *Operation) onProgress(ctx chasm.MutableContext, progress *nexuspb.NexusOperationProgress) error {
+func (o *Operation) onProgress(
+	ctx chasm.MutableContext,
+	progress *nexuspb.NexusOperationProgress,
+) error {
 	if o.Status != nexusoperationpb.OPERATION_STATUS_STARTED {
 		return nil
 	}
@@ -357,7 +360,10 @@ func (o *Operation) onProgress(ctx chasm.MutableContext, progress *nexuspb.Nexus
 	if !ok {
 		return nil
 	}
-	for _, seen := range []chasm.Field[*nexuspb.NexusOperationProgress]{o.PendingProgress, o.DeliveredProgress} {
+	for _, seen := range []chasm.Field[*nexuspb.NexusOperationProgress]{
+		o.PendingProgress,
+		o.DeliveredProgress,
+	} {
 		if previous, ok := seen.TryGet(ctx); ok && previous.GetCounter() >= progress.GetCounter() {
 			return nil
 		}
@@ -367,7 +373,9 @@ func (o *Operation) onProgress(ctx chasm.MutableContext, progress *nexuspb.Nexus
 }
 
 // TakePendingProgress returns the pending progress and records it as delivered.
-func (o *Operation) TakePendingProgress(ctx chasm.MutableContext) (*nexuspb.NexusOperationProgress, bool) {
+func (o *Operation) TakePendingProgress(
+	ctx chasm.MutableContext,
+) (*nexuspb.NexusOperationProgress, bool) {
 	progress, ok := o.PendingProgress.TryGet(ctx)
 	if !ok {
 		return nil, false

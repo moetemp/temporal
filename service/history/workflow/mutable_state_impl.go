@@ -210,8 +210,8 @@ type (
 		// (via AttachChasmRequestID). It gates the lazy request-ID sweep at transaction close so only
 		// transactions that added an ID pay for the scan.
 		chasmRequestIDsAdded bool
-		// holdNexusProgress marks the Workflow Task scheduled in the current transaction as one that
-		// holds Nexus operation progress (see HoldNexusProgress).
+		// holdNexusProgress marks the Workflow Task scheduled in the current transaction as one
+		// that holds Nexus operation progress (see HoldNexusProgress).
 		holdNexusProgress bool
 		updateInfoUpdated map[string]struct{}
 		// following xxxUserDataUpdated fields are for tracking if activity/timer user data updated.

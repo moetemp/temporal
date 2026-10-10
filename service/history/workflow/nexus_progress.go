@@ -48,7 +48,9 @@ func (ms *MutableStateImpl) attachNexusProgress(event *historypb.HistoryEvent) {
 		return
 	}
 	attrs := event.GetWorkflowTaskScheduledEventAttributes()
-	attrs.NexusOperationProgress = append(attrs.NexusOperationProgress, wf.TakeNexusProgress(chasmCtx)...)
+	attrs.NexusOperationProgress = append(
+		attrs.NexusOperationProgress,
+		wf.TakeNexusProgress(chasmCtx)...)
 }
 
 // clearScheduledNexusProgress forgets which operations the scheduled Workflow Task carries, once
@@ -96,7 +98,8 @@ func (ms *MutableStateImpl) scheduleWorkflowTaskForNexusProgress() error {
 	if readyAt := wf.NexusProgressReadyAt(chasmCtx, minInterval); now.Before(readyAt) {
 		return ms.waitNexusProgress(readyAt)
 	}
-	if _, err := ms.AddWorkflowTaskScheduledEvent(false, enumsspb.WORKFLOW_TASK_TYPE_NORMAL); err != nil {
+	_, err := ms.AddWorkflowTaskScheduledEvent(false, enumsspb.WORKFLOW_TASK_TYPE_NORMAL)
+	if err != nil {
 		return err
 	}
 	if !ms.hasPendingNexusProgress() {

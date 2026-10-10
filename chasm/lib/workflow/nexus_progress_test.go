@@ -15,10 +15,16 @@ import (
 )
 
 func TestNexusProgressIndex(t *testing.T) {
-	newWorkflowWithOperations := func(t *testing.T, ctx chasm.MutableContext, keys ...int64) *Workflow {
+	newWorkflowWithOperations := func(
+		t *testing.T,
+		ctx chasm.MutableContext,
+		keys ...int64,
+	) *Workflow {
 		wf := &Workflow{}
 		for _, key := range keys {
-			parentData, err := anypb.New(&chasmworkflowpb.NexusOperationParentData{ScheduledEventId: key})
+			parentData, err := anypb.New(
+				&chasmworkflowpb.NexusOperationParentData{ScheduledEventId: key},
+			)
 			require.NoError(t, err)
 			op := nexusoperation.NewOperation(&nexusoperationpb.OperationState{
 				Status:     nexusoperationpb.OPERATION_STATUS_STARTED,
@@ -30,11 +36,12 @@ func TestNexusProgressIndex(t *testing.T) {
 		return wf
 	}
 	deliver := func(t *testing.T, ctx chasm.MutableContext, wf *Workflow, key, counter int64) {
-		err := wf.Operations[key].Get(ctx).HandleNexusCompletion(ctx, &persistencespb.ChasmNexusCompletion{
-			Outcome: &persistencespb.ChasmNexusCompletion_Progress{
-				Progress: &nexuspb.NexusOperationProgress{Counter: counter},
-			},
-		})
+		err := wf.Operations[key].Get(ctx).
+			HandleNexusCompletion(ctx, &persistencespb.ChasmNexusCompletion{
+				Outcome: &persistencespb.ChasmNexusCompletion_Progress{
+					Progress: &nexuspb.NexusOperationProgress{Counter: counter},
+				},
+			})
 		require.NoError(t, err)
 	}
 	counters := func(taken []*nexuspb.NexusOperationProgress) map[int64]int64 {
@@ -93,7 +100,12 @@ func TestNexusProgressIndex(t *testing.T) {
 		deliver(t, ctx, wf, 9, 2)
 		wf.removeNexusOperation(ctx, 5)
 		wf.ClearScheduledNexusProgress(ctx)
-		require.Equal(t, map[int64]int64{9: 2}, counters(wf.TakeNexusProgress(ctx)), "a closed operation's folded progress is gone")
+		require.Equal(
+			t,
+			map[int64]int64{9: 2},
+			counters(wf.TakeNexusProgress(ctx)),
+			"a closed operation's folded progress is gone",
+		)
 		wf.removeNexusOperation(ctx, 9)
 		require.False(t, wf.HasScheduledNexusProgress(ctx))
 		index, ok := wf.NexusProgress.TryGet(ctx)
@@ -101,7 +113,11 @@ func TestNexusProgressIndex(t *testing.T) {
 		require.Empty(t, index.GetPending())
 		require.Empty(t, index.GetScheduled())
 		require.Empty(t, index.GetFolded())
-		require.NotNil(t, index.GetLastCarriedTime(), "only the last carried time stays, for the rate limit")
+		require.NotNil(
+			t,
+			index.GetLastCarriedTime(),
+			"only the last carried time stays, for the rate limit",
+		)
 	})
 
 	t.Run("StoresNoIndexWithoutProgress", func(t *testing.T) {
