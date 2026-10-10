@@ -144,6 +144,8 @@ func (c *Callback) saveProgressResult(ctx chasm.MutableContext, input saveProgre
 		c.CallerOperationClosed = true
 		c.stopProgress()
 	case progressRetry:
+		// No attempt cap. The completion clears progress, and one delivery in flight at the
+		// maximum backoff interval keeps a caller that answers 503 for ever cheap.
 		c.ProgressAttempt++
 		ctx.AddTask(c, chasm.TaskAttributes{
 			ScheduledTime: ctx.Now(c).Add(input.retryPolicy(c.ProgressAttempt, input.err)),
