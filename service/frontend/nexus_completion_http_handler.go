@@ -452,11 +452,20 @@ func (h *nexusCompletionHandler) deliverProgress(
 		return nil
 	}
 	logger.Error("failed to process nexus progress request", tag.Error(err))
+	// Any 4xx turns progress off for the callback, so only an answer a retry will not change gets
+	// one. NamespaceNotActive shares FailedPrecondition's code but passes with the failover, and an
+	// older History answers Unimplemented during an upgrade, so both stay retryable.
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return commonnexus.ConvertGRPCError(err, true)
 	}
-	// Any 4xx turns progress off for the callback, so only the refusals above may answer one.
-	// Whatever History answers, such as NamespaceNotActive during a failover, is worth a retry.
+	if _, ok := errors.AsType[*serviceerror.NamespaceNotActive](err); !ok {
+		if _, ok := errors.AsType[*serviceerror.InvalidArgument](err); ok {
+			return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress refused: %v", err)
+		}
+		if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
+			return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress refused: %v", err)
+		}
+	}
 	return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeUnavailable, "progress could not be delivered, retry later")
 }
 
