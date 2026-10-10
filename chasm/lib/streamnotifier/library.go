@@ -43,8 +43,16 @@ type library struct {
 	ownerCheckTaskHandler *ownerCheckTaskHandler
 }
 
-func newLibrary(handler *handler, expiryTaskHandler *expiryTaskHandler, ownerCheckTaskHandler *ownerCheckTaskHandler) *library {
-	return &library{handler: handler, expiryTaskHandler: expiryTaskHandler, ownerCheckTaskHandler: ownerCheckTaskHandler}
+func newLibrary(
+	handler *handler,
+	expiryTaskHandler *expiryTaskHandler,
+	ownerCheckTaskHandler *ownerCheckTaskHandler,
+) *library {
+	return &library{
+		handler:               handler,
+		expiryTaskHandler:     expiryTaskHandler,
+		ownerCheckTaskHandler: ownerCheckTaskHandler,
+	}
 }
 
 func (l *library) RegisterServices(server *grpc.Server) {

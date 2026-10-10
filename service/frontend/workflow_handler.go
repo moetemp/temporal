@@ -122,7 +122,8 @@ type (
 	ActivityHandler = activity.FrontendHandler
 	// NexusOperationHandler is the nexus operation frontend handler, aliased to avoid embedding name collision.
 	NexusOperationHandler = chasmnexus.FrontendHandler
-	// StreamNotifierHandler is the stream notifier frontend handler, aliased to avoid embedding name collision.
+	// StreamNotifierHandler is the stream notifier frontend handler, aliased to avoid embedding
+	// name collision.
 	StreamNotifierHandler = streamnotifier.FrontendHandler
 
 	// WorkflowHandler - gRPC handler interface for workflowservice

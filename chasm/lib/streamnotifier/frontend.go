@@ -26,10 +26,22 @@ const maxPositionBytes = 1024
 
 // FrontendHandler serves the stream notifier RPCs of the WorkflowService.
 type FrontendHandler interface {
-	AttachStreamCallback(context.Context, *workflowservice.AttachStreamCallbackRequest) (*workflowservice.AttachStreamCallbackResponse, error)
-	DetachStreamCallback(context.Context, *workflowservice.DetachStreamCallbackRequest) (*workflowservice.DetachStreamCallbackResponse, error)
-	NotifyStream(context.Context, *workflowservice.NotifyStreamRequest) (*workflowservice.NotifyStreamResponse, error)
-	DescribeStreamNotifier(context.Context, *workflowservice.DescribeStreamNotifierRequest) (*workflowservice.DescribeStreamNotifierResponse, error)
+	AttachStreamCallback(
+		context.Context,
+		*workflowservice.AttachStreamCallbackRequest,
+	) (*workflowservice.AttachStreamCallbackResponse, error)
+	DetachStreamCallback(
+		context.Context,
+		*workflowservice.DetachStreamCallbackRequest,
+	) (*workflowservice.DetachStreamCallbackResponse, error)
+	NotifyStream(
+		context.Context,
+		*workflowservice.NotifyStreamRequest,
+	) (*workflowservice.NotifyStreamResponse, error)
+	DescribeStreamNotifier(
+		context.Context,
+		*workflowservice.DescribeStreamNotifierRequest,
+	) (*workflowservice.DescribeStreamNotifierResponse, error)
 }
 
 type frontendHandler struct {
@@ -61,16 +73,25 @@ func NewFrontendHandler(
 
 // resolve checks that the notifier is enabled and the stream is one it serves, and answers the
 // namespace ID and the notifier's business ID.
-func (h *frontendHandler) resolve(namespaceName string, ref *streampb.StreamReference) (namespaceID string, businessID string, err error) {
+func (h *frontendHandler) resolve(
+	namespaceName string,
+	ref *streampb.StreamReference,
+) (namespaceID string, businessID string, err error) {
 	if !h.config.Enabled(namespaceName) {
-		return "", "", serviceerror.NewUnimplemented("the stream notifier is not enabled for this namespace")
+		return "", "", serviceerror.NewUnimplemented(
+			"the stream notifier is not enabled for this namespace",
+		)
 	}
 	// The notifier is a CHASM execution of its own, whatever the callers' operations run on.
 	if !h.config.ChasmEnabled(namespaceName) {
-		return "", "", serviceerror.NewUnimplemented("the stream notifier requires CHASM, which is not enabled for this namespace")
+		return "", "", serviceerror.NewUnimplemented(
+			"the stream notifier requires CHASM, which is not enabled for this namespace",
+		)
 	}
 	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW")
+		return "", "", serviceerror.NewInvalidArgument(
+			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW",
+		)
 	}
 	if ref.GetWorkflowId() == "" {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
@@ -81,7 +102,9 @@ func (h *frontendHandler) resolve(namespaceName string, ref *streampb.StreamRefe
 	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
 	// its own; without it the request would reach a different notifier.
 	if ref.GetRunId() == "" {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.run_id must name the run chain's first run")
+		return "", "", serviceerror.NewInvalidArgument(
+			"stream_ref.run_id must name the run chain's first run",
+		)
 	}
 	// Both become part of the notifier's business ID.
 	if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
@@ -117,9 +140,9 @@ func (h *frontendHandler) AttachStreamCallback(
 	// The validator checks the URL against the namespace's allowed addresses and normalizes the
 	// headers in place.
 	cb := &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: req.GetCallback()}}
-	if err := h.callbackValidator.Validate(ctx, req.GetNamespace(), []*commonpb.Callback{cb}, callbacks.ValidatorOptions{
-		EnabledKinds: []callbacks.Kind{callbacks.KindNexus},
-	}); err != nil {
+	opts := callbacks.ValidatorOptions{EnabledKinds: []callbacks.Kind{callbacks.KindNexus}}
+	err = h.callbackValidator.Validate(ctx, req.GetNamespace(), []*commonpb.Callback{cb}, opts)
+	if err != nil {
 		return nil, err
 	}
 	resp, err := h.client.AttachStreamCallback(ctx, &streamnotifierpb.AttachStreamCallbackRequest{
@@ -164,14 +187,22 @@ func (h *frontendHandler) NotifyStream(
 		return nil, serviceerror.NewInvalidArgument("counter must be positive")
 	}
 	if len(req.GetPosition()) > maxPositionBytes {
-		return nil, serviceerror.NewInvalidArgumentf("position is %d bytes, more than the %d allowed", len(req.GetPosition()), maxPositionBytes)
+		return nil, serviceerror.NewInvalidArgumentf(
+			"position is %d bytes, more than the %d allowed",
+			len(req.GetPosition()),
+			maxPositionBytes,
+		)
 	}
 	size := 0
 	for key, value := range req.GetMetadata() {
 		size += len(key) + len(value)
 	}
 	if size > maxMetadataBytes {
-		return nil, serviceerror.NewInvalidArgumentf("metadata is %d bytes, more than the %d allowed", size, maxMetadataBytes)
+		return nil, serviceerror.NewInvalidArgumentf(
+			"metadata is %d bytes, more than the %d allowed",
+			size,
+			maxMetadataBytes,
+		)
 	}
 	if req.GetCloseResult() != nil && !req.GetClose() {
 		return nil, serviceerror.NewInvalidArgument("close_result is only allowed with close")
@@ -205,10 +236,13 @@ func (h *frontendHandler) DescribeStreamNotifier(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := h.client.DescribeStreamNotifier(ctx, &streamnotifierpb.DescribeStreamNotifierRequest{
-		NamespaceId:     namespaceID,
-		BusinessId:      businessID,
-		FrontendRequest: req,
-	})
+	resp, err := h.client.DescribeStreamNotifier(
+		ctx,
+		&streamnotifierpb.DescribeStreamNotifierRequest{
+			NamespaceId:     namespaceID,
+			BusinessId:      businessID,
+			FrontendRequest: req,
+		},
+	)
 	return resp.GetFrontendResponse(), err
 }

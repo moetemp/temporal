@@ -50,10 +50,15 @@ func startOrUpdate[I any](
 		},
 		update,
 		input,
-		chasm.WithBusinessIDPolicy(chasm.BusinessIDReusePolicyAllowDuplicateFailedOnly, chasm.BusinessIDConflictPolicyUseExisting),
+		chasm.WithBusinessIDPolicy(
+			chasm.BusinessIDReusePolicyAllowDuplicateFailedOnly,
+			chasm.BusinessIDConflictPolicyUseExisting,
+		),
 	)
 	if _, ok := errors.AsType[*chasm.ExecutionAlreadyStartedError](err); ok {
-		return serviceerror.NewFailedPrecondition("the stream closed and its notifier no longer takes requests")
+		return serviceerror.NewFailedPrecondition(
+			"the stream closed and its notifier no longer takes requests",
+		)
 	}
 	return err
 }
@@ -68,8 +73,16 @@ func (h *handler) AttachStreamCallback(
 	if err := h.checkFirstRun(ctx, req.GetNamespaceId(), ns, fe.GetStreamRef()); err != nil {
 		return nil, err
 	}
-	err := startOrUpdate(ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(),
-		func(n *StreamNotifier, mctx chasm.MutableContext, r *workflowservice.AttachStreamCallbackRequest) (struct{}, error) {
+	err := startOrUpdate(
+		ctx,
+		req.GetNamespaceId(),
+		req.GetBusinessId(),
+		fe.GetStreamRef(),
+		func(
+			n *StreamNotifier,
+			mctx chasm.MutableContext,
+			r *workflowservice.AttachStreamCallbackRequest,
+		) (struct{}, error) {
 			return struct{}{}, n.attach(mctx, attachInput{
 				requestID:          r.GetRequestId(),
 				callback:           r.GetCallback(),
@@ -85,7 +98,9 @@ func (h *handler) AttachStreamCallback(
 	if err != nil {
 		return nil, err
 	}
-	return &streamnotifierpb.AttachStreamCallbackResponse{FrontendResponse: &workflowservice.AttachStreamCallbackResponse{}}, nil
+	return &streamnotifierpb.AttachStreamCallbackResponse{
+		FrontendResponse: &workflowservice.AttachStreamCallbackResponse{},
+	}, nil
 }
 
 func (h *handler) NotifyStream(
@@ -135,7 +150,9 @@ func (h *handler) NotifyStream(
 	if err != nil {
 		return nil, err
 	}
-	return &streamnotifierpb.NotifyStreamResponse{FrontendResponse: &workflowservice.NotifyStreamResponse{}}, nil
+	return &streamnotifierpb.NotifyStreamResponse{
+		FrontendResponse: &workflowservice.NotifyStreamResponse{},
+	}, nil
 }
 
 func (h *handler) DetachStreamCallback(
@@ -162,7 +179,9 @@ func (h *handler) DetachStreamCallback(
 	if err != nil {
 		return nil, err
 	}
-	return &streamnotifierpb.DetachStreamCallbackResponse{FrontendResponse: &workflowservice.DetachStreamCallbackResponse{}}, nil
+	return &streamnotifierpb.DetachStreamCallbackResponse{
+		FrontendResponse: &workflowservice.DetachStreamCallbackResponse{},
+	}, nil
 }
 
 func (h *handler) DescribeStreamNotifier(
@@ -174,8 +193,14 @@ func (h *handler) DescribeStreamNotifier(
 		NamespaceID: req.GetNamespaceId(),
 		BusinessID:  req.GetBusinessId(),
 	})
-	resp, err := chasm.ReadComponent(ctx, ref,
-		func(n *StreamNotifier, cctx chasm.Context, _ struct{}) (*workflowservice.DescribeStreamNotifierResponse, error) {
+	resp, err := chasm.ReadComponent(
+		ctx,
+		ref,
+		func(
+			n *StreamNotifier,
+			cctx chasm.Context,
+			_ struct{},
+		) (*workflowservice.DescribeStreamNotifierResponse, error) {
 			callbacks, err := n.describeCallbacks(cctx)
 			if err != nil {
 				return nil, err
@@ -199,14 +224,21 @@ func (h *handler) DescribeStreamNotifier(
 // reference would key a second notifier for the stream, and the owner check would take the owner
 // for ended and close that notifier while the stream runs. An owner that does not exist is left to
 // the owner check.
-func (h *handler) checkFirstRun(ctx context.Context, namespaceID, namespaceName string, ref *streampb.StreamReference) error {
-	resp, err := h.historyClient.DescribeWorkflowExecution(ctx, &historyservice.DescribeWorkflowExecutionRequest{
-		NamespaceId: namespaceID,
-		Request: &workflowservice.DescribeWorkflowExecutionRequest{
-			Namespace: namespaceName,
-			Execution: &commonpb.WorkflowExecution{WorkflowId: ref.GetWorkflowId()},
+func (h *handler) checkFirstRun(
+	ctx context.Context,
+	namespaceID, namespaceName string,
+	ref *streampb.StreamReference,
+) error {
+	resp, err := h.historyClient.DescribeWorkflowExecution(
+		ctx,
+		&historyservice.DescribeWorkflowExecutionRequest{
+			NamespaceId: namespaceID,
+			Request: &workflowservice.DescribeWorkflowExecutionRequest{
+				Namespace: namespaceName,
+				Execution: &commonpb.WorkflowExecution{WorkflowId: ref.GetWorkflowId()},
+			},
 		},
-	})
+	)
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return nil
 	}
@@ -214,7 +246,10 @@ func (h *handler) checkFirstRun(ctx context.Context, namespaceID, namespaceName 
 		return err
 	}
 	if first := resp.GetWorkflowExecutionInfo().GetFirstRunId(); first != ref.GetRunId() {
-		return serviceerror.NewInvalidArgumentf("stream_ref.run_id %q is not the first run of the owner's run chain", ref.GetRunId())
+		return serviceerror.NewInvalidArgumentf(
+			"stream_ref.run_id %q is not the first run of the owner's run chain",
+			ref.GetRunId(),
+		)
 	}
 	return nil
 }
