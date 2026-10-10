@@ -867,3 +867,35 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressMinInterval(chasmEnab
 	s.GreaterOrEqual(gap, interval, "progress waits out the interval since the last task that carried it")
 	c.complete(second)
 }
+
+// TestNexusOperationProgressOnFailedTask checks where progress is after the task that carried it
+// fails. It stays on that task's scheduled event, which the retry's History includes, and the
+// retry's own scheduled event doesn't repeat it. So a worker reads progress from every scheduled
+// event since its last completed task.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgressOnFailedTask(chasmEnabled bool) {
+	if !chasmEnabled {
+		// An HSM caller refuses progress; TestNexusOperationProgress covers it.
+		return
+	}
+	c := s.newRawProgressCaller()
+
+	c.postProgress(1)
+	failing := c.poll()
+	s.Len(lastScheduled(failing).GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress(), 1)
+	_, err := c.env.FrontendClient().RespondWorkflowTaskFailed(c.ctx, &workflowservice.RespondWorkflowTaskFailedRequest{
+		Namespace: c.env.Namespace().String(),
+		Identity:  "test",
+		TaskToken: failing.GetTaskToken(),
+		Cause:     enumspb.WORKFLOW_TASK_FAILED_CAUSE_WORKFLOW_WORKER_UNHANDLED_FAILURE,
+	})
+	s.NoError(err)
+
+	retry := c.poll()
+	s.Equal(int32(2), retry.GetAttempt())
+	s.Empty(lastScheduled(retry).GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress(),
+		"the retry doesn't repeat what the failed task carried")
+	carried := carriedNexusProgress(retry.GetHistory().GetEvents())
+	s.Len(carried, 1, "the failed task's scheduled event still carries the progress")
+	s.Equal(int64(1), carried[0].GetCounter())
+	c.complete(retry)
+}
