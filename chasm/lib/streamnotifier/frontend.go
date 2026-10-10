@@ -9,7 +9,10 @@ import (
 	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
+	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/callbacks"
+	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 )
 
@@ -30,6 +33,8 @@ type frontendHandler struct {
 	config            *Config
 	namespaceRegistry namespace.Registry
 	callbackValidator callbacks.Validator
+	metricsHandler    metrics.Handler
+	logger            log.Logger
 }
 
 func NewFrontendHandler(
@@ -37,12 +42,16 @@ func NewFrontendHandler(
 	config *Config,
 	namespaceRegistry namespace.Registry,
 	callbackValidator callbacks.Validator,
+	metricsHandler metrics.Handler,
+	logger log.Logger,
 ) FrontendHandler {
 	return &frontendHandler{
 		client:            client,
 		config:            config,
 		namespaceRegistry: namespaceRegistry,
 		callbackValidator: callbackValidator,
+		metricsHandler:    metricsHandler,
+		logger:            logger,
 	}
 }
 
@@ -141,6 +150,19 @@ func (h *frontendHandler) NotifyStream(
 	}
 	if req.GetCloseResult() != nil && !req.GetClose() {
 		return nil, serviceerror.NewInvalidArgument("close_result is only allowed with close")
+	}
+	if err := common.CheckEventBlobSizeLimit(
+		req.GetCloseResult().Size(),
+		h.config.BlobSizeLimitWarn(req.GetNamespace()),
+		h.config.BlobSizeLimitError(req.GetNamespace()),
+		namespaceID,
+		req.GetStreamRef().GetWorkflowId(),
+		"",
+		h.metricsHandler,
+		h.logger,
+		"NotifyStream",
+	); err != nil {
+		return nil, err
 	}
 	resp, err := h.client.NotifyStream(ctx, &streamnotifierpb.NotifyStreamRequest{
 		NamespaceId:     namespaceID,
