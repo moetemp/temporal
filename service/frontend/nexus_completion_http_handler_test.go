@@ -9,6 +9,7 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
@@ -233,10 +234,10 @@ func TestCompleteChasmOperation_CanceledBareFailure(t *testing.T) {
 		"bare canceled failures must carry CanceledFailureInfo")
 }
 
-// TestDeliverProgress_HistoryErrorsStayRetryable checks that only the deliberate refusals answer
-// 400. Any 4xx turns progress off for the callback, so an error History answers, such as
-// NamespaceNotActive during a failover, must stay retryable.
-func TestDeliverProgress_HistoryErrorsStayRetryable(t *testing.T) {
+// TestDeliverProgress_HistoryErrors checks how History's answer to a progress delivery maps to the
+// handler. Any 4xx turns progress off for the callback, so only a refusal that will not change on
+// a retry answers one; transient errors, such as NamespaceNotActive during a failover, stay 503.
+func TestDeliverProgress_HistoryErrors(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -246,8 +247,12 @@ func TestDeliverProgress_HistoryErrorsStayRetryable(t *testing.T) {
 	}{
 		{name: "namespace not active", err: serviceerror.NewNamespaceNotActive("ns", "active", "standby"), wantType: nexus.HandlerErrorTypeUnavailable},
 		{name: "unavailable", err: serviceerror.NewUnavailable("busy"), wantType: nexus.HandlerErrorTypeUnavailable},
+		{name: "resource exhausted", err: serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_RPS_LIMIT, "slow down"), wantType: nexus.HandlerErrorTypeUnavailable},
+		{name: "deadline exceeded", err: serviceerror.NewDeadlineExceeded("late"), wantType: nexus.HandlerErrorTypeUnavailable},
 		{name: "internal", err: serviceerror.NewInternal("boom"), wantType: nexus.HandlerErrorTypeUnavailable},
-		{name: "invalid argument", err: serviceerror.NewInvalidArgument("odd"), wantType: nexus.HandlerErrorTypeUnavailable},
+		{name: "unimplemented during an upgrade", err: serviceerror.NewUnimplemented("unhandled Nexus operation outcome"), wantType: nexus.HandlerErrorTypeUnavailable},
+		{name: "invalid argument", err: serviceerror.NewInvalidArgument("odd"), wantType: nexus.HandlerErrorTypeBadRequest},
+		{name: "failed precondition", err: serviceerror.NewFailedPrecondition("no"), wantType: nexus.HandlerErrorTypeBadRequest},
 		{name: "closed operation", err: serviceerror.NewNotFound("operation not found"), wantType: nexus.HandlerErrorTypeNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
