@@ -167,6 +167,11 @@ var (
 		"RequestCancelNexusOperationExecution": func() any { return &workflowservice.RequestCancelNexusOperationExecutionResponse{} },
 		"StartNexusOperationExecution":         func() any { return &workflowservice.StartNexusOperationExecutionResponse{} },
 		"TerminateNexusOperationExecution":     func() any { return &workflowservice.TerminateNexusOperationExecutionResponse{} },
+
+		"AttachStreamCallback":   func() any { return &workflowservice.AttachStreamCallbackResponse{} },
+		"DetachStreamCallback":   func() any { return &workflowservice.DetachStreamCallbackResponse{} },
+		"NotifyStream":           func() any { return &workflowservice.NotifyStreamResponse{} },
+		"DescribeStreamNotifier": func() any { return &workflowservice.DescribeStreamNotifierResponse{} },
 	}
 )
 

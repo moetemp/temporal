@@ -11,6 +11,21 @@ import (
 	"go.temporal.io/server/common/backoff"
 )
 
+func (c *retryableClient) AttachStreamCallback(
+	ctx context.Context,
+	request *workflowservice.AttachStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.AttachStreamCallbackResponse, error) {
+	var resp *workflowservice.AttachStreamCallbackResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.AttachStreamCallback(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) CountActivityExecutions(
 	ctx context.Context,
 	request *workflowservice.CountActivityExecutionsRequest,
@@ -356,6 +371,21 @@ func (c *retryableClient) DescribeSchedule(
 	return resp, err
 }
 
+func (c *retryableClient) DescribeStreamNotifier(
+	ctx context.Context,
+	request *workflowservice.DescribeStreamNotifierRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.DescribeStreamNotifierResponse, error) {
+	var resp *workflowservice.DescribeStreamNotifierResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.DescribeStreamNotifier(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) DescribeTaskQueue(
 	ctx context.Context,
 	request *workflowservice.DescribeTaskQueueRequest,
@@ -440,6 +470,21 @@ func (c *retryableClient) DescribeWorkflowRule(
 	op := func(ctx context.Context) error {
 		var err error
 		resp, err = c.client.DescribeWorkflowRule(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
+func (c *retryableClient) DetachStreamCallback(
+	ctx context.Context,
+	request *workflowservice.DetachStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.DetachStreamCallbackResponse, error) {
+	var resp *workflowservice.DetachStreamCallbackResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.DetachStreamCallback(ctx, request, opts...)
 		return err
 	}
 	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
@@ -845,6 +890,21 @@ func (c *retryableClient) ListWorkflowRules(
 	op := func(ctx context.Context) error {
 		var err error
 		resp, err = c.client.ListWorkflowRules(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
+func (c *retryableClient) NotifyStream(
+	ctx context.Context,
+	request *workflowservice.NotifyStreamRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.NotifyStreamResponse, error) {
+	var resp *workflowservice.NotifyStreamResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.NotifyStream(ctx, request, opts...)
 		return err
 	}
 	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)

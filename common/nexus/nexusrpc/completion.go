@@ -197,7 +197,8 @@ type CompletionRequest struct {
 	Links []nexus.Link
 	// Parsed from request and set if State is failed or canceled.
 	Error *nexus.OperationError
-	// Extracted from request and set if State is succeeded.
+	// Extracted from request and set if State is succeeded or running. For running, it holds the
+	// progress body.
 	Result *nexus.LazyValue
 }
 
@@ -289,7 +290,7 @@ func (h *completionHTTPHandler) ServeHTTP(writer http.ResponseWriter, request *h
 		} else {
 			completion.Error = opErr
 		}
-	case nexus.OperationStateSucceeded:
+	case nexus.OperationStateSucceeded, nexus.OperationStateRunning:
 		completion.Result = nexus.NewLazyValue(
 			h.options.Serializer,
 			&nexus.Reader{

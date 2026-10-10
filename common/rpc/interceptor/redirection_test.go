@@ -223,6 +223,11 @@ func (s *redirectionInterceptorSuite) TestGlobalAPI() {
 		"RequestCancelNexusOperationExecution": {},
 		"StartNexusOperationExecution":         {},
 		"TerminateNexusOperationExecution":     {},
+
+		"AttachStreamCallback":   {},
+		"DetachStreamCallback":   {},
+		"NotifyStream":           {},
+		"DescribeStreamNotifier": {},
 	}, apis)
 }
 

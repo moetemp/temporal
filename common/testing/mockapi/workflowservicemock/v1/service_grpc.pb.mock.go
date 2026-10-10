@@ -42,6 +42,26 @@ func (m *MockWorkflowServiceClient) EXPECT() *MockWorkflowServiceClientMockRecor
 	return m.recorder
 }
 
+// AttachStreamCallback mocks base method.
+func (m *MockWorkflowServiceClient) AttachStreamCallback(ctx context.Context, in *workflowservice.AttachStreamCallbackRequest, opts ...grpc.CallOption) (*workflowservice.AttachStreamCallbackResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "AttachStreamCallback", varargs...)
+	ret0, _ := ret[0].(*workflowservice.AttachStreamCallbackResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AttachStreamCallback indicates an expected call of AttachStreamCallback.
+func (mr *MockWorkflowServiceClientMockRecorder) AttachStreamCallback(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachStreamCallback", reflect.TypeOf((*MockWorkflowServiceClient)(nil).AttachStreamCallback), varargs...)
+}
+
 // CountActivityExecutions mocks base method.
 func (m *MockWorkflowServiceClient) CountActivityExecutions(ctx context.Context, in *workflowservice.CountActivityExecutionsRequest, opts ...grpc.CallOption) (*workflowservice.CountActivityExecutionsResponse, error) {
 	m.ctrl.T.Helper()
@@ -502,6 +522,26 @@ func (mr *MockWorkflowServiceClientMockRecorder) DescribeSchedule(ctx, in any, o
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DescribeSchedule", reflect.TypeOf((*MockWorkflowServiceClient)(nil).DescribeSchedule), varargs...)
 }
 
+// DescribeStreamNotifier mocks base method.
+func (m *MockWorkflowServiceClient) DescribeStreamNotifier(ctx context.Context, in *workflowservice.DescribeStreamNotifierRequest, opts ...grpc.CallOption) (*workflowservice.DescribeStreamNotifierResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DescribeStreamNotifier", varargs...)
+	ret0, _ := ret[0].(*workflowservice.DescribeStreamNotifierResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DescribeStreamNotifier indicates an expected call of DescribeStreamNotifier.
+func (mr *MockWorkflowServiceClientMockRecorder) DescribeStreamNotifier(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DescribeStreamNotifier", reflect.TypeOf((*MockWorkflowServiceClient)(nil).DescribeStreamNotifier), varargs...)
+}
+
 // DescribeTaskQueue mocks base method.
 func (m *MockWorkflowServiceClient) DescribeTaskQueue(ctx context.Context, in *workflowservice.DescribeTaskQueueRequest, opts ...grpc.CallOption) (*workflowservice.DescribeTaskQueueResponse, error) {
 	m.ctrl.T.Helper()
@@ -620,6 +660,26 @@ func (mr *MockWorkflowServiceClientMockRecorder) DescribeWorkflowRule(ctx, in an
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]any{ctx, in}, opts...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DescribeWorkflowRule", reflect.TypeOf((*MockWorkflowServiceClient)(nil).DescribeWorkflowRule), varargs...)
+}
+
+// DetachStreamCallback mocks base method.
+func (m *MockWorkflowServiceClient) DetachStreamCallback(ctx context.Context, in *workflowservice.DetachStreamCallbackRequest, opts ...grpc.CallOption) (*workflowservice.DetachStreamCallbackResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DetachStreamCallback", varargs...)
+	ret0, _ := ret[0].(*workflowservice.DetachStreamCallbackResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DetachStreamCallback indicates an expected call of DetachStreamCallback.
+func (mr *MockWorkflowServiceClientMockRecorder) DetachStreamCallback(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DetachStreamCallback", reflect.TypeOf((*MockWorkflowServiceClient)(nil).DetachStreamCallback), varargs...)
 }
 
 // ExecuteMultiOperation mocks base method.
@@ -1160,6 +1220,26 @@ func (mr *MockWorkflowServiceClientMockRecorder) ListWorkflowRules(ctx, in any, 
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]any{ctx, in}, opts...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkflowRules", reflect.TypeOf((*MockWorkflowServiceClient)(nil).ListWorkflowRules), varargs...)
+}
+
+// NotifyStream mocks base method.
+func (m *MockWorkflowServiceClient) NotifyStream(ctx context.Context, in *workflowservice.NotifyStreamRequest, opts ...grpc.CallOption) (*workflowservice.NotifyStreamResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "NotifyStream", varargs...)
+	ret0, _ := ret[0].(*workflowservice.NotifyStreamResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// NotifyStream indicates an expected call of NotifyStream.
+func (mr *MockWorkflowServiceClientMockRecorder) NotifyStream(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NotifyStream", reflect.TypeOf((*MockWorkflowServiceClient)(nil).NotifyStream), varargs...)
 }
 
 // PatchSchedule mocks base method.

@@ -9,6 +9,16 @@ import (
 	"google.golang.org/grpc"
 )
 
+func (c *clientImpl) AttachStreamCallback(
+	ctx context.Context,
+	request *workflowservice.AttachStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.AttachStreamCallbackResponse, error) {
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return c.client.AttachStreamCallback(ctx, request, opts...)
+}
+
 func (c *clientImpl) CountActivityExecutions(
 	ctx context.Context,
 	request *workflowservice.CountActivityExecutionsRequest,
@@ -239,6 +249,16 @@ func (c *clientImpl) DescribeSchedule(
 	return c.client.DescribeSchedule(ctx, request, opts...)
 }
 
+func (c *clientImpl) DescribeStreamNotifier(
+	ctx context.Context,
+	request *workflowservice.DescribeStreamNotifierRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.DescribeStreamNotifierResponse, error) {
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return c.client.DescribeStreamNotifier(ctx, request, opts...)
+}
+
 func (c *clientImpl) DescribeTaskQueue(
 	ctx context.Context,
 	request *workflowservice.DescribeTaskQueueRequest,
@@ -297,6 +317,16 @@ func (c *clientImpl) DescribeWorkflowRule(
 	ctx, cancel := c.createContext(ctx)
 	defer cancel()
 	return c.client.DescribeWorkflowRule(ctx, request, opts...)
+}
+
+func (c *clientImpl) DetachStreamCallback(
+	ctx context.Context,
+	request *workflowservice.DetachStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.DetachStreamCallbackResponse, error) {
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return c.client.DetachStreamCallback(ctx, request, opts...)
 }
 
 func (c *clientImpl) ExecuteMultiOperation(
@@ -567,6 +597,16 @@ func (c *clientImpl) ListWorkflowRules(
 	ctx, cancel := c.createContext(ctx)
 	defer cancel()
 	return c.client.ListWorkflowRules(ctx, request, opts...)
+}
+
+func (c *clientImpl) NotifyStream(
+	ctx context.Context,
+	request *workflowservice.NotifyStreamRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.NotifyStreamResponse, error) {
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return c.client.NotifyStream(ctx, request, opts...)
 }
 
 func (c *clientImpl) PatchSchedule(

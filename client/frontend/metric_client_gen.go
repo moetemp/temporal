@@ -9,6 +9,20 @@ import (
 	"google.golang.org/grpc"
 )
 
+func (c *metricClient) AttachStreamCallback(
+	ctx context.Context,
+	request *workflowservice.AttachStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (_ *workflowservice.AttachStreamCallbackResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "FrontendClientAttachStreamCallback")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.AttachStreamCallback(ctx, request, opts...)
+}
+
 func (c *metricClient) CountActivityExecutions(
 	ctx context.Context,
 	request *workflowservice.CountActivityExecutionsRequest,
@@ -331,6 +345,20 @@ func (c *metricClient) DescribeSchedule(
 	return c.client.DescribeSchedule(ctx, request, opts...)
 }
 
+func (c *metricClient) DescribeStreamNotifier(
+	ctx context.Context,
+	request *workflowservice.DescribeStreamNotifierRequest,
+	opts ...grpc.CallOption,
+) (_ *workflowservice.DescribeStreamNotifierResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "FrontendClientDescribeStreamNotifier")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.DescribeStreamNotifier(ctx, request, opts...)
+}
+
 func (c *metricClient) DescribeTaskQueue(
 	ctx context.Context,
 	request *workflowservice.DescribeTaskQueueRequest,
@@ -413,6 +441,20 @@ func (c *metricClient) DescribeWorkflowRule(
 	}()
 
 	return c.client.DescribeWorkflowRule(ctx, request, opts...)
+}
+
+func (c *metricClient) DetachStreamCallback(
+	ctx context.Context,
+	request *workflowservice.DetachStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (_ *workflowservice.DetachStreamCallbackResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "FrontendClientDetachStreamCallback")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.DetachStreamCallback(ctx, request, opts...)
 }
 
 func (c *metricClient) ExecuteMultiOperation(
@@ -791,6 +833,20 @@ func (c *metricClient) ListWorkflowRules(
 	}()
 
 	return c.client.ListWorkflowRules(ctx, request, opts...)
+}
+
+func (c *metricClient) NotifyStream(
+	ctx context.Context,
+	request *workflowservice.NotifyStreamRequest,
+	opts ...grpc.CallOption,
+) (_ *workflowservice.NotifyStreamResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "FrontendClientNotifyStream")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.NotifyStream(ctx, request, opts...)
 }
 
 func (c *metricClient) PatchSchedule(

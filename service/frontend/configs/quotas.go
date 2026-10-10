@@ -95,6 +95,8 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/StartBatchOperation":              1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartActivityExecution":           1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartNexusOperationExecution":     1,
+		"/temporal.api.workflowservice.v1.WorkflowService/AttachStreamCallback":             1,
+		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStream":                     1,
 		DispatchNexusTaskByNamespaceAndTaskQueueAPIName:                                     1,
 		DispatchNexusTaskByEndpointAPIName:                                                  1,
 
@@ -151,6 +153,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/RequestCancelNexusOperationExecution":       2,
 		"/temporal.api.workflowservice.v1.WorkflowService/TerminateNexusOperationExecution":           2,
 		"/temporal.api.workflowservice.v1.WorkflowService/DeleteNexusOperationExecution":              2,
+		"/temporal.api.workflowservice.v1.WorkflowService/DetachStreamCallback":                       2,
 		"/temporal.api.workflowservice.v1.WorkflowService/PauseWorkflowExecution":                     2,
 		"/temporal.api.workflowservice.v1.WorkflowService/UnpauseWorkflowExecution":                   2,
 
@@ -170,6 +173,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeWorkerDeploymentVersion":              3,
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeWorkerDeployment":                     3,
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeNexusOperationExecution":              3,
+		"/temporal.api.workflowservice.v1.WorkflowService/DescribeStreamNotifier":                       3,
 		"/temporal.api.workflowservice.v1.WorkflowService/ValidateWorkerDeploymentVersionComputeConfig": 3,
 		"/temporal.api.workflowservice.v1.WorkflowService/ListWorkers":                                  3,
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeWorker":                               3,
