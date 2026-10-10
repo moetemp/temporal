@@ -7963,7 +7963,8 @@ func (ms *MutableStateImpl) closeTransactionHandleWorkflowTaskScheduling(
 		}
 	}
 
-	return nil
+	// Nexus operation progress writes no event, so it schedules the task that carries it.
+	return ms.scheduleWorkflowTaskForNexusProgress()
 }
 
 func (ms *MutableStateImpl) closeTransactionHandleSpeculativeWorkflowTask(

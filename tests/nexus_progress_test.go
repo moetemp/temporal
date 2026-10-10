@@ -2,15 +2,17 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
-	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
+	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -40,8 +42,8 @@ func postNexusProgress(ctx context.Context, callbackURL, callbackToken, body str
 
 // TestNexusOperationProgressIntake drives progress deliveries through the completion endpoint.
 // Every refusal is a 400, which tells the handler to stop sending progress; an accepted delivery
-// changes nothing in the caller's History; progress before the start response is dropped; and a
-// closed operation answers 404.
+// rides the next Workflow Task scheduled event; progress before the start response is dropped; and
+// a closed operation answers 404.
 func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled bool) {
 	for _, enabled := range []bool{false, true} {
 		env := s.newTestEnv(chasmEnabled, testcore.WithDynamicConfig(chasmnexus.EnableProgress, enabled))
@@ -126,10 +128,16 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 				s.Equal(http.StatusBadRequest, progress(body), body)
 			}
 			s.Equal(http.StatusOK, progress(`{"position": "cursor-2", "counter": "2", "metadata": {"topic": "t"}}`))
-			// Nothing folds progress yet, so an accepted delivery leaves History as it was.
-			require.Never(s.T(), func() bool {
-				return len(env.GetHistory(env.Namespace().String(), wfExec)) != len(started)
-			}, 300*time.Millisecond, 50*time.Millisecond)
+			// An accepted delivery rides the next Workflow Task's scheduled event.
+			scheduledEventID := s.RequireHistoryEvent(started, enumspb.EVENT_TYPE_NEXUS_OPERATION_SCHEDULED).GetEventId()
+			s.Await(func(s *NexusWorkflowTestSuite) {
+				carried := carriedNexusProgress(env.GetHistory(env.Namespace().String(), wfExec)[len(started):])
+				s.Len(carried, 1)
+				s.Equal(scheduledEventID, carried[0].GetScheduledEventId())
+				s.Equal(int64(2), carried[0].GetCounter())
+				s.Equal([]byte("cursor-2"), carried[0].GetPosition())
+				s.Equal([]byte(`"t"`), carried[0].GetMetadata()["topic"].GetData())
+			}, 10*time.Second, 50*time.Millisecond)
 		}
 
 		s.NoError(s.sendNexusCompletionRequest(ctx, callbackURL, nexusrpc.CompleteOperationOptions{
@@ -144,4 +152,166 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 		}
 		w.Stop()
 	}
+}
+
+// carriedNexusProgress lists the Nexus operation progress the scheduled events in hist carry.
+func carriedNexusProgress(hist []*historypb.HistoryEvent) []*nexuspb.NexusOperationProgress {
+	var carried []*nexuspb.NexusOperationProgress
+	for _, event := range hist {
+		carried = append(carried, event.GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()...)
+	}
+	return carried
+}
+
+// TestNexusOperationProgress checks how progress reaches a CHASM caller Workflow: on Workflow Task
+// scheduled events with no event of its own, folded into a scheduled task that has not started,
+// dropped after completion, and replayed. The HSM caller refuses progress.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
+	env := s.newTestEnv(chasmEnabled, testcore.WithDynamicConfig(chasmnexus.EnableProgress, true))
+	ctx := s.Context()
+	taskQueue := testcore.RandomizeStr(s.T().Name())
+
+	var callbackToken, callbackURL string
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			callbackToken = options.CallbackHeader.Get(commonnexus.CallbackTokenHeader)
+			callbackURL = options.CallbackURL
+			return &nexus.HandlerStartOperationResultAsync{OperationToken: "test"}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+
+	callerWF := func(ctx workflow.Context) (string, error) {
+		c := workflow.NewNexusClient(endpointName, "service")
+		var result string
+		if err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).Get(ctx, &result); err != nil {
+			return "", err
+		}
+		workflow.GetSignalChannel(ctx, "finish").Receive(ctx, nil)
+		return result, nil
+	}
+	run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
+	s.NoError(err)
+	newWorker := func() worker.Worker {
+		w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
+		w.RegisterWorkflow(callerWF)
+		s.NoError(w.Start())
+		return w
+	}
+	w := newWorker()
+
+	wfExec := &commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()}
+	history := func() []*historypb.HistoryEvent {
+		return env.GetHistory(env.Namespace().String(), wfExec)
+	}
+	// Idle means the Workflow is blocked on the operation or the Signal with no task in flight.
+	waitIdle := func(check func(s *NexusWorkflowTestSuite, hist []*historypb.HistoryEvent)) []*historypb.HistoryEvent {
+		var hist []*historypb.HistoryEvent
+		s.Await(func(s *NexusWorkflowTestSuite) {
+			desc, err := env.SdkClient().DescribeWorkflowExecution(ctx, run.GetID(), run.GetRunID())
+			s.NoError(err)
+			s.Nil(desc.GetPendingWorkflowTask())
+			hist = history()
+			s.Equal(enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED, hist[len(hist)-1].GetEventType())
+			check(s, hist)
+		}, 10*time.Second, 50*time.Millisecond)
+		return hist
+	}
+	progress := func(counter int) int {
+		status, err := postNexusProgress(ctx, callbackURL, callbackToken, fmt.Sprintf(`{"position": "p%d", "counter": %d}`, counter, counter))
+		s.NoError(err)
+		return status
+	}
+	onlyWorkflowTaskEvents := func(hist []*historypb.HistoryEvent) {
+		for _, event := range hist {
+			s.Contains([]enumspb.EventType{
+				enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED,
+				enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED,
+				enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED,
+			}, event.GetEventType(), "progress must add no event of its own")
+		}
+	}
+
+	beforeBurst := waitIdle(func(s *NexusWorkflowTestSuite, hist []*historypb.HistoryEvent) {
+		s.RequireHistoryEvent(hist, enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED)
+	})
+	if !chasmEnabled {
+		s.Equal(http.StatusBadRequest, progress(1), "an HSM caller refuses progress, so the handler stops sending it")
+		w.Stop()
+		return
+	}
+	scheduledEventID := s.scheduledEventID(beforeBurst)
+
+	// With no worker polling, the task the first delivery schedules stays unstarted, and later
+	// deliveries fold into it instead of asking for tasks of their own.
+	w.Stop()
+	s.Equal(http.StatusOK, progress(1))
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		s.Len(carriedNexusProgress(history()[len(beforeBurst):]), 1)
+	}, 10*time.Second, 50*time.Millisecond)
+	s.Equal(http.StatusOK, progress(2))
+	s.Equal(http.StatusOK, progress(3))
+	s.Equal(http.StatusOK, progress(2), "a stale counter is accepted and dropped")
+	w = newWorker()
+	afterFold := waitIdle(func(s *NexusWorkflowTestSuite, hist []*historypb.HistoryEvent) {
+		s.Greater(len(hist), len(beforeBurst))
+	})
+	folded := afterFold[len(beforeBurst):]
+	onlyWorkflowTaskEvents(folded)
+	carried := carriedNexusProgress(folded)
+	s.Len(carried, 1, "one task carries the whole burst")
+	s.Equal(scheduledEventID, carried[0].GetScheduledEventId())
+	s.Equal(int64(1), carried[0].GetCounter(), "the task that was already scheduled carries what it had")
+	var scheduledTasks int
+	for _, event := range folded {
+		if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
+			scheduledTasks++
+		}
+	}
+	s.Equal(1, scheduledTasks)
+
+	// After that task started, newer progress needs a task of its own.
+	s.Equal(http.StatusOK, progress(4))
+	afterNext := waitIdle(func(s *NexusWorkflowTestSuite, hist []*historypb.HistoryEvent) {
+		s.Len(carriedNexusProgress(hist[len(afterFold):]), 1)
+	})
+	onlyWorkflowTaskEvents(afterNext[len(afterFold):])
+	s.Equal(int64(4), carriedNexusProgress(afterNext[len(afterFold):])[0].GetCounter())
+	s.Equal(http.StatusOK, progress(3), "a counter below a folded one is stale")
+
+	s.NoError(s.sendNexusCompletionRequest(ctx, callbackURL, nexusrpc.CompleteOperationOptions{
+		Result: testcore.MustToPayload(s.T(), "result"),
+		Header: nexus.Header{commonnexus.CallbackTokenHeader: callbackToken},
+	}))
+	afterCompletion := waitIdle(func(s *NexusWorkflowTestSuite, hist []*historypb.HistoryEvent) {
+		s.RequireHistoryEvent(hist, enumspb.EVENT_TYPE_NEXUS_OPERATION_COMPLETED)
+	})
+	s.Equal(http.StatusNotFound, progress(5), "the operation is gone with its completion")
+	s.Len(history(), len(afterCompletion), "progress after completion must not touch the Workflow")
+
+	s.NoError(env.SdkClient().SignalWorkflow(ctx, run.GetID(), run.GetRunID(), "finish", nil))
+	var result string
+	s.NoError(run.Get(ctx, &result))
+	s.Equal("result", result)
+	w.Stop()
+
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(callerWF)
+	s.NoError(replayer.ReplayWorkflowHistory(nil, &historypb.History{Events: history()}))
+
+	resp, err := env.FrontendClient().GetWorkflowExecutionHistory(ctx, &workflowservice.GetWorkflowExecutionHistoryRequest{
+		Namespace: env.Namespace().String(),
+		Execution: wfExec,
+	})
+	s.NoError(err)
+	s.Len(carriedNexusProgress(resp.GetHistory().GetEvents()), 2, "the progress is part of History")
+}
+
+func (s *NexusWorkflowTestSuite) scheduledEventID(hist []*historypb.HistoryEvent) int64 {
+	return s.RequireHistoryEvent(hist, enumspb.EVENT_TYPE_NEXUS_OPERATION_SCHEDULED).GetEventId()
 }

@@ -104,8 +104,11 @@ type CompleteOperationOptions struct {
 	// Error to send with the completion. If set, the completion is unsuccessful.
 	Error *nexus.OperationError
 	// Result to deliver with the completion. Uses the client's serializer to serialize the result into the request body.
-	// Only used for successful completions.
+	// Only used for successful completions and progress.
 	Result any
+	// Progress makes the request a progress delivery rather than a completion: the state is running and Result holds
+	// the progress body. The operation stays open.
+	Progress bool
 }
 
 // nolint:revive // This method is long but it's more readable to keep the logic in one place since it's all related to
@@ -154,7 +157,11 @@ func (c CompleteOperationOptions) applyToHTTPRequest(cc *CompletionHTTPClient, r
 			addContentHeaderToHTTPHeader(reader.Header, request.Header)
 		}
 		request.Body = reader.ReadCloser
-		request.Header.Set(headerOperationState, string(nexus.OperationStateSucceeded))
+		state := nexus.OperationStateSucceeded
+		if c.Progress {
+			state = nexus.OperationStateRunning
+		}
+		request.Header.Set(headerOperationState, string(state))
 	}
 
 	if c.Header != nil {

@@ -45,6 +45,10 @@ type Workflow struct {
 
 	// Updates indexed by update ID, used to store the update components.
 	Updates chasm.Map[string, *WorkflowUpdate]
+
+	// NexusProgress indexes the Nexus operations whose progress waits for, or rides, a Workflow
+	// Task, so a transaction can tell without loading every operation.
+	NexusProgress chasm.Field[*chasmworkflowpb.NexusProgressState]
 }
 
 func NewWorkflow(

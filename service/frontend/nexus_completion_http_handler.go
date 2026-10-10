@@ -509,9 +509,13 @@ func (h *nexusCompletionHandler) forwardCompleteOperation(ctx context.Context, r
 			Links:          r.Links,
 		}
 	case nexus.OperationStateRunning:
-		// A 400 would turn progress off for the callback. Progress is not forwarded, and the next
-		// delivery after a failover reaches the active cluster.
-		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeUnavailable, "operation progress is not forwarded")
+		completion = nexusrpc.CompleteOperationOptions{
+			Result:         r.Result.Reader,
+			Progress:       true,
+			OperationToken: r.OperationToken,
+			StartTime:      r.StartTime,
+			Links:          r.Links,
+		}
 	default:
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid operation state: %q", r.State)
 	}

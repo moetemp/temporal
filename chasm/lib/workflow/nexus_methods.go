@@ -34,8 +34,9 @@ func (w *Workflow) addNexusOperation(
 }
 
 // removeNexusOperation removes a Nexus operation from the workflow.
-func (w *Workflow) removeNexusOperation(key int64) {
+func (w *Workflow) removeNexusOperation(ctx chasm.MutableContext, key int64) {
 	delete(w.Operations, key)
+	w.forgetNexusProgress(ctx, key)
 }
 
 // pendingNexusOperationCount returns the number of pending Nexus operations in the workflow.

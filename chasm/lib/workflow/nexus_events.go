@@ -230,7 +230,7 @@ func (d CompletedEventDefinition) Apply(ctx chasm.MutableContext, wf *Workflow, 
 	}); err != nil {
 		return err
 	}
-	wf.removeNexusOperation(attrs.GetScheduledEventId())
+	wf.removeNexusOperation(ctx, attrs.GetScheduledEventId())
 	return nil
 }
 
@@ -269,7 +269,7 @@ func (d FailedEventDefinition) Apply(ctx chasm.MutableContext, wf *Workflow, eve
 	}); err != nil {
 		return err
 	}
-	wf.removeNexusOperation(attrs.GetScheduledEventId())
+	wf.removeNexusOperation(ctx, attrs.GetScheduledEventId())
 	return nil
 }
 
@@ -308,7 +308,7 @@ func (d CanceledEventDefinition) Apply(ctx chasm.MutableContext, wf *Workflow, e
 	}); err != nil {
 		return err
 	}
-	wf.removeNexusOperation(attrs.GetScheduledEventId())
+	wf.removeNexusOperation(ctx, attrs.GetScheduledEventId())
 	return nil
 }
 
@@ -344,7 +344,7 @@ func (d TimedOutEventDefinition) Apply(ctx chasm.MutableContext, wf *Workflow, e
 	}); err != nil {
 		return err
 	}
-	wf.removeNexusOperation(attrs.GetScheduledEventId())
+	wf.removeNexusOperation(ctx, attrs.GetScheduledEventId())
 	return nil
 }
 

@@ -738,7 +738,7 @@ func TestHandleCancelCommand(t *testing.T) {
 		event := tcx.history.Events[0]
 
 		// TODO: Complete the operation using CHASM equivalent of CompletedEventDefinition.
-		tcx.wf.removeNexusOperation(event.EventId)
+		tcx.wf.removeNexusOperation(tcx.chasmCtx, event.EventId)
 
 		// The operation is no longer in the CHASM tree, so the handler defers to the HSM command handler
 		// via ErrCommandTargetNotFound.
@@ -771,7 +771,7 @@ func TestHandleCancelCommand(t *testing.T) {
 		event := tcx.history.Events[0]
 
 		// TODO: Complete the operation using CHASM equivalent of CompletedEventDefinition.
-		tcx.wf.removeNexusOperation(event.EventId)
+		tcx.wf.removeNexusOperation(tcx.chasmCtx, event.EventId)
 
 		// Try to cancel - should succeed because there's a buffered completion.
 		err = tcx.cancelHandler(tcx.chasmCtx, tcx.wf, commandValidator{maxPayloadSize: 1}, &commandpb.Command{

@@ -267,6 +267,7 @@ func (m *workflowTaskStateMachine) ApplyWorkflowTaskTimedOutEvent(timeoutType en
 func (m *workflowTaskStateMachine) AddWorkflowTaskScheduleToStartTimeoutEvent(
 	workflowTask *historyi.WorkflowTaskInfo,
 ) (*historypb.HistoryEvent, error) {
+	m.ms.clearScheduledNexusProgress()
 	opTag := tag.WorkflowActionWorkflowTaskTimedOut
 	if m.ms.executionInfo.WorkflowTaskScheduledEventId != workflowTask.ScheduledEventID || m.ms.executionInfo.WorkflowTaskStartedEventId > 0 {
 		m.ms.logger.Warn(mutableStateInvalidHistoryActionMsg, opTag,
@@ -367,6 +368,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 			attempt,
 			scheduleTime,
 		)
+		m.ms.attachNexusProgress(scheduledEvent)
 		scheduledEventID = scheduledEvent.GetEventId()
 	} else {
 		// WorkflowTaskScheduledEvent will be created later.
@@ -584,6 +586,8 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskStartedEvent(
 			workflowTask.Attempt,
 			startTime,
 		)
+		// The worker has not seen this task yet, so its scheduled event can carry what is pending.
+		m.ms.attachNexusProgress(scheduledEvent)
 		scheduledEventID = scheduledEvent.GetEventId()
 	}
 
@@ -625,6 +629,10 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskStartedEvent(
 	}
 
 	m.emitWorkflowTaskAttemptStats(workflowTask.Attempt)
+
+	// The task is reading from here on, so newer Nexus operation progress may not reach it and
+	// goes to the next task instead.
+	m.ms.clearScheduledNexusProgress()
 
 	// TODO merge active & passive task generation
 	if err = m.ms.taskGenerator.GenerateStartWorkflowTaskTasks(
@@ -672,6 +680,7 @@ func (m *workflowTaskStateMachine) processBuildIdRedirectInfo(
 			workflowTask.Attempt,
 			workflowTask.ScheduledTime,
 		)
+		m.ms.attachNexusProgress(scheduledEvent)
 		newWorkflowTask = m.getWorkflowTaskInfo()
 		newWorkflowTask.ScheduledEventID = scheduledEvent.GetEventId()
 		// Using 1 as the attempt in MS. it's needed so that the new WFT is not considered transient.
@@ -899,6 +908,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskFailedEvent(
 	newRunID string,
 	forkEventVersion int64,
 ) (*historypb.HistoryEvent, error) {
+	m.ms.clearScheduledNexusProgress()
 
 	// IMPORTANT: returned event can be nil under some circumstances. Specifically, if WT is transient.
 
@@ -974,6 +984,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskFailedEvent(
 func (m *workflowTaskStateMachine) AddWorkflowTaskTimedOutEvent(
 	workflowTask *historyi.WorkflowTaskInfo,
 ) (*historypb.HistoryEvent, error) {
+	m.ms.clearScheduledNexusProgress()
 
 	if workflowTask.Type == enumsspb.WORKFLOW_TASK_TYPE_SPECULATIVE {
 		m.ms.RemoveSpeculativeWorkflowTaskTimeoutTask()
@@ -1553,6 +1564,11 @@ func (m *workflowTaskStateMachine) convertSpeculativeWorkflowTaskToNormal() erro
 
 	if scheduledEvent.EventId != wt.ScheduledEventID {
 		return serviceerror.NewInternalf("it could be a bug, scheduled event Id: %d for normal workflow task doesn't match the one from speculative workflow task: %d", scheduledEvent.EventId, wt.ScheduledEventID)
+	}
+	// A task a worker already started ran without this event, so only one it has not seen yet may
+	// carry progress.
+	if wt.StartedEventID == common.EmptyEventID {
+		m.ms.attachNexusProgress(scheduledEvent)
 	}
 
 	if wtAlreadyStarted := wt.StartedEventID != common.EmptyEventID; wtAlreadyStarted {

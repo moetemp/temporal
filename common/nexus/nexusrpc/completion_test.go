@@ -3,6 +3,7 @@ package nexusrpc_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/url"
 	"testing"
 	"time"
@@ -257,4 +258,38 @@ func TestBadRequestCompletion(t *testing.T) {
 	var handlerErr *nexus.HandlerError
 	require.ErrorAs(t, err, &handlerErr)
 	require.Equal(t, nexus.HandlerErrorTypeBadRequest, handlerErr.Type)
+}
+
+type progressHandler struct {
+	got  chan *nexusrpc.CompletionRequest
+	body chan []byte
+}
+
+func (h *progressHandler) CompleteOperation(ctx context.Context, completion *nexusrpc.CompletionRequest) error {
+	body, err := io.ReadAll(completion.Result.Reader)
+	if err != nil {
+		return err
+	}
+	h.got <- completion
+	h.body <- body
+	return nil
+}
+
+func TestProgressDelivery(t *testing.T) {
+	h := &progressHandler{got: make(chan *nexusrpc.CompletionRequest, 1), body: make(chan []byte, 1)}
+	ctx, callbackURL, teardown := setupForCompletion(t, h, nil, nil)
+	defer teardown()
+
+	c := nexusrpc.NewCompletionHTTPClient(nexusrpc.CompletionHTTPClientOptions{})
+	err := c.CompleteOperation(ctx, callbackURL, nexusrpc.CompleteOperationOptions{
+		Result:         &nexus.Content{Header: nexus.Header{"type": "application/json"}, Data: []byte(`{"counter": 2}`)},
+		Progress:       true,
+		OperationToken: "test-operation-token",
+	})
+	require.NoError(t, err)
+	completion := <-h.got
+	require.Equal(t, nexus.OperationStateRunning, completion.State)
+	require.Equal(t, "test-operation-token", completion.OperationToken)
+	require.True(t, completion.CloseTime.IsZero(), "progress leaves the operation open")
+	require.JSONEq(t, `{"counter": 2}`, string(<-h.body))
 }

@@ -25,3 +25,13 @@ message NexusCancellationParentData {
 message IncomingSignalData {
   int64 event_id = 1;
 }
+
+// The Workflow's Nexus operation progress, by the scheduled event ID of each operation. Kept on the
+// Workflow so a transaction learns whether any progress waits without loading every operation.
+message NexusProgressState {
+  // Operations whose progress waits for the next Workflow Task scheduled event.
+  repeated int64 pending = 1;
+  // Operations whose latest progress rides a scheduled Workflow Task that has not started yet.
+  // Newer progress for one of them folds into that task, since the read it triggers sees it.
+  repeated int64 scheduled = 2;
+}
