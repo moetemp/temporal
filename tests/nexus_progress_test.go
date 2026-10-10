@@ -731,3 +731,139 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressRidesSpeculativeTasks
 func (s *NexusWorkflowTestSuite) scheduledEventID(hist []*historypb.HistoryEvent) int64 {
 	return s.RequireHistoryEvent(hist, enumspb.EVENT_TYPE_NEXUS_OPERATION_SCHEDULED).GetEventId()
 }
+
+// rawProgressCaller drives a caller Workflow with raw Workflow Task polls, so a test controls
+// when each task starts and how it ends.
+type rawProgressCaller struct {
+	s             *NexusWorkflowTestSuite
+	env           *NexusTestEnv
+	ctx           context.Context
+	taskQueue     string
+	run           client.WorkflowRun
+	callbackToken string
+	callbackURL   string
+}
+
+func (s *NexusWorkflowTestSuite) newRawProgressCaller(
+	opts ...testcore.TestOption,
+) *rawProgressCaller {
+	opts = append(opts, testcore.WithDynamicConfig(chasmnexus.EnableProgress, true))
+	c := &rawProgressCaller{
+		s:         s,
+		env:       s.newTestEnv(true, opts...),
+		ctx:       s.Context(),
+		taskQueue: testcore.RandomizeStr(s.T().Name()),
+	}
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			c.callbackToken = options.CallbackHeader.Get(commonnexus.CallbackTokenHeader)
+			c.callbackURL = options.CallbackURL
+			return &nexus.HandlerStartOperationResultAsync{OperationToken: "test"}, nil
+		},
+	}
+	endpointName := c.env.createRandomExternalNexusServer(c.ctx, s.T(), h)
+	run, err := c.env.SdkClient().ExecuteWorkflow(
+		c.ctx, client.StartWorkflowOptions{TaskQueue: c.taskQueue}, "workflow")
+	s.NoError(err)
+	c.run = run
+	c.respond(c.poll(), &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
+		Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
+			ScheduleNexusOperationCommandAttributes: &commandpb.ScheduleNexusOperationCommandAttributes{
+				Endpoint:  endpointName,
+				Service:   "service",
+				Operation: "operation",
+				Input:     testcore.MustToPayload(s.T(), "input"),
+			},
+		},
+	})
+	started := c.poll()
+	s.RequireHistoryEvent(started.GetHistory().GetEvents(), enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED)
+	c.respond(started)
+	return c
+}
+
+func (c *rawProgressCaller) poll() *workflowservice.PollWorkflowTaskQueueResponse {
+	resp, err := c.env.FrontendClient().PollWorkflowTaskQueue(c.ctx, &workflowservice.PollWorkflowTaskQueueRequest{
+		Namespace: c.env.Namespace().String(),
+		TaskQueue: &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
+		Identity:  "test",
+	})
+	c.s.NoError(err)
+	c.s.NotEmpty(resp.GetTaskToken())
+	return resp
+}
+
+func (c *rawProgressCaller) respond(
+	task *workflowservice.PollWorkflowTaskQueueResponse,
+	commands ...*commandpb.Command,
+) {
+	_, err := c.env.FrontendClient().RespondWorkflowTaskCompleted(c.ctx, &workflowservice.RespondWorkflowTaskCompletedRequest{
+		Namespace: c.env.Namespace().String(),
+		Identity:  "test",
+		TaskToken: task.GetTaskToken(),
+		Commands:  commands,
+	})
+	c.s.NoError(err)
+}
+
+func (c *rawProgressCaller) complete(task *workflowservice.PollWorkflowTaskQueueResponse) {
+	c.respond(task, &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
+			CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{},
+		},
+	})
+	c.s.NoError(c.run.Get(c.ctx, nil))
+}
+
+func (c *rawProgressCaller) postProgress(counter int) {
+	body := fmt.Sprintf(`{"position": "p%d", "counter": %d}`, counter, counter)
+	status, err := postNexusProgress(c.ctx, c.callbackURL, c.callbackToken, body)
+	c.s.NoError(err)
+	c.s.Equal(http.StatusOK, status)
+}
+
+// lastScheduled is the scheduled event of the task a poll answered.
+func lastScheduled(task *workflowservice.PollWorkflowTaskQueueResponse) *historypb.HistoryEvent {
+	events := task.GetHistory().GetEvents()
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
+			return events[i]
+		}
+	}
+	return nil
+}
+
+// TestNexusOperationProgressMinInterval checks that progress schedules a task of its own no sooner
+// than nexusoperation.progressMinInterval after the last task that carried progress, so a long
+// stream can't fill the caller's History.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgressMinInterval(chasmEnabled bool) {
+	if !chasmEnabled {
+		// An HSM caller refuses progress; TestNexusOperationProgress covers it.
+		return
+	}
+	const interval = 2 * time.Second
+	c := s.newRawProgressCaller(testcore.WithDynamicConfig(chasmnexus.ProgressMinInterval, interval))
+
+	c.postProgress(1)
+	first := c.poll()
+	s.Equal(int64(1), lastScheduled(first).GetWorkflowTaskScheduledEventAttributes().
+		GetNexusOperationProgress()[0].GetCounter())
+	c.respond(first)
+
+	c.postProgress(2)
+	c.postProgress(3)
+	second := c.poll()
+	carried := lastScheduled(second).GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()
+	s.Len(carried, 1)
+	s.Equal(int64(3), carried[0].GetCounter(), "progress that waited folds into one task")
+	gap := lastScheduled(second).GetEventTime().AsTime().Sub(lastScheduled(first).GetEventTime().AsTime())
+	s.GreaterOrEqual(gap, interval, "progress waits out the interval since the last task that carried it")
+	c.complete(second)
+}

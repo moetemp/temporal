@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	nexuspb "go.temporal.io/api/nexus/v1"
@@ -95,16 +96,53 @@ func TestNexusProgressIndex(t *testing.T) {
 		require.Equal(t, map[int64]int64{9: 2}, counters(wf.TakeNexusProgress(ctx)), "a closed operation's folded progress is gone")
 		wf.removeNexusOperation(ctx, 9)
 		require.False(t, wf.HasScheduledNexusProgress(ctx))
-		_, ok := wf.NexusProgress.TryGet(ctx)
-		require.False(t, ok, "an empty index is not stored")
+		index, ok := wf.NexusProgress.TryGet(ctx)
+		require.True(t, ok)
+		require.Empty(t, index.GetPending())
+		require.Empty(t, index.GetScheduled())
+		require.Empty(t, index.GetFolded())
+		require.NotNil(t, index.GetLastCarriedTime(), "only the last carried time stays, for the rate limit")
 	})
 
-	t.Run("DropsPendingProgressAsALivelockGuard", func(t *testing.T) {
+	t.Run("StoresNoIndexWithoutProgress", func(t *testing.T) {
 		ctx := &chasm.MockMutableContext{}
 		wf := newWorkflowWithOperations(t, ctx, 5)
-		deliver(t, ctx, wf, 5, 1)
-		wf.DropPendingNexusProgress(ctx)
-		require.False(t, wf.HasPendingNexusProgress(ctx))
+		wf.ClearScheduledNexusProgress(ctx)
 		require.Empty(t, wf.TakeNexusProgress(ctx))
+		_, ok := wf.NexusProgress.TryGet(ctx)
+		require.False(t, ok)
+	})
+
+	t.Run("HoldsProgressUntilTheIntervalSinceTheLastCarry", func(t *testing.T) {
+		now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+		ctx := &chasm.MockMutableContext{MockContext: chasm.MockContext{
+			HandleNow: func(chasm.Component) time.Time { return now },
+		}}
+		wf := newWorkflowWithOperations(t, ctx, 5)
+		require.True(t, wf.NexusProgressReadyAt(ctx, time.Second).IsZero(), "nothing carried yet")
+		deliver(t, ctx, wf, 5, 1)
+		require.Len(t, wf.TakeNexusProgress(ctx), 1)
+		wf.ClearScheduledNexusProgress(ctx)
+		readyAt := wf.NexusProgressReadyAt(ctx, time.Second)
+		require.Equal(t, now.Add(time.Second), readyAt)
+
+		deliver(t, ctx, wf, 5, 2)
+		wf.HoldNexusProgress(ctx, readyAt)
+		wf.HoldNexusProgress(ctx, readyAt)
+		require.Len(t, ctx.Tasks, 1, "one armed release covers the same deadline")
+		require.Equal(t, readyAt, ctx.Tasks[0].Attributes.ScheduledTime)
+		require.True(t, wf.nexusProgressHeld(ctx))
+		require.True(t, wf.HasPendingNexusProgress(ctx), "held progress still rides any other task")
+
+		wf.releaseNexusProgress(ctx)
+		require.False(t, wf.nexusProgressHeld(ctx))
+		require.True(t, wf.HasPendingNexusProgress(ctx))
+
+		wf.HoldNexusProgress(ctx, readyAt)
+		require.Len(t, ctx.Tasks, 2, "a released hold arms again")
+		now = now.Add(time.Second)
+		require.Len(t, wf.TakeNexusProgress(ctx), 1)
+		require.False(t, wf.nexusProgressHeld(ctx), "a task that takes the progress ends the hold")
+		require.Equal(t, now.Add(time.Second), wf.NexusProgressReadyAt(ctx, time.Second))
 	})
 }
