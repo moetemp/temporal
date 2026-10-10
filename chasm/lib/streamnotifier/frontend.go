@@ -65,20 +65,28 @@ func (h *frontendHandler) resolve(namespaceName string, ref *streampb.StreamRefe
 	if !h.config.ChasmEnabled(namespaceName) {
 		return "", "", serviceerror.NewUnimplemented("the stream notifier requires CHASM, which is not enabled for this namespace")
 	}
-	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW")
-	}
-	if ref.GetWorkflowId() == "" {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
-	}
-	if ref.GetTopic() == "" {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is required")
+	if err := ValidateReference(ref); err != nil {
+		return "", "", err
 	}
 	id, err := h.namespaceRegistry.GetNamespaceID(namespace.Name(namespaceName))
 	if err != nil {
 		return "", "", err
 	}
 	return id.String(), BusinessID(ref), nil
+}
+
+// ValidateReference rejects a stream reference the notifier cannot key a stream by.
+func ValidateReference(ref *streampb.StreamReference) error {
+	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
+		return serviceerror.NewInvalidArgument("stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW")
+	}
+	if ref.GetWorkflowId() == "" {
+		return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
+	}
+	if ref.GetTopic() == "" {
+		return serviceerror.NewInvalidArgument("stream_ref.topic is required")
+	}
+	return nil
 }
 
 func (h *frontendHandler) AttachStreamCallback(

@@ -6,10 +6,12 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
+	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/api/workflowservice/v1/workflowservicenexus"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/searchattribute"
@@ -17,10 +19,13 @@ import (
 
 var ErrSignalWithStartOperationDisabled = serviceerror.NewUnimplemented("SignalWithStart operation is disabled")
 
+var errStreamNotifierUnavailable = serviceerror.NewUnimplemented("the stream notifier is not served by this host")
+
 type workflowServiceNexusHandler struct {
 	config            Config
 	namespaceRegistry namespace.Registry
 	historyHandler    historyservice.HistoryServiceServer
+	streamNotifier    streamnotifier.SystemNexusHandler
 }
 
 // signalWithStartWorkflowExecution implements the SignalWithStartWorkflowExecution Nexus operation.
@@ -57,19 +62,95 @@ func (h *workflowServiceNexusHandler) signalWithStartWorkflowExecution(
 	}, nil
 }
 
+func (h *workflowServiceNexusHandler) attachStreamCallback(
+	ctx context.Context,
+	req *workflowservice.AttachStreamCallbackRequest,
+	_ nexus.StartOperationOptions,
+) (*workflowservice.AttachStreamCallbackResponse, error) {
+	if h.streamNotifier == nil {
+		return nil, errStreamNotifierUnavailable
+	}
+	return h.streamNotifier.AttachStreamCallback(ctx, req)
+}
+
+func (h *workflowServiceNexusHandler) detachStreamCallback(
+	ctx context.Context,
+	req *workflowservice.DetachStreamCallbackRequest,
+	_ nexus.StartOperationOptions,
+) (*workflowservice.DetachStreamCallbackResponse, error) {
+	if h.streamNotifier == nil {
+		return nil, errStreamNotifierUnavailable
+	}
+	return h.streamNotifier.DetachStreamCallback(ctx, req)
+}
+
+func (h *workflowServiceNexusHandler) notifyStream(
+	ctx context.Context,
+	req *workflowservice.NotifyStreamRequest,
+	_ nexus.StartOperationOptions,
+) (*workflowservice.NotifyStreamResponse, error) {
+	if h.streamNotifier == nil {
+		return nil, errStreamNotifierUnavailable
+	}
+	return h.streamNotifier.NotifyStream(ctx, req)
+}
+
 func mustNewWorkflowServiceNexusHandler(
 	handler *workflowServiceNexusHandler,
 ) *nexus.Service {
-	svc := nexus.NewService(workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService.ServiceName)
+	ops := workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService
+	svc := nexus.NewService(ops.ServiceName)
 	svc.MustRegister(nexus.NewSyncOperation(
-		workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService.SignalWithStartWorkflowExecution.Name(),
+		ops.SignalWithStartWorkflowExecution.Name(),
 		handler.signalWithStartWorkflowExecution,
 	))
+	svc.MustRegister(nexus.NewSyncOperation(ops.AttachStreamCallback.Name(), handler.attachStreamCallback))
+	svc.MustRegister(nexus.NewSyncOperation(ops.DetachStreamCallback.Name(), handler.detachStreamCallback))
+	svc.MustRegister(nexus.NewSyncOperation(ops.NotifyStream.Name(), handler.notifyStream))
 	return svc
 }
 
 func (h *workflowServiceNexusHandler) setHistoryHandler(handler historyservice.HistoryServiceServer) {
 	h.historyHandler = handler
+}
+
+func (h *workflowServiceNexusHandler) setStreamNotifier(handler streamnotifier.SystemNexusHandler) {
+	h.streamNotifier = handler
+}
+
+// streamNotifierRequest is a notifier request a Workflow sends through System Nexus.
+type streamNotifierRequest interface {
+	GetNamespace() string
+	GetStreamRef() *streampb.StreamReference
+}
+
+// streamNotifierOperationProcessor routes a notifier request to the history shard that owns the
+// stream's notifier. The namespace comes from the calling Workflow and the identity is not taken
+// from it, matching the System Nexus API that leaves both out.
+type streamNotifierOperationProcessor[R streamNotifierRequest] struct {
+	setNamespace  func(R, string)
+	clearIdentity func(R)
+}
+
+func (o streamNotifierOperationProcessor[R]) ProcessInput(ctx chasm.NexusOperationProcessorContext, request R) (*chasm.NexusOperationProcessorResult, error) {
+	if any(request) == nil {
+		return nil, serviceerror.NewInvalidArgument("Request is empty")
+	}
+	if request.GetNamespace() == "" {
+		o.setNamespace(request, ctx.Namespace.Name().String())
+	} else if request.GetNamespace() != ctx.Namespace.Name().String() {
+		return nil, serviceerror.NewInvalidArgumentf("Namespace in request %q does not match namespace in context %q", request.GetNamespace(), ctx.Namespace.Name().String())
+	}
+	o.clearIdentity(request)
+	if err := streamnotifier.ValidateReference(request.GetStreamRef()); err != nil {
+		return nil, err
+	}
+	return &chasm.NexusOperationProcessorResult{
+		RoutingKey: chasm.NexusOperationRoutingKeyExecution{
+			NamespaceID: ctx.Namespace.ID().String(),
+			BusinessID:  streamnotifier.BusinessID(request.GetStreamRef()),
+		},
+	}, nil
 }
 
 type SignalWithStartOperationProcessor struct {
@@ -127,11 +208,30 @@ func NewWorkflowServiceNexusServiceProcessor(
 	saMapperProvider searchattribute.MapperProvider,
 	saValidator *searchattribute.Validator,
 ) *chasm.NexusServiceProcessor {
-	sp := chasm.NewNexusServiceProcessor(workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService.ServiceName)
+	ops := workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService
+	sp := chasm.NewNexusServiceProcessor(ops.ServiceName)
 	op := SignalWithStartOperationProcessor{validator: NewValidator(config, saMapperProvider, saValidator)}
 	sp.MustRegisterOperation(
-		workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService.SignalWithStartWorkflowExecution.Name(),
+		ops.SignalWithStartWorkflowExecution.Name(),
 		chasm.NewRegisterableNexusOperationProcessor(op),
 	)
+	sp.MustRegisterOperation(ops.AttachStreamCallback.Name(), chasm.NewRegisterableNexusOperationProcessor(
+		streamNotifierOperationProcessor[*workflowservice.AttachStreamCallbackRequest]{
+			setNamespace:  func(r *workflowservice.AttachStreamCallbackRequest, ns string) { r.Namespace = ns },
+			clearIdentity: func(r *workflowservice.AttachStreamCallbackRequest) { r.Identity = "" },
+		},
+	))
+	sp.MustRegisterOperation(ops.DetachStreamCallback.Name(), chasm.NewRegisterableNexusOperationProcessor(
+		streamNotifierOperationProcessor[*workflowservice.DetachStreamCallbackRequest]{
+			setNamespace:  func(r *workflowservice.DetachStreamCallbackRequest, ns string) { r.Namespace = ns },
+			clearIdentity: func(r *workflowservice.DetachStreamCallbackRequest) { r.Identity = "" },
+		},
+	))
+	sp.MustRegisterOperation(ops.NotifyStream.Name(), chasm.NewRegisterableNexusOperationProcessor(
+		streamNotifierOperationProcessor[*workflowservice.NotifyStreamRequest]{
+			setNamespace:  func(r *workflowservice.NotifyStreamRequest, ns string) { r.Namespace = ns },
+			clearIdentity: func(r *workflowservice.NotifyStreamRequest) { r.Identity = "" },
+		},
+	))
 	return sp
 }
