@@ -501,3 +501,9 @@ func TestStreamNotifier(t *testing.T) {
 		)
 	})
 }
+
+func TestClosedRetentionCoversTheStoreRetention(t *testing.T) {
+	dc := dynamicconfig.NewNoopCollection()
+	require.Equal(t, 7*24*time.Hour, configProvider(dc).ClosedRetention("ns"),
+		"a closed stream answers late attaches as long as the store keeps its records")
+}

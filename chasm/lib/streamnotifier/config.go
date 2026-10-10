@@ -39,9 +39,11 @@ callbacks.`,
 
 var ClosedRetention = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.closedRetention",
-	24*time.Hour,
+	7*24*time.Hour,
 	`How long a closed stream notifier keeps completing callbacks attached late before its execution
-completes and the namespace retention applies. An attach after that is refused.`,
+completes and the namespace retention applies. An attach after that is refused. Don't set it
+shorter than the stream store's retention, or a reader that starts late fails while the store
+still holds the records it would read. The default matches the default store retention.`,
 )
 
 // Config holds the stream notifier settings.
