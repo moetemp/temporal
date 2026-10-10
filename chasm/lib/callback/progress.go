@@ -154,11 +154,12 @@ func (c *Callback) saveProgressResult(ctx chasm.MutableContext, input saveProgre
 	return nil, nil
 }
 
-// progressBody is the OperationProgress object of the Nexus HTTP spec.
+// progressBody is the OperationProgress object of the Nexus HTTP spec. The counter goes as a
+// decimal string, since counters reach past 2^53 and many JSON parsers read numbers as doubles.
 func progressBody(progress *nexuspb.NexusOperationProgress) ([]byte, error) {
 	body := struct {
 		Position string            `json:"position,omitempty"`
-		Counter  int64             `json:"counter"`
+		Counter  int64             `json:"counter,string"`
 		Metadata map[string]string `json:"metadata,omitempty"`
 	}{
 		Position: progress.GetPosition(),

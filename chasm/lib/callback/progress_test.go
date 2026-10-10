@@ -165,7 +165,7 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 		require.Equal(t, "running", pt.requests[0].state)
 		require.Equal(t, "abc", pt.requests[0].header.Get("token"), "the callback's headers ride along")
 		require.Empty(t, pt.requests[0].header.Get("Nexus-Operation-Close-Time"))
-		require.Equal(t, map[string]any{"position": "p", "counter": json.Number("3"), "metadata": map[string]any{"topic": "t"}}, pt.requests[0].body,
+		require.Equal(t, map[string]any{"position": "p", "counter": "3", "metadata": map[string]any{"topic": "t"}}, pt.requests[0].body,
 			"the delivery carries the newest pending progress")
 		state = pt.state()
 		require.Equal(t, int64(3), state.GetDeliveredProgressCounter())
@@ -185,7 +185,7 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 		require.Equal(t, int64(1), state.GetDeliveredProgressCounter())
 		require.Equal(t, int64(5), state.GetProgressInFlight(), "the newer progress is the next delivery")
 		require.NoError(t, pt.runInFlight())
-		require.Equal(t, json.Number("5"), pt.requests[1].body["counter"])
+		require.Equal(t, "5", pt.requests[1].body["counter"])
 		require.Zero(t, pt.state().GetProgressInFlight())
 	})
 
@@ -234,7 +234,7 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 		pt.deliver(2)
 		pt.answer = http.StatusOK
 		require.NoError(t, pt.runInFlight())
-		require.Equal(t, json.Number("2"), pt.requests[1].body["counter"])
+		require.Equal(t, "2", pt.requests[1].body["counter"])
 		require.Equal(t, int64(2), pt.state().GetDeliveredProgressCounter())
 	})
 
@@ -322,5 +322,10 @@ func TestProgressDeliveryInternalHonorsTheProgressFlag(t *testing.T) {
 func TestProgressBody(t *testing.T) {
 	body, err := progressBody(&nexuspb.NexusOperationProgress{Counter: 7})
 	require.NoError(t, err)
-	require.JSONEq(t, `{"counter": 7}`, string(body), "optional members are left out")
+	require.JSONEq(t, `{"counter": "7"}`, string(body), "optional members are left out")
+
+	body, err = progressBody(&nexuspb.NexusOperationProgress{Counter: 1<<62 + 1})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"counter": "4611686018427387905"}`, string(body),
+		"a decimal string keeps counters above 2^53 exact for double-based parsers")
 }
