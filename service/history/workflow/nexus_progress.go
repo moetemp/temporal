@@ -79,6 +79,11 @@ func (ms *MutableStateImpl) nexusProgressMinInterval() time.Duration {
 // scheduleWorkflowTaskForNexusProgress schedules a Workflow Task to carry pending Nexus operation
 // progress when no task is pending to carry it, unless a task carried progress too recently.
 func (ms *MutableStateImpl) scheduleWorkflowTaskForNexusProgress() error {
+	// Only a CHASM change (progress arrived, or a hold was released) or a Workflow Task change can
+	// make progress need a task, so most transactions skip resolving the CHASM root.
+	if !ms.workflowTaskUpdated && !ms.chasmTree.IsStateDirty() {
+		return nil
+	}
 	if ms.HasPendingWorkflowTask() || ms.IsWorkflowExecutionStatusPaused() {
 		return nil
 	}
