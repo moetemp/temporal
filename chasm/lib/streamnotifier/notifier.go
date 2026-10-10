@@ -424,10 +424,13 @@ func (n *StreamNotifier) describeCallbacks(
 		if err != nil {
 			return nil, err
 		}
-		// The header holds the caller's callback token. A reader of this namespace could forge a
-		// completion with it, also for a caller in another namespace.
+		// The header values hold the caller's callback token. A reader of this namespace could
+		// forge a completion with one, also for a caller in another namespace. The keys stay, so a
+		// reader still sees which headers the callback carries.
 		if nexusCallback := apiCallback.GetNexus(); nexusCallback != nil {
-			nexusCallback.Header = nil
+			for key := range nexusCallback.Header {
+				nexusCallback.Header[key] = ""
+			}
 		}
 		state, _, err := cb.APIState(ctx)
 		if err != nil {

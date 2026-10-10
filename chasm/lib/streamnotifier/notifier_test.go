@@ -305,8 +305,9 @@ func TestStreamNotifier(t *testing.T) {
 			"http://caller/a",
 			desc.GetCallbacks()[0].GetCallback().GetNexus().GetUrl(),
 		)
-		require.Empty(t, desc.GetCallbacks()[0].GetCallback().GetNexus().GetHeader(),
-			"the header holds the caller's token, which would let a reader forge a completion")
+		require.Equal(t, map[string]string{"temporal-callback-token": ""},
+			desc.GetCallbacks()[0].GetCallback().GetNexus().GetHeader(),
+			"header values hold the caller's token, which would let a reader forge a completion")
 	})
 
 	t.Run("CloseCompletesEveryCallbackAndLateAttachesRightAway", func(t *testing.T) {
