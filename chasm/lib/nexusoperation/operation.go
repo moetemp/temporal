@@ -111,7 +111,7 @@ type Operation struct {
 
 	// PendingProgress is the latest progress no Workflow Task has carried yet.
 	PendingProgress chasm.Field[*nexuspb.NexusOperationProgress]
-	// DeliveredProgress is the latest progress a Workflow Task carried or folded. A delivery whose
+	// DeliveredProgress is the latest progress a Workflow Task carried. A delivery whose
 	// counter is not above it is stale.
 	DeliveredProgress chasm.Field[*nexuspb.NexusOperationProgress]
 }
@@ -119,11 +119,9 @@ type Operation struct {
 // ProgressStore is implemented by a parent that delivers the operation's progress to its caller.
 // A parent without it, such as none for a standalone operation, drops progress.
 type ProgressStore interface {
-	// OnNexusOperationProgress records that the operation holds pending progress.
+	// OnNexusOperationProgress records that the operation holds pending progress. The parent
+	// decides which Workflow Task takes it.
 	OnNexusOperationProgress(ctx chasm.MutableContext, operation *Operation) error
-	// NexusOperationProgressFolds reports whether the operation's latest progress rides a Workflow
-	// Task that has not started, which newer progress can fold into.
-	NexusOperationProgressFolds(ctx chasm.Context, operation *Operation) bool
 }
 
 // NewOperation creates a new Operation component with the given persisted state.
@@ -363,10 +361,6 @@ func (o *Operation) onProgress(ctx chasm.MutableContext, progress *nexuspb.Nexus
 		if previous, ok := seen.TryGet(ctx); ok && previous.GetCounter() >= progress.GetCounter() {
 			return nil
 		}
-	}
-	if store.NexusOperationProgressFolds(ctx, o) {
-		o.DeliveredProgress = chasm.NewDataField(ctx, progress)
-		return nil
 	}
 	o.PendingProgress = chasm.NewDataField(ctx, progress)
 	return store.OnNexusOperationProgress(ctx, o)

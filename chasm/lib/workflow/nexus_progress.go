@@ -32,7 +32,7 @@ func (w *Workflow) nexusProgressIndex(ctx chasm.Context) *chasmworkflowpb.NexusP
 // setNexusProgressIndex stores the index, or drops it when it is empty, so a Workflow whose
 // operations report no progress carries nothing.
 func (w *Workflow) setNexusProgressIndex(ctx chasm.MutableContext, index *chasmworkflowpb.NexusProgressState) {
-	if len(index.GetPending()) == 0 && len(index.GetScheduled()) == 0 {
+	if len(index.GetPending()) == 0 && len(index.GetScheduled()) == 0 && len(index.GetFolded()) == 0 {
 		if _, ok := w.NexusProgress.TryGet(ctx); ok {
 			w.NexusProgress = chasm.NewEmptyField[*chasmworkflowpb.NexusProgressState]()
 		}
@@ -42,7 +42,8 @@ func (w *Workflow) setNexusProgressIndex(ctx chasm.MutableContext, index *chasmw
 }
 
 // OnNexusOperationProgress records that an operation holds progress for the next Workflow Task
-// scheduled event.
+// scheduled event. Progress for an operation that rides a scheduled Workflow Task that has not
+// started folds into that task: it asks for no task of its own until that one starts.
 func (w *Workflow) OnNexusOperationProgress(ctx chasm.MutableContext, op *nexusoperation.Operation) error {
 	key, ok := nexusProgressKey(op)
 	if !ok {
@@ -50,19 +51,16 @@ func (w *Workflow) OnNexusOperationProgress(ctx chasm.MutableContext, op *nexuso
 		return nil
 	}
 	index := common.CloneProto(w.nexusProgressIndex(ctx))
-	if !slices.Contains(index.Pending, key) {
-		index.Pending = append(index.Pending, key)
-		slices.Sort(index.Pending)
+	waiting := &index.Pending
+	if slices.Contains(index.Scheduled, key) {
+		waiting = &index.Folded
+	}
+	if !slices.Contains(*waiting, key) {
+		*waiting = append(*waiting, key)
+		slices.Sort(*waiting)
 	}
 	w.setNexusProgressIndex(ctx, index)
 	return nil
-}
-
-// NexusOperationProgressFolds reports whether an operation's latest progress rides a scheduled
-// Workflow Task that has not started. That task's read will see what newer progress reports.
-func (w *Workflow) NexusOperationProgressFolds(ctx chasm.Context, op *nexusoperation.Operation) bool {
-	key, ok := nexusProgressKey(op)
-	return ok && slices.Contains(w.nexusProgressIndex(ctx).GetScheduled(), key)
 }
 
 // HasPendingNexusProgress reports whether any operation holds progress for the next Workflow Task
@@ -73,7 +71,8 @@ func (w *Workflow) HasPendingNexusProgress(ctx chasm.Context) bool {
 
 // HasScheduledNexusProgress reports whether a scheduled Workflow Task carries progress.
 func (w *Workflow) HasScheduledNexusProgress(ctx chasm.Context) bool {
-	return len(w.nexusProgressIndex(ctx).GetScheduled()) > 0
+	index := w.nexusProgressIndex(ctx)
+	return len(index.GetScheduled()) > 0 || len(index.GetFolded()) > 0
 }
 
 // TakeNexusProgress returns the pending progress of every operation in scheduled event ID order,
@@ -105,14 +104,23 @@ func (w *Workflow) TakeNexusProgress(ctx chasm.MutableContext) []*nexuspb.NexusO
 }
 
 // ClearScheduledNexusProgress forgets which operations the scheduled Workflow Task carries. Called
-// once that task starts, fails or times out: from then on newer progress needs a task of its own.
+// once that task starts, fails or times out: from then on newer progress needs a task of its own,
+// and progress that folded into it waits for the next task, since its scheduled event carries an
+// older counter.
 func (w *Workflow) ClearScheduledNexusProgress(ctx chasm.MutableContext) {
 	index := w.nexusProgressIndex(ctx)
-	if len(index.GetScheduled()) == 0 {
+	if len(index.GetScheduled()) == 0 && len(index.GetFolded()) == 0 {
 		return
 	}
 	index = common.CloneProto(index)
+	for _, key := range index.Folded {
+		if !slices.Contains(index.Pending, key) {
+			index.Pending = append(index.Pending, key)
+		}
+	}
+	slices.Sort(index.Pending)
 	index.Scheduled = nil
+	index.Folded = nil
 	w.setNexusProgressIndex(ctx, index)
 }
 
@@ -137,11 +145,13 @@ func (w *Workflow) DropPendingNexusProgress(ctx chasm.MutableContext) {
 // forgetNexusProgress removes a closed operation from the index.
 func (w *Workflow) forgetNexusProgress(ctx chasm.MutableContext, key int64) {
 	index := w.nexusProgressIndex(ctx)
-	if !slices.Contains(index.GetPending(), key) && !slices.Contains(index.GetScheduled(), key) {
+	if !slices.Contains(index.GetPending(), key) && !slices.Contains(index.GetScheduled(), key) &&
+		!slices.Contains(index.GetFolded(), key) {
 		return
 	}
 	index = common.CloneProto(index)
 	index.Pending = slices.DeleteFunc(index.Pending, func(k int64) bool { return k == key })
 	index.Scheduled = slices.DeleteFunc(index.Scheduled, func(k int64) bool { return k == key })
+	index.Folded = slices.DeleteFunc(index.Folded, func(k int64) bool { return k == key })
 	w.setNexusProgressIndex(ctx, index)
 }
