@@ -455,7 +455,9 @@ func (h *nexusCompletionHandler) deliverProgress(
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return commonnexus.ConvertGRPCError(err, true)
 	}
-	return commonnexus.ConvertGRPCError(err, false)
+	// Any 4xx turns progress off for the callback, so only the refusals above may answer one.
+	// Whatever History answers, such as NamespaceNotActive during a failover, is worth a retry.
+	return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeUnavailable, "progress could not be delivered, retry later")
 }
 
 func (h *nexusCompletionHandler) forwardCompleteOperation(ctx context.Context, r *nexusrpc.CompletionRequest, rCtx *requestContext) error {
