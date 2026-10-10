@@ -88,6 +88,12 @@ func (s *quotasSuite) TestExecutionAPIPrioritiesOrdered() {
 	}
 }
 
+func (s *quotasSuite) TestNotifyStreamYieldsToStarts() {
+	const svc = "/temporal.api.workflowservice.v1.WorkflowService/"
+	s.Greater(APIToPriority[svc+"NotifyStream"], APIToPriority[svc+"StartWorkflowExecution"])
+	s.Equal(APIToPriority[svc+"StartWorkflowExecution"], APIToPriority[svc+"AttachStreamCallback"])
+}
+
 func (s *quotasSuite) TestVisibilityAPIPrioritiesOrdered() {
 	for idx := range VisibilityAPIPrioritiesOrdered[1:] {
 		s.Less(VisibilityAPIPrioritiesOrdered[idx], VisibilityAPIPrioritiesOrdered[idx+1])

@@ -35,21 +35,26 @@ func parseNexusProgress(body []byte) (nexusProgress, error) {
 		Metadata map[string]string `json:"metadata"`
 	}
 	if err := json.Unmarshal(body, &wire); err != nil {
-		return nexusProgress{}, fmt.Errorf("progress body is not an OperationProgress object: %w", err)
+		return nexusProgress{}, fmt.Errorf(
+			"progress body is not an OperationProgress object: %w", err)
 	}
 	counter, err := parseNexusProgressCounter(wire.Counter)
 	if err != nil {
 		return nexusProgress{}, err
 	}
 	if len(wire.Position) > maxNexusProgressPositionBytes {
-		return nexusProgress{}, fmt.Errorf("progress position is %d bytes, more than the %d allowed", len(wire.Position), maxNexusProgressPositionBytes)
+		return nexusProgress{}, fmt.Errorf(
+			"progress position is %d bytes, more than the %d allowed",
+			len(wire.Position), maxNexusProgressPositionBytes)
 	}
 	size := 0
 	for key, value := range wire.Metadata {
 		size += len(key) + len(value)
 	}
 	if size > maxNexusProgressMetadataBytes {
-		return nexusProgress{}, fmt.Errorf("progress metadata is %d bytes, more than the %d allowed", size, maxNexusProgressMetadataBytes)
+		return nexusProgress{}, fmt.Errorf(
+			"progress metadata is %d bytes, more than the %d allowed",
+			size, maxNexusProgressMetadataBytes)
 	}
 	return nexusProgress{Position: wire.Position, Counter: counter, Metadata: wire.Metadata}, nil
 }
