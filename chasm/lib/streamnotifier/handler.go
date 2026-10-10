@@ -66,6 +66,8 @@ func (h *handler) AttachStreamCallback(
 			return struct{}{}, n.attach(mctx, attachInput{
 				requestID:          r.GetRequestId(),
 				callback:           r.GetCallback(),
+				operationToken:     r.GetOperationToken(),
+				startTime:          r.GetStartTime(),
 				maxCallbacks:       h.config.MaxCallbacks(ns),
 				idleTimeout:        h.config.IdleTimeout(ns),
 				ownerCheckInterval: h.config.OwnerCheckInterval(ns),
@@ -116,9 +118,10 @@ func (h *handler) DetachStreamCallback(
 		BusinessID:  req.GetBusinessId(),
 	})
 	_, _, err := chasm.UpdateComponent(ctx, ref,
-		func(n *StreamNotifier, _ chasm.MutableContext, requestID string) (struct{}, error) {
-			n.detach(requestID)
-			return struct{}{}, nil
+		// The caller canceled its operation and waits for its completion, so the callback is
+		// completed as canceled rather than dropped.
+		func(n *StreamNotifier, mctx chasm.MutableContext, requestID string) (struct{}, error) {
+			return struct{}{}, n.cancel(mctx, requestID)
 		},
 		req.GetFrontendRequest().GetRequestId(),
 	)

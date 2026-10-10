@@ -38,4 +38,16 @@ message NotifierState {
   // When the armed owner check fires, or unset when none is armed. While callbacks are attached,
   // the notifier checks now and then whether its owner Workflow ended.
   google.protobuf.Timestamp owner_check_time = 13;
+  // The start each callback's caller was answered with, by request ID. Progress deliveries and the
+  // completion carry it, so a caller that hears from the notifier before the start response still
+  // learns the operation token.
+  map<string, CallerStart> caller_starts = 14;
+  // The callbacks whose caller canceled its operation. Their completion is a cancellation.
+  repeated string canceled_request_ids = 15;
+}
+
+// What the handler's start answered a caller with.
+message CallerStart {
+  string operation_token = 1;
+  google.protobuf.Timestamp start_time = 2;
 }

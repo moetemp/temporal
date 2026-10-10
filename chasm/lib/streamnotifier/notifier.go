@@ -22,16 +22,18 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// BusinessID is the notifier's execution ID for a stream: its owner kind, owner and topic, escaped
-// so that no two streams map to one ID. The run ID is left out, so one notifier serves the stream
-// across runs.
+// BusinessID is the notifier's execution ID for a stream: its owner kind, owner, the first run of
+// the owner's run chain, and topic, escaped so that no two streams map to one ID. One notifier
+// serves the stream across the chain's runs, and a later chain that reuses the Workflow ID and
+// topic gets a notifier of its own.
 func BusinessID(ref *streampb.StreamReference) string {
 	kind := strings.ToLower(strings.TrimPrefix(ref.GetOwnerKind().String(), "STREAM_OWNER_KIND_"))
-	return kind + "/" + url.PathEscape(ref.GetWorkflowId()) + "/" + url.PathEscape(ref.GetTopic())
+	return kind + "/" + url.PathEscape(ref.GetWorkflowId()) + "/" + url.PathEscape(ref.GetRunId()) + "/" + url.PathEscape(ref.GetTopic())
 }
 
 var _ chasm.RootComponent = (*StreamNotifier)(nil)
 var _ callback.CompletionSource = (*StreamNotifier)(nil)
+var _ callback.ProgressSource = (*StreamNotifier)(nil)
 
 // StreamNotifier holds the Nexus callbacks attached to one stream. It hands each notification to
 // them as progress, folded, and completes them when the stream closes.
@@ -52,6 +54,7 @@ func newStreamNotifier(ref *streampb.StreamReference) *StreamNotifier {
 			StreamRef: &streampb.StreamReference{
 				OwnerKind:  ref.GetOwnerKind(),
 				WorkflowId: ref.GetWorkflowId(),
+				RunId:      ref.GetRunId(),
 				Topic:      ref.GetTopic(),
 			},
 		},
@@ -100,6 +103,8 @@ func (n *StreamNotifier) touch(ctx chasm.MutableContext, after time.Duration) {
 type attachInput struct {
 	requestID          string
 	callback           *commonpb.Callback_Nexus
+	operationToken     string
+	startTime          *timestamppb.Timestamp
 	maxCallbacks       int
 	idleTimeout        time.Duration
 	ownerCheckInterval time.Duration
@@ -131,6 +136,12 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 		n.Callbacks = make(chasm.Map[string, *callback.Callback])
 	}
 	n.Callbacks[in.requestID] = chasm.NewComponentField(ctx, cb)
+	if in.operationToken != "" || in.startTime != nil {
+		if n.CallerStarts == nil {
+			n.CallerStarts = map[string]*streamnotifierpb.CallerStart{}
+		}
+		n.CallerStarts[in.requestID] = &streamnotifierpb.CallerStart{OperationToken: in.operationToken, StartTime: in.startTime}
+	}
 	if n.Closed {
 		return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
 	}
@@ -228,7 +239,25 @@ func (n *StreamNotifier) failIdleCallbacks(ctx chasm.MutableContext) (bool, erro
 // detach removes a callback. Its completion, if already scheduled, is not delivered.
 func (n *StreamNotifier) detach(requestID string) {
 	delete(n.Callbacks, requestID)
+	delete(n.CallerStarts, requestID)
 	n.IdleFailedRequestIds = slices.DeleteFunc(n.IdleFailedRequestIds, func(id string) bool { return id == requestID })
+	n.CanceledRequestIds = slices.DeleteFunc(n.CanceledRequestIds, func(id string) bool { return id == requestID })
+}
+
+// cancel completes a waiting callback with a cancellation, because its caller canceled the
+// operation and is waiting for that completion. A callback already completing keeps its completion.
+func (n *StreamNotifier) cancel(ctx chasm.MutableContext, requestID string) error {
+	field, ok := n.Callbacks[requestID]
+	if !ok {
+		return nil
+	}
+	cb := field.Get(ctx)
+	if cb.Status != callbackspb.CALLBACK_STATUS_STANDBY {
+		return nil
+	}
+	n.CanceledRequestIds = append(n.CanceledRequestIds, requestID)
+	slices.Sort(n.CanceledRequestIds)
+	return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
 }
 
 type notifyInput struct {
@@ -288,10 +317,38 @@ func (n *StreamNotifier) progress() *nexuspb.NexusOperationProgress {
 	}
 }
 
-// GetNexusCompletion is the completion a callback delivers: a failure if an idle timeout failed it
-// or the stream closed with a failure, otherwise the stream's close result.
+// GetNexusProgressOptions carries the caller's operation token and start time on each progress
+// delivery, so a caller that has not seen the start response yet can still tell the operation.
+func (n *StreamNotifier) GetNexusProgressOptions(_ chasm.Context, requestID string) (nexusrpc.CompleteOperationOptions, error) {
+	return n.callerStart(requestID), nil
+}
+
+func (n *StreamNotifier) callerStart(requestID string) nexusrpc.CompleteOperationOptions {
+	var options nexusrpc.CompleteOperationOptions
+	if start, ok := n.CallerStarts[requestID]; ok {
+		options.OperationToken = start.GetOperationToken()
+		if start.GetStartTime() != nil {
+			options.StartTime = start.GetStartTime().AsTime()
+		}
+	}
+	return options
+}
+
+// GetNexusCompletion is the completion a callback delivers: a cancellation if its caller canceled,
+// a failure if an idle timeout failed it or the stream closed with a failure, otherwise the
+// stream's close result. Each carries the caller's operation token and start time, since a
+// completion can reach the caller before the handler's start response does.
 func (n *StreamNotifier) GetNexusCompletion(ctx chasm.Context, requestID string) (nexusrpc.CompleteOperationOptions, error) {
-	completion := nexusrpc.CompleteOperationOptions{CloseTime: n.GetCloseTime().AsTime()}
+	completion := n.callerStart(requestID)
+	completion.CloseTime = n.GetCloseTime().AsTime()
+	if _, canceled := slices.BinarySearch(n.CanceledRequestIds, requestID); canceled {
+		completion.CloseTime = ctx.Now(n)
+		completion.Error = &nexus.OperationError{
+			State: nexus.OperationStateCanceled,
+			Cause: &nexus.FailureError{Failure: nexus.Failure{Message: "the caller canceled the operation"}},
+		}
+		return completion, nil
+	}
 	failure := n.CloseFailure
 	if _, idle := slices.BinarySearch(n.IdleFailedRequestIds, requestID); idle {
 		failure = "the stream was idle for too long, so its notifier failed the callers waiting on it"

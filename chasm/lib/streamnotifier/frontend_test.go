@@ -51,6 +51,7 @@ func TestNotifyStreamCloseResultTakesTheBlobLimit(t *testing.T) {
 			StreamRef: &streampb.StreamReference{
 				OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
 				WorkflowId: "wf",
+				RunId:      "first-run",
 				Topic:      "tokens",
 			},
 			Counter:     1,
@@ -79,7 +80,7 @@ func TestNotifierRequestsAreBounded(t *testing.T) {
 		MaxIDLength:        dynamicconfig.GetIntPropertyFn(10),
 	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
 	ref := func(workflowID, topic string) *streampb.StreamReference {
-		return &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: workflowID, Topic: topic}
+		return &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: workflowID, RunId: "first-run", Topic: topic}
 	}
 	notify := func(stream *streampb.StreamReference, position string) error {
 		_, err := h.NotifyStream(context.Background(), &workflowservice.NotifyStreamRequest{
@@ -96,5 +97,13 @@ func TestNotifierRequestsAreBounded(t *testing.T) {
 		Namespace: "ns", StreamRef: ref("wf", "t"), RequestId: strings.Repeat("r", 11),
 	})
 	require.ErrorAs(t, err, &invalid, "a request ID over the limit is refused")
+	noRun := ref("wf", "t")
+	noRun.RunId = ""
+	require.ErrorAs(t, notify(noRun, ""), &invalid, "a reference without the chain's first run is refused")
+	_, err = h.AttachStreamCallback(context.Background(), &workflowservice.AttachStreamCallbackRequest{
+		Namespace: "ns", StreamRef: noRun, RequestId: "r", Callback: &commonpb.Callback_Nexus{Url: "http://caller"},
+	})
+	require.ErrorAs(t, err, &invalid)
+	require.ErrorContains(t, err, "run_id must name the run chain's first run")
 	require.Equal(t, 1, client.notified, "only the notification within bounds reached History")
 }
