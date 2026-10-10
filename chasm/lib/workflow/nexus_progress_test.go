@@ -61,21 +61,25 @@ func TestNexusProgressIndex(t *testing.T) {
 		require.True(t, wf.HasScheduledNexusProgress(ctx))
 	})
 
-	t.Run("FoldsIntoTheUnstartedTaskUntilItStarts", func(t *testing.T) {
+	t.Run("FoldsIntoTheUnstartedTaskThenWaitsForTheNextOne", func(t *testing.T) {
 		ctx := &chasm.MockMutableContext{}
 		wf := newWorkflowWithOperations(t, ctx, 5, 9)
 		deliver(t, ctx, wf, 5, 1)
 		require.Len(t, wf.TakeNexusProgress(ctx), 1)
 
 		deliver(t, ctx, wf, 5, 2)
+		deliver(t, ctx, wf, 5, 3)
 		require.False(t, wf.HasPendingNexusProgress(ctx), "operation 5 rides the unstarted task")
 		deliver(t, ctx, wf, 9, 1)
 		require.True(t, wf.HasPendingNexusProgress(ctx), "operation 9 is not on that task")
+		require.Equal(t, map[int64]int64{9: 1}, counters(wf.TakeNexusProgress(ctx)),
+			"folded progress is not taken while its task waits to start")
 
+		// The task started with counter 1 on its event, so counter 3 needs one more task.
 		wf.ClearScheduledNexusProgress(ctx)
 		require.False(t, wf.HasScheduledNexusProgress(ctx))
-		deliver(t, ctx, wf, 5, 3)
-		require.Equal(t, map[int64]int64{5: 3, 9: 1}, counters(wf.TakeNexusProgress(ctx)))
+		require.True(t, wf.HasPendingNexusProgress(ctx))
+		require.Equal(t, map[int64]int64{5: 3}, counters(wf.TakeNexusProgress(ctx)))
 	})
 
 	t.Run("ForgetsAClosedOperation", func(t *testing.T) {
@@ -83,8 +87,12 @@ func TestNexusProgressIndex(t *testing.T) {
 		wf := newWorkflowWithOperations(t, ctx, 5, 9)
 		deliver(t, ctx, wf, 5, 1)
 		deliver(t, ctx, wf, 9, 1)
+		require.Len(t, wf.TakeNexusProgress(ctx), 2)
+		deliver(t, ctx, wf, 5, 2)
+		deliver(t, ctx, wf, 9, 2)
 		wf.removeNexusOperation(ctx, 5)
-		require.Equal(t, map[int64]int64{9: 1}, counters(wf.TakeNexusProgress(ctx)))
+		wf.ClearScheduledNexusProgress(ctx)
+		require.Equal(t, map[int64]int64{9: 2}, counters(wf.TakeNexusProgress(ctx)), "a closed operation's folded progress is gone")
 		wf.removeNexusOperation(ctx, 9)
 		require.False(t, wf.HasScheduledNexusProgress(ctx))
 		_, ok := wf.NexusProgress.TryGet(ctx)
