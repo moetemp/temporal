@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.workflow.proto.v1;
+
+option go_package = "go.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpb";
+
+// Lets Nexus operation progress that waited out nexusoperation.progressMinInterval schedule a
+// Workflow Task.
+message NexusProgressReleaseTask {}

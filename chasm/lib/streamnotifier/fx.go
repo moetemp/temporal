@@ -8,7 +8,14 @@ import (
 
 var HistoryModule = fx.Module(
 	"streamnotifier-history",
-	fx.Provide(configProvider, newHandler, newExpiryTaskHandler, newOwnerCheckTaskHandler, newLibrary, newSystemNexusHandler),
+	fx.Provide(
+		configProvider,
+		newHandler,
+		newExpiryTaskHandler,
+		newOwnerCheckTaskHandler,
+		newLibrary,
+		newSystemNexusHandler,
+	),
 	fx.Invoke(func(l *library, registry *chasm.Registry) error {
 		return registry.Register(l)
 	}),

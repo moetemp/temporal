@@ -35,10 +35,14 @@ import (
 // progress, and closing the stream completes the operation with the close result. An HSM caller
 // refuses progress and still gets the completion.
 func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
-	env := s.newTestEnv(chasmEnabled,
+	env := s.newTestEnv(
+		chasmEnabled,
 		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
 		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
-		testcore.WithDynamicConfig(callback.AllowedAddresses, []any{map[string]any{"Pattern": "*", "AllowInsecure": true}}),
+		testcore.WithDynamicConfig(
+			callback.AllowedAddresses,
+			[]any{map[string]any{"Pattern": "*", "AllowInsecure": true}},
+		),
 		testcore.WithDynamicConfig(callback.RetryPolicyInitialInterval, 10*time.Millisecond),
 		testcore.WithDynamicConfig(callback.RetryPolicyMaximumInterval, 50*time.Millisecond),
 	)
@@ -71,10 +75,13 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 		s.NoError(err)
 	}
 	describe := func() *workflowservice.DescribeStreamNotifierResponse {
-		resp, err := frontend.DescribeStreamNotifier(ctx, &workflowservice.DescribeStreamNotifierRequest{
-			Namespace: env.Namespace().String(),
-			StreamRef: stream,
-		})
+		resp, err := frontend.DescribeStreamNotifier(
+			ctx,
+			&workflowservice.DescribeStreamNotifierRequest{
+				Namespace: env.Namespace().String(),
+				StreamRef: stream,
+			},
+		)
 		s.NoError(err)
 		return resp
 	}
@@ -87,19 +94,24 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 			options nexus.StartOperationOptions,
 		) (nexus.HandlerStartOperationResult[any], error) {
 			// The handler hands the caller's callback to the stream's notifier and answers async.
-			_, err := frontend.AttachStreamCallback(ctx, &workflowservice.AttachStreamCallbackRequest{
-				Namespace: env.Namespace().String(),
-				StreamRef: stream,
-				RequestId: options.RequestID,
-				Callback: &commonpb.Callback_Nexus{
-					Url:    options.CallbackURL,
-					Header: options.CallbackHeader,
+			_, err := frontend.AttachStreamCallback(
+				ctx,
+				&workflowservice.AttachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: options.RequestID,
+					Callback: &commonpb.Callback_Nexus{
+						Url:    options.CallbackURL,
+						Header: options.CallbackHeader,
+					},
 				},
-			})
+			)
 			if err != nil {
 				return nil, err
 			}
-			return &nexus.HandlerStartOperationResultAsync{OperationToken: stream.GetWorkflowId()}, nil
+			return &nexus.HandlerStartOperationResultAsync{
+				OperationToken: stream.GetWorkflowId(),
+			}, nil
 		},
 	}
 	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
@@ -107,14 +119,16 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 	callerWF := func(ctx workflow.Context) (string, error) {
 		c := workflow.NewNexusClient(endpointName, "service")
 		var result string
-		err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).Get(ctx, &result)
+		err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).
+			Get(ctx, &result)
 		return result, err
 	}
 	w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
 	w.RegisterWorkflow(callerWF)
 	s.NoError(w.Start())
 	defer w.Stop()
-	run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
+	run, err := env.SdkClient().
+		ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
 	s.NoError(err)
 	wfExec := &commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()}
 
@@ -134,7 +148,11 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 		// Workflow Task with no event of its own.
 		s.Await(func(s *NexusWorkflowTestSuite) {
 			s.Equal(int64(3), describe().GetCallbacks()[0].GetDeliveredCounter())
-			s.NotEmpty(carriedNexusProgress(env.GetHistory(env.Namespace().String(), wfExec)[len(started):]))
+			s.NotEmpty(
+				carriedNexusProgress(
+					env.GetHistory(env.Namespace().String(), wfExec)[len(started):],
+				),
+			)
 		}, 10*time.Second, 50*time.Millisecond)
 		hist := env.GetHistory(env.Namespace().String(), wfExec)
 		carried := carriedNexusProgress(hist[len(started):])
@@ -295,10 +313,14 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierClosedFromWorkflow(chasmEnabl
 
 // newStreamNotifierEnv is a CHASM caller environment with the stream notifier on.
 func (s *NexusWorkflowTestSuite) newStreamNotifierEnv() *NexusTestEnv {
-	return s.newTestEnv(true,
+	return s.newTestEnv(
+		true,
 		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
 		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
-		testcore.WithDynamicConfig(callback.AllowedAddresses, []any{map[string]any{"Pattern": "*", "AllowInsecure": true}}),
+		testcore.WithDynamicConfig(
+			callback.AllowedAddresses,
+			[]any{map[string]any{"Pattern": "*", "AllowInsecure": true}},
+		),
 		testcore.WithDynamicConfig(callback.RetryPolicyInitialInterval, 10*time.Millisecond),
 		testcore.WithDynamicConfig(callback.RetryPolicyMaximumInterval, 50*time.Millisecond),
 	)
@@ -307,9 +329,12 @@ func (s *NexusWorkflowTestSuite) newStreamNotifierEnv() *NexusTestEnv {
 // TestStreamNotifierCompletionBeforeTheStartCarriesTheToken attaches a caller to a stream that is
 // already closed, so the notifier completes the operation before the handler answers the start. The
 // completion carries the handler's operation token, so the caller still learns which stream it is.
-func (s *NexusWorkflowTestSuite) TestStreamNotifierCompletionBeforeTheStartCarriesTheToken(chasmEnabled bool) {
+func (s *NexusWorkflowTestSuite) TestStreamNotifierCompletionBeforeTheStartCarriesTheToken(
+	chasmEnabled bool,
+) {
 	if !chasmEnabled {
-		// Only a CHASM caller takes a completion before its start; TestStreamNotifierEndToEnd covers HSM.
+		// Only a CHASM caller takes a completion before its start; TestStreamNotifierEndToEnd
+		// covers HSM.
 		return
 	}
 	env := s.newStreamNotifierEnv()
@@ -339,27 +364,37 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierCompletionBeforeTheStartCarri
 			input *nexus.LazyValue,
 			options nexus.StartOperationOptions,
 		) (nexus.HandlerStartOperationResult[any], error) {
-			_, err := frontend.AttachStreamCallback(ctx, &workflowservice.AttachStreamCallbackRequest{
-				Namespace:      env.Namespace().String(),
-				StreamRef:      stream,
-				RequestId:      options.RequestID,
-				Callback:       &commonpb.Callback_Nexus{Url: options.CallbackURL, Header: options.CallbackHeader},
-				OperationToken: token,
-				StartTime:      timestamppb.Now(),
-			})
+			_, err := frontend.AttachStreamCallback(
+				ctx,
+				&workflowservice.AttachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: options.RequestID,
+					Callback: &commonpb.Callback_Nexus{
+						Url:    options.CallbackURL,
+						Header: options.CallbackHeader,
+					},
+					OperationToken: token,
+					StartTime:      timestamppb.Now(),
+				},
+			)
 			if err != nil {
 				return nil, err
 			}
-			// Answer only once the notifier has delivered the completion, so it beats the start. This
-			// runs on the handler's goroutine, so it polls rather than asserting.
+			// Answer only once the notifier has delivered the completion, so it beats the start.
+			// This runs on the handler's goroutine, so it polls rather than asserting.
 			ticker := time.NewTicker(50 * time.Millisecond)
 			defer ticker.Stop()
 			for {
-				desc, err := frontend.DescribeStreamNotifier(ctx, &workflowservice.DescribeStreamNotifierRequest{
-					Namespace: env.Namespace().String(),
-					StreamRef: stream,
-				})
-				if err == nil && len(desc.GetCallbacks()) == 1 && desc.GetCallbacks()[0].GetState() == enumspb.CALLBACK_STATE_SUCCEEDED {
+				desc, err := frontend.DescribeStreamNotifier(
+					ctx,
+					&workflowservice.DescribeStreamNotifierRequest{
+						Namespace: env.Namespace().String(),
+						StreamRef: stream,
+					},
+				)
+				if err == nil && len(desc.GetCallbacks()) == 1 &&
+					desc.GetCallbacks()[0].GetState() == enumspb.CALLBACK_STATE_SUCCEEDED {
 					return &nexus.HandlerStartOperationResultAsync{OperationToken: token}, nil
 				}
 				select {
@@ -375,20 +410,25 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierCompletionBeforeTheStartCarri
 	callerWF := func(ctx workflow.Context) (string, error) {
 		c := workflow.NewNexusClient(endpointName, "service")
 		var result string
-		err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).Get(ctx, &result)
+		err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).
+			Get(ctx, &result)
 		return result, err
 	}
 	w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
 	w.RegisterWorkflow(callerWF)
 	s.NoError(w.Start())
 	defer w.Stop()
-	run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
+	run, err := env.SdkClient().
+		ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
 	s.NoError(err)
 	var result string
 	s.NoError(run.Get(ctx, &result))
 	s.Equal("summary", result)
 
-	hist := env.GetHistory(env.Namespace().String(), &commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()})
+	hist := env.GetHistory(
+		env.Namespace().String(),
+		&commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()},
+	)
 	started := s.RequireHistoryEvent(hist, enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED)
 	s.Equal(token, started.GetNexusOperationStartedEventAttributes().GetOperationToken(),
 		"the started event the completion wrote names the stream")
@@ -421,24 +461,39 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierCancelCompletesTheCaller(chas
 			options nexus.StartOperationOptions,
 		) (nexus.HandlerStartOperationResult[any], error) {
 			attachRequestID = options.RequestID
-			_, err := frontend.AttachStreamCallback(ctx, &workflowservice.AttachStreamCallbackRequest{
-				Namespace:      env.Namespace().String(),
-				StreamRef:      stream,
-				RequestId:      options.RequestID,
-				Callback:       &commonpb.Callback_Nexus{Url: options.CallbackURL, Header: options.CallbackHeader},
-				OperationToken: "stream-token",
-			})
+			_, err := frontend.AttachStreamCallback(
+				ctx,
+				&workflowservice.AttachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: options.RequestID,
+					Callback: &commonpb.Callback_Nexus{
+						Url:    options.CallbackURL,
+						Header: options.CallbackHeader,
+					},
+					OperationToken: "stream-token",
+				},
+			)
 			if err != nil {
 				return nil, err
 			}
 			return &nexus.HandlerStartOperationResultAsync{OperationToken: "stream-token"}, nil
 		},
-		OnCancelOperation: func(ctx context.Context, service, operation, token string, options nexus.CancelOperationOptions) error {
-			_, err := frontend.DetachStreamCallback(ctx, &workflowservice.DetachStreamCallbackRequest{
-				Namespace: env.Namespace().String(),
-				StreamRef: stream,
-				RequestId: attachRequestID,
-			})
+		OnCancelOperation: func(
+			ctx context.Context,
+			service,
+			operation,
+			token string,
+			options nexus.CancelOperationOptions,
+		) error {
+			_, err := frontend.DetachStreamCallback(
+				ctx,
+				&workflowservice.DetachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: attachRequestID,
+				},
+			)
 			return err
 		},
 	}
@@ -463,7 +518,8 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierCancelCompletesTheCaller(chas
 	w.RegisterWorkflow(callerWF)
 	s.NoError(w.Start())
 	defer w.Stop()
-	run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
+	run, err := env.SdkClient().
+		ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
 	s.NoError(err)
 	var result string
 	s.NoError(run.Get(ctx, &result))

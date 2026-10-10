@@ -31,12 +31,17 @@ func (c *fakeNotifierClient) NotifyStream(
 	...grpc.CallOption,
 ) (*streamnotifierpb.NotifyStreamResponse, error) {
 	c.notified++
-	return &streamnotifierpb.NotifyStreamResponse{FrontendResponse: &workflowservice.NotifyStreamResponse{}}, nil
+	return &streamnotifierpb.NotifyStreamResponse{
+		FrontendResponse: &workflowservice.NotifyStreamResponse{},
+	}, nil
 }
 
 func TestNotifyStreamCloseResultTakesTheBlobLimit(t *testing.T) {
 	registry := namespace.NewMockRegistry(gomock.NewController(t))
-	registry.EXPECT().GetNamespaceID(namespace.Name("ns")).Return(namespace.ID("namespace-id"), nil).AnyTimes()
+	registry.EXPECT().
+		GetNamespaceID(namespace.Name("ns")).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
 	client := &fakeNotifierClient{}
 	h := NewFrontendHandler(client, &Config{
 		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
@@ -70,7 +75,10 @@ func TestNotifyStreamCloseResultTakesTheBlobLimit(t *testing.T) {
 
 func TestNotifierRequestsAreBounded(t *testing.T) {
 	registry := namespace.NewMockRegistry(gomock.NewController(t))
-	registry.EXPECT().GetNamespaceID(namespace.Name("ns")).Return(namespace.ID("namespace-id"), nil).AnyTimes()
+	registry.EXPECT().
+		GetNamespaceID(namespace.Name("ns")).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
 	client := &fakeNotifierClient{}
 	h := NewFrontendHandler(client, &Config{
 		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
@@ -80,7 +88,12 @@ func TestNotifierRequestsAreBounded(t *testing.T) {
 		MaxIDLength:        dynamicconfig.GetIntPropertyFn(10),
 	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
 	ref := func(workflowID, topic string) *streampb.StreamReference {
-		return &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: workflowID, RunId: "first-run", Topic: topic}
+		return &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: workflowID,
+			RunId:      "first-run",
+			Topic:      topic,
+		}
 	}
 	notify := func(stream *streampb.StreamReference, position string) error {
 		_, err := h.NotifyStream(context.Background(), &workflowservice.NotifyStreamRequest{
@@ -89,25 +102,57 @@ func TestNotifierRequestsAreBounded(t *testing.T) {
 		return err
 	}
 	var invalid *serviceerror.InvalidArgument
-	require.ErrorAs(t, notify(ref("wf", "t"), strings.Repeat("x", maxPositionBytes+1)), &invalid, "a position over 1 KiB is refused")
+	require.ErrorAs(
+		t,
+		notify(ref("wf", "t"), strings.Repeat("x", maxPositionBytes+1)),
+		&invalid,
+		"a position over 1 KiB is refused",
+	)
 	require.NoError(t, notify(ref("wf", "t"), strings.Repeat("x", maxPositionBytes)))
-	require.ErrorAs(t, notify(ref(strings.Repeat("w", 11), "t"), ""), &invalid, "a workflow ID over the limit is refused")
-	require.ErrorAs(t, notify(ref("wf", strings.Repeat("t", 11)), ""), &invalid, "a topic over the limit is refused")
-	_, err := h.DetachStreamCallback(context.Background(), &workflowservice.DetachStreamCallbackRequest{
-		Namespace: "ns", StreamRef: ref("wf", "t"), RequestId: strings.Repeat("r", 11),
-	})
+	require.ErrorAs(
+		t,
+		notify(ref(strings.Repeat("w", 11), "t"), ""),
+		&invalid,
+		"a workflow ID over the limit is refused",
+	)
+	require.ErrorAs(
+		t,
+		notify(ref("wf", strings.Repeat("t", 11)), ""),
+		&invalid,
+		"a topic over the limit is refused",
+	)
+	_, err := h.DetachStreamCallback(
+		context.Background(),
+		&workflowservice.DetachStreamCallbackRequest{
+			Namespace: "ns", StreamRef: ref("wf", "t"), RequestId: strings.Repeat("r", 11),
+		},
+	)
 	require.ErrorAs(t, err, &invalid, "a request ID over the limit is refused")
 	noRun := ref("wf", "t")
 	noRun.RunId = ""
-	require.ErrorAs(t, notify(noRun, ""), &invalid, "a reference without the chain's first run is refused")
-	_, err = h.AttachStreamCallback(context.Background(), &workflowservice.AttachStreamCallbackRequest{
-		Namespace: "ns", StreamRef: noRun, RequestId: "r", Callback: &commonpb.Callback_Nexus{Url: "http://caller"},
-	})
+	require.ErrorAs(
+		t,
+		notify(noRun, ""),
+		&invalid,
+		"a reference without the chain's first run is refused",
+	)
+	_, err = h.AttachStreamCallback(
+		context.Background(),
+		&workflowservice.AttachStreamCallbackRequest{
+			Namespace: "ns",
+			StreamRef: noRun,
+			RequestId: "r",
+			Callback:  &commonpb.Callback_Nexus{Url: "http://caller"},
+		},
+	)
 	require.ErrorAs(t, err, &invalid)
 	require.ErrorContains(t, err, "run_id must name the run chain's first run")
-	_, err = h.DetachStreamCallback(context.Background(), &workflowservice.DetachStreamCallbackRequest{
-		Namespace: "ns", StreamRef: noRun, RequestId: "r",
-	})
+	_, err = h.DetachStreamCallback(
+		context.Background(),
+		&workflowservice.DetachStreamCallbackRequest{
+			Namespace: "ns", StreamRef: noRun, RequestId: "r",
+		},
+	)
 	require.ErrorAs(t, err, &invalid, "a detach without the chain's first run is refused")
 	require.Equal(t, 1, client.notified, "only the notification within bounds reached History")
 }

@@ -55,20 +55,27 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	ctrl := gomock.NewController(t)
 	history := historyservicemock.NewMockHistoryServiceClient(ctrl)
 	registryMock := namespace.NewMockRegistry(ctrl)
-	registryMock.EXPECT().GetNamespaceByID(gomock.Any()).Return(
-		namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Id: "namespace-id", Name: "ns"}, nil, "active"), nil,
-	).AnyTimes()
+	ns := namespace.NewLocalNamespaceForTest(
+		&persistencespb.NamespaceInfo{Id: "namespace-id", Name: "ns"}, nil, "active")
+	registryMock.EXPECT().GetNamespaceByID(gomock.Any()).Return(ns, nil).AnyTimes()
 	nt := &notifierTest{}
 	attachHistory := historyservicemock.NewMockHistoryServiceClient(ctrl)
 	attachHistory.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(context.Context, *historyservice.DescribeWorkflowExecutionRequest, ...grpc.CallOption) (*historyservice.DescribeWorkflowExecutionResponse, error) {
+		func(
+			context.Context,
+			*historyservice.DescribeWorkflowExecutionRequest,
+			...grpc.CallOption,
+		) (*historyservice.DescribeWorkflowExecutionResponse, error) {
 			if nt.ownerFirstRun == "" {
 				return nil, serviceerror.NewNotFound("workflow not found")
 			}
 			return &historyservice.DescribeWorkflowExecutionResponse{
-				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{FirstRunId: nt.ownerFirstRun},
+				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+					FirstRunId: nt.ownerFirstRun,
+				},
 			}, nil
-		}).AnyTimes()
+		}).
+		AnyTimes()
 	h := newHandler(config, log.NewTestLogger(), attachHistory)
 	expiry := newExpiryTaskHandler(expiryTaskHandlerOptions{Config: config})
 	ownerCheck := newOwnerCheckTaskHandler(ownerCheckTaskHandlerOptions{
@@ -125,7 +132,10 @@ func (nt *notifierTest) attach(requestID string) error {
 			Namespace: "ns",
 			StreamRef: nt.ref,
 			RequestId: requestID,
-			Callback:  &commonpb.Callback_Nexus{Url: "http://caller/" + requestID},
+			Callback: &commonpb.Callback_Nexus{
+				Url:    "http://caller/" + requestID,
+				Header: map[string]string{"temporal-callback-token": "secret-" + requestID},
+			},
 		},
 	})
 	return err
@@ -149,11 +159,17 @@ func (nt *notifierTest) notify(counter int64, closeStream bool) error {
 }
 
 func (nt *notifierTest) describe() *workflowservice.DescribeStreamNotifierResponse {
-	resp, err := nt.handler.DescribeStreamNotifier(nt.ctx, &streamnotifierpb.DescribeStreamNotifierRequest{
-		NamespaceId:     "namespace-id",
-		BusinessId:      BusinessID(nt.ref),
-		FrontendRequest: &workflowservice.DescribeStreamNotifierRequest{Namespace: "ns", StreamRef: nt.ref},
-	})
+	resp, err := nt.handler.DescribeStreamNotifier(
+		nt.ctx,
+		&streamnotifierpb.DescribeStreamNotifierRequest{
+			NamespaceId: "namespace-id",
+			BusinessId:  BusinessID(nt.ref),
+			FrontendRequest: &workflowservice.DescribeStreamNotifierRequest{
+				Namespace: "ns",
+				StreamRef: nt.ref,
+			},
+		},
+	)
 	require.NoError(nt.t, err)
 	return resp.GetFrontendResponse()
 }
@@ -207,21 +223,40 @@ func (nt *notifierTest) runOwnerCheck(status enumspb.WorkflowExecutionStatus, er
 }
 
 // runOwnerCheckOf is runOwnerCheck with the described run's chain named by its first run ID.
-func (nt *notifierTest) runOwnerCheckOf(status enumspb.WorkflowExecutionStatus, firstRunID string, err error) {
+func (nt *notifierTest) runOwnerCheckOf(
+	status enumspb.WorkflowExecutionStatus,
+	firstRunID string,
+	err error,
+) {
 	var armed *streamnotifierpb.OwnerCheckTask
 	nt.read(func(n *StreamNotifier, _ chasm.Context) {
 		require.NotNil(nt.t, n.GetOwnerCheckTime(), "an owner check is armed")
 		armed = &streamnotifierpb.OwnerCheckTask{ScheduledTime: n.GetOwnerCheckTime()}
 	})
 	nt.history.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, req *historyservice.DescribeWorkflowExecutionRequest, _ ...grpc.CallOption) (*historyservice.DescribeWorkflowExecutionResponse, error) {
-			require.Equal(nt.t, nt.ref.GetWorkflowId(), req.GetRequest().GetExecution().GetWorkflowId())
-			require.Empty(nt.t, req.GetRequest().GetExecution().GetRunId(), "the chain's current run is described")
+		func(
+			_ context.Context,
+			req *historyservice.DescribeWorkflowExecutionRequest,
+			_ ...grpc.CallOption,
+		) (*historyservice.DescribeWorkflowExecutionResponse, error) {
+			require.Equal(
+				nt.t,
+				nt.ref.GetWorkflowId(),
+				req.GetRequest().GetExecution().GetWorkflowId(),
+			)
+			require.Empty(
+				nt.t,
+				req.GetRequest().GetExecution().GetRunId(),
+				"the chain's current run is described",
+			)
 			if err != nil {
 				return nil, err
 			}
 			return &historyservice.DescribeWorkflowExecutionResponse{
-				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: status, FirstRunId: firstRunID},
+				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+					Status:     status,
+					FirstRunId: firstRunID,
+				},
 			}, nil
 		})
 	ref := chasm.NewComponentRef[*StreamNotifier](nt.key())
@@ -241,16 +276,37 @@ func TestStreamNotifier(t *testing.T) {
 		cbs := nt.callbacks()
 		require.Len(t, cbs, 2)
 		require.Equal(t, int64(1), cbs["a"].GetProgressInFlight(), "one delivery in flight")
-		require.Equal(t, int64(3), cbs["a"].GetPendingProgress().GetCounter(), "later progress folds into the next one")
-		require.Equal(t, int64(3), cbs["b"].GetPendingProgress().GetCounter(), "a late callback starts from the latest notification")
+		require.Equal(
+			t,
+			int64(3),
+			cbs["a"].GetPendingProgress().GetCounter(),
+			"later progress folds into the next one",
+		)
+		require.Equal(
+			t,
+			int64(3),
+			cbs["b"].GetPendingProgress().GetCounter(),
+			"a late callback starts from the latest notification",
+		)
 		require.Equal(t, "p", cbs["b"].GetPendingProgress().GetPosition())
 		require.Equal(t, map[string]string{"k": "v"}, cbs["b"].GetPendingProgress().GetMetadata())
 
 		desc := nt.describe()
 		require.Equal(t, int64(3), desc.GetCounter())
 		require.False(t, desc.GetClosed())
-		require.Equal(t, []string{"a", "b"}, []string{desc.GetCallbacks()[0].GetRequestId(), desc.GetCallbacks()[1].GetRequestId()})
+		require.Equal(
+			t,
+			[]string{"a", "b"},
+			[]string{desc.GetCallbacks()[0].GetRequestId(), desc.GetCallbacks()[1].GetRequestId()},
+		)
 		require.Equal(t, enumspb.CALLBACK_STATE_STANDBY, desc.GetCallbacks()[0].GetState())
+		require.Equal(
+			t,
+			"http://caller/a",
+			desc.GetCallbacks()[0].GetCallback().GetNexus().GetUrl(),
+		)
+		require.Empty(t, desc.GetCallbacks()[0].GetCallback().GetNexus().GetHeader(),
+			"the header holds the caller's token, which would let a reader forge a completion")
 	})
 
 	t.Run("CloseCompletesEveryCallbackAndLateAttachesRightAway", func(t *testing.T) {
@@ -279,13 +335,25 @@ func TestStreamNotifier(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attach("a"))
 		require.NoError(t, nt.attach("b"))
-		_, err := nt.handler.DetachStreamCallback(nt.ctx, &streamnotifierpb.DetachStreamCallbackRequest{
-			NamespaceId:     "namespace-id",
-			BusinessId:      BusinessID(nt.ref),
-			FrontendRequest: &workflowservice.DetachStreamCallbackRequest{Namespace: "ns", StreamRef: nt.ref, RequestId: "a"},
-		})
+		_, err := nt.handler.DetachStreamCallback(
+			nt.ctx,
+			&streamnotifierpb.DetachStreamCallbackRequest{
+				NamespaceId: "namespace-id",
+				BusinessId:  BusinessID(nt.ref),
+				FrontendRequest: &workflowservice.DetachStreamCallbackRequest{
+					Namespace: "ns",
+					StreamRef: nt.ref,
+					RequestId: "a",
+				},
+			},
+		)
 		require.NoError(t, err)
-		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["a"].GetStatus(), "the canceled caller gets a completion")
+		require.Equal(
+			t,
+			callbackspb.CALLBACK_STATUS_SCHEDULED,
+			nt.callbacks()["a"].GetStatus(),
+			"the canceled caller gets a completion",
+		)
 		require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, nt.callbacks()["b"].GetStatus())
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
 			completion, err := n.GetNexusCompletion(ctx, "a")
@@ -293,12 +361,23 @@ func TestStreamNotifier(t *testing.T) {
 			require.NotNil(t, completion.Error)
 			require.Equal(t, nexus.OperationStateCanceled, completion.Error.State)
 		})
-		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "other", Topic: "t"}
-		_, err = nt.handler.DetachStreamCallback(nt.ctx, &streamnotifierpb.DetachStreamCallbackRequest{
-			NamespaceId:     "namespace-id",
-			BusinessId:      BusinessID(nt.ref),
-			FrontendRequest: &workflowservice.DetachStreamCallbackRequest{Namespace: "ns", StreamRef: nt.ref, RequestId: "a"},
-		})
+		nt.ref = &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "other",
+			Topic:      "t",
+		}
+		_, err = nt.handler.DetachStreamCallback(
+			nt.ctx,
+			&streamnotifierpb.DetachStreamCallbackRequest{
+				NamespaceId: "namespace-id",
+				BusinessId:  BusinessID(nt.ref),
+				FrontendRequest: &workflowservice.DetachStreamCallbackRequest{
+					Namespace: "ns",
+					StreamRef: nt.ref,
+					RequestId: "a",
+				},
+			},
+		)
 		require.NoError(t, err, "detaching from a stream with no notifier changes nothing")
 	})
 
@@ -314,35 +393,69 @@ func TestStreamNotifier(t *testing.T) {
 			require.Equal(t, start, progress.StartTime)
 			completion, err := n.GetNexusCompletion(ctx, "a")
 			require.NoError(t, err)
-			require.Equal(t, "token-a", completion.OperationToken, "a completion before the start response still names the operation")
+			require.Equal(
+				t,
+				"token-a",
+				completion.OperationToken,
+				"a completion before the start response still names the operation",
+			)
 			require.Equal(t, start, completion.StartTime)
 		})
 	})
 
 	t.Run("AnAttachNamingAnotherRunThanTheChainsFirstIsRefused", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
-		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "wf", RunId: "a-later-run", Topic: "t"}
+		nt.ref = &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "wf",
+			RunId:      "a-later-run",
+			Topic:      "t",
+		}
 		nt.ownerFirstRun = "first-run"
 		var invalid *serviceerror.InvalidArgument
-		require.ErrorAs(t, nt.attach("a"), &invalid, "a run that is not the chain's first would key another notifier")
+		require.ErrorAs(
+			t,
+			nt.attach("a"),
+			&invalid,
+			"a run that is not the chain's first would key another notifier",
+		)
 		nt.ref.RunId = "first-run"
 		require.NoError(t, nt.attach("a"))
 	})
 
 	t.Run("AReusedWorkflowIDGetsAFreshNotifier", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
-		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "wf", RunId: "first-chain", Topic: "t"}
+		nt.ref = &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "wf",
+			RunId:      "first-chain",
+			Topic:      "t",
+		}
 		require.NoError(t, nt.notify(1, true))
 		require.True(t, nt.describe().GetClosed())
-		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "wf", RunId: "second-chain", Topic: "t"}
+		nt.ref = &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "wf",
+			RunId:      "second-chain",
+			Topic:      "t",
+		}
 		require.NoError(t, nt.attach("a"))
-		require.False(t, nt.describe().GetClosed(), "the later chain's stream is not the closed one")
+		require.False(
+			t,
+			nt.describe().GetClosed(),
+			"the later chain's stream is not the closed one",
+		)
 		require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, nt.callbacks()["a"].GetStatus())
 	})
 
 	t.Run("AnOwnerIDReusedByAnotherChainCountsAsEnded", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
-		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "wf", RunId: "first-chain", Topic: "t"}
+		nt.ref = &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "wf",
+			RunId:      "first-chain",
+			Topic:      "t",
+		}
 		require.NoError(t, nt.attach("a"))
 		nt.runOwnerCheckOf(enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, "second-chain", nil)
 		require.True(t, nt.describe().GetClosed())
@@ -382,13 +495,52 @@ func TestStreamNotifier(t *testing.T) {
 
 	t.Run("AnIdleNotifierWithNoCallersEndsAndANewOneStarts", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
-		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.attach("a"))
+		_, err := nt.handler.DetachStreamCallback(
+			nt.ctx,
+			&streamnotifierpb.DetachStreamCallbackRequest{
+				NamespaceId: "namespace-id",
+				BusinessId:  BusinessID(nt.ref),
+				FrontendRequest: &workflowservice.DetachStreamCallbackRequest{
+					Namespace: "ns", StreamRef: nt.ref, RequestId: "a",
+				},
+			},
+		)
+		require.NoError(t, err)
 		nt.expire()
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
 			require.Equal(t, chasm.LifecycleStateFailed, n.LifecycleState(ctx))
 		})
+		require.NoError(t, nt.notify(1, false), "a notification to an ended notifier is dropped")
 		require.NoError(t, nt.attach("later"), "a later attach starts a new notifier")
 		require.Contains(t, nt.callbacks(), "later")
+	})
+
+	t.Run("ANotificationWithoutACallerStartsNoNotifier", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.notify(1, false))
+		_, err := nt.handler.DescribeStreamNotifier(
+			nt.ctx,
+			&streamnotifierpb.DescribeStreamNotifierRequest{
+				NamespaceId: "namespace-id",
+				BusinessId:  BusinessID(nt.ref),
+				FrontendRequest: &workflowservice.DescribeStreamNotifierRequest{
+					Namespace: "ns",
+					StreamRef: nt.ref,
+				},
+			},
+		)
+		var notFound *serviceerror.NotFound
+		require.ErrorAs(t, err, &notFound, "no caller waits, so nothing needs the notification")
+
+		require.NoError(t, nt.attach("a"))
+		require.NoError(t, nt.notify(2, false))
+		require.Equal(
+			t,
+			int64(2),
+			nt.describe().GetCounter(),
+			"a notifier a caller started takes it",
+		)
 	})
 
 	t.Run("AClosedStreamStaysClosed", func(t *testing.T) {
@@ -419,14 +571,28 @@ func TestStreamNotifier(t *testing.T) {
 		}
 		// Every caller refused progress, the way an HSM caller does, and still waits for the close.
 		for i := range 100 {
-			nt.updateCallback(fmt.Sprintf("caller-%d", i), func(cb *callback.Callback) { cb.ProgressDisabled = true })
+			nt.updateCallback(
+				fmt.Sprintf("caller-%d", i),
+				func(cb *callback.Callback) { cb.ProgressDisabled = true },
+			)
 		}
 		var failed *serviceerror.FailedPrecondition
-		require.ErrorAs(t, nt.attach("caller-100"), &failed, "a full notifier of waiting callers refuses the attach")
+		require.ErrorAs(
+			t,
+			nt.attach("caller-100"),
+			&failed,
+			"a full notifier of waiting callers refuses the attach",
+		)
 		cbs := nt.callbacks()
 		require.Len(t, cbs, 100)
 		for id, cb := range cbs {
-			require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, cb.GetStatus(), "%s still waits for its completion", id)
+			require.Equal(
+				t,
+				callbackspb.CALLBACK_STATUS_STANDBY,
+				cb.GetStatus(),
+				"%s still waits for its completion",
+				id,
+			)
 		}
 	})
 
@@ -435,8 +601,15 @@ func TestStreamNotifier(t *testing.T) {
 		require.NoError(t, nt.attach("a"))
 		require.NoError(t, nt.attach("b"))
 		require.NoError(t, nt.notify(1, true))
-		nt.updateCallback("a", func(cb *callback.Callback) { cb.Status = callbackspb.CALLBACK_STATUS_SUCCEEDED })
-		require.NoError(t, nt.attach("late"), "a callback that is done makes room for a late attach")
+		nt.updateCallback(
+			"a",
+			func(cb *callback.Callback) { cb.Status = callbackspb.CALLBACK_STATUS_SUCCEEDED },
+		)
+		require.NoError(
+			t,
+			nt.attach("late"),
+			"a callback that is done makes room for a late attach",
+		)
 		require.NotContains(t, nt.callbacks(), "a")
 		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["late"].GetStatus())
 	})
@@ -456,7 +629,11 @@ func TestStreamNotifier(t *testing.T) {
 				require.NoError(t, nt.attach("a"))
 				nt.runOwnerCheck(tc.status, tc.err)
 				require.True(t, nt.describe().GetClosed())
-				require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["a"].GetStatus())
+				require.Equal(
+					t,
+					callbackspb.CALLBACK_STATUS_SCHEDULED,
+					nt.callbacks()["a"].GetStatus(),
+				)
 				nt.read(func(n *StreamNotifier, ctx chasm.Context) {
 					completion, err := n.GetNexusCompletion(ctx, "a")
 					require.NoError(t, err)
@@ -476,7 +653,11 @@ func TestStreamNotifier(t *testing.T) {
 		require.False(t, nt.describe().GetClosed())
 		nt.read(func(n *StreamNotifier, _ chasm.Context) {
 			require.NotNil(t, n.GetOwnerCheckTime())
-			require.False(t, n.GetOwnerCheckTime().AsTime().Before(first), "the next check is armed")
+			require.False(
+				t,
+				n.GetOwnerCheckTime().AsTime().Before(first),
+				"the next check is armed",
+			)
 		})
 	})
 
@@ -494,10 +675,21 @@ func TestStreamNotifier(t *testing.T) {
 			BusinessID(&streampb.StreamReference{WorkflowId: "a/b", Topic: "c"}),
 			BusinessID(&streampb.StreamReference{WorkflowId: "a", Topic: "b/c"}),
 		)
-		require.NotEqual(t,
-			BusinessID(&streampb.StreamReference{WorkflowId: "a", RunId: "first-chain", Topic: "t"}),
-			BusinessID(&streampb.StreamReference{WorkflowId: "a", RunId: "second-chain", Topic: "t"}),
+		require.NotEqual(
+			t,
+			BusinessID(
+				&streampb.StreamReference{WorkflowId: "a", RunId: "first-chain", Topic: "t"},
+			),
+			BusinessID(
+				&streampb.StreamReference{WorkflowId: "a", RunId: "second-chain", Topic: "t"},
+			),
 			"a run chain that reuses the Workflow ID gets its own notifier",
 		)
 	})
+}
+
+func TestClosedRetentionCoversTheStoreRetention(t *testing.T) {
+	dc := dynamicconfig.NewNoopCollection()
+	require.Equal(t, 7*24*time.Hour, configProvider(dc).ClosedRetention("ns"),
+		"a closed stream answers late attaches as long as the store keeps its records")
 }

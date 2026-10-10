@@ -54,11 +54,36 @@ func TestHandleNexusProgress(t *testing.T) {
 		counters    []int64
 		wantPending int64
 	}{
-		{name: "HighestCounterWins", status: nexusoperationpb.OPERATION_STATUS_STARTED, store: &progressStoreComponent{}, counters: []int64{1, 3, 2}, wantPending: 3},
-		{name: "DroppedBeforeStart", status: nexusoperationpb.OPERATION_STATUS_SCHEDULED, store: &progressStoreComponent{}, counters: []int64{1}},
-		{name: "DroppedAfterClose", status: nexusoperationpb.OPERATION_STATUS_SUCCEEDED, store: &progressStoreComponent{}, counters: []int64{1}},
-		{name: "DroppedWithoutCaller", status: nexusoperationpb.OPERATION_STATUS_STARTED, counters: []int64{1}},
-		{name: "DroppedByAParentThatTakesNoProgress", status: nexusoperationpb.OPERATION_STATUS_STARTED, store: &mockStoreComponent{}, counters: []int64{1}},
+		{
+			name:        "HighestCounterWins",
+			status:      nexusoperationpb.OPERATION_STATUS_STARTED,
+			store:       &progressStoreComponent{},
+			counters:    []int64{1, 3, 2},
+			wantPending: 3,
+		},
+		{
+			name:     "DroppedBeforeStart",
+			status:   nexusoperationpb.OPERATION_STATUS_SCHEDULED,
+			store:    &progressStoreComponent{},
+			counters: []int64{1},
+		},
+		{
+			name:     "DroppedAfterClose",
+			status:   nexusoperationpb.OPERATION_STATUS_SUCCEEDED,
+			store:    &progressStoreComponent{},
+			counters: []int64{1},
+		},
+		{
+			name:     "DroppedWithoutCaller",
+			status:   nexusoperationpb.OPERATION_STATUS_STARTED,
+			counters: []int64{1},
+		},
+		{
+			name:     "DroppedByAParentThatTakesNoProgress",
+			status:   nexusoperationpb.OPERATION_STATUS_STARTED,
+			store:    &mockStoreComponent{},
+			counters: []int64{1},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := &chasm.MockMutableContext{}
