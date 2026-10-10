@@ -53,10 +53,21 @@ is required for mixed-version compatibility because trusting a caller-controlled
 internally.`,
 )
 
+var NexusOperationEnableProgress = dynamicconfig.NewNamespaceBoolSetting(
+	"nexusoperation.enableProgress",
+	false,
+	`Experimental. Accepts non-terminal progress deliveries ("Nexus-Operation-State: running") on the completion
+callback for operations of CHASM-based workflow callers, and folds the latest one per operation onto the caller's next
+Workflow Task scheduled event. When false, a progress delivery is refused with a 400, which tells the handler to stop
+sending progress.`,
+)
+
 type Config struct {
 	RequestTimeout      dynamicconfig.DurationPropertyFnWithDestinationFilter
 	RetryPolicy         dynamicconfig.TypedPropertyFn[backoff.RetryPolicy]
 	InspectSourceHeader dynamicconfig.BoolPropertyFn
+	// EnableProgress is the progress flag of the caller's namespace, for internal deliveries.
+	EnableProgress dynamicconfig.BoolPropertyFnWithNamespaceFilter
 }
 
 func configProvider(dc *dynamicconfig.Collection) *Config {
@@ -72,6 +83,7 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 			)
 		},
 		InspectSourceHeader: InspectSourceHeader.Get(dc),
+		EnableProgress:      NexusOperationEnableProgress.Get(dc),
 	}
 }
 

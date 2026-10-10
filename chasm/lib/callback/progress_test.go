@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -50,10 +51,12 @@ type progressTest struct {
 	answer int
 	// during runs while a delivery is on the wire.
 	during func()
+	// progressEnabled is the caller namespace's progress flag.
+	progressEnabled bool
 }
 
 func newProgressTest(t *testing.T, cb *Callback, historyClient resource.HistoryClient) *progressTest {
-	pt := &progressTest{t: t, answer: http.StatusOK}
+	pt := &progressTest{t: t, answer: http.StatusOK, progressEnabled: true}
 	ctrl := gomock.NewController(t)
 	nsRegistry := namespace.NewMockRegistry(ctrl)
 	nsRegistry.EXPECT().GetNamespaceByID(gomock.Any()).Return(
@@ -65,6 +68,7 @@ func newProgressTest(t *testing.T, cb *Callback, historyClient resource.HistoryC
 			RetryPolicy: func() backoff.RetryPolicy {
 				return backoff.NewExponentialRetryPolicy(time.Second)
 			},
+			EnableProgress: func(string) bool { return pt.progressEnabled },
 		},
 		NamespaceRegistry: nsRegistry,
 		MetricsHandler:    metrics.NoopMetricsHandler,
@@ -185,8 +189,11 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 		require.Zero(t, pt.state().GetProgressInFlight())
 	})
 
-	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound} {
-		t.Run("A4xxTurnsProgressOff", func(t *testing.T) {
+	for _, status := range []int{
+		http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone,
+		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity,
+	} {
+		t.Run(fmt.Sprintf("A%dTurnsProgressOff", status), func(t *testing.T) {
 			pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil), nil)
 			pt.deliver(1)
 			pt.answer = status
@@ -197,6 +204,18 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 			pt.deliver(2)
 			require.Nil(t, pt.state().GetPendingProgress(), "progress stays off for the callback")
 			require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, pt.state().GetStatus(), "the completion is still delivered")
+		})
+	}
+
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests} {
+		t.Run(fmt.Sprintf("A%dRetries", status), func(t *testing.T) {
+			pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil), nil)
+			pt.deliver(1)
+			pt.answer = status
+			require.NoError(t, pt.runInFlight())
+			state := pt.state()
+			require.False(t, state.GetProgressDisabled())
+			require.Equal(t, int64(1), state.GetProgressInFlight(), "the delivery is retried")
 		})
 	}
 
@@ -280,6 +299,20 @@ func TestProgressDeliveryInternal(t *testing.T) {
 			require.Equal(t, tc.wantInFlight, state.GetProgressInFlight())
 		})
 	}
+}
+
+func TestProgressDeliveryInternalHonorsTheProgressFlag(t *testing.T) {
+	ref := &persistencespb.ChasmComponentRef{NamespaceId: "namespace-id", BusinessId: "caller", RunId: "run", ArchetypeId: 1234}
+	serialized, err := ref.Marshal()
+	require.NoError(t, err)
+	header := map[string]string{strings.ToLower(commonnexus.CallbackTokenHeader): base64.RawURLEncoding.EncodeToString(serialized)}
+	// No call to History is expected: the caller's namespace does not take progress.
+	client := historyservicemock.NewMockHistoryServiceClient(gomock.NewController(t))
+	pt := newProgressTest(t, newNexusCallback(chasm.NexusCompletionHandlerURL, header), client)
+	pt.progressEnabled = false
+	pt.deliver(1)
+	require.NoError(t, pt.runInFlight())
+	require.True(t, pt.state().GetProgressDisabled())
 }
 
 func TestProgressBody(t *testing.T) {
