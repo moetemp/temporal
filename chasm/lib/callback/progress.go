@@ -30,14 +30,20 @@ import (
 // start time and links, the way its completion does. A parent without it sends progress without
 // them; a receiver only needs them for a completion that arrives before the start.
 type ProgressSource interface {
-	GetNexusProgressOptions(ctx chasm.Context, requestID string) (nexusrpc.CompleteOperationOptions, error)
+	GetNexusProgressOptions(
+		ctx chasm.Context,
+		requestID string,
+	) (nexusrpc.CompleteOperationOptions, error)
 }
 
 // DeliverProgress hands the source's progress to the callback while the source runs. Progress is
 // dropped once the completion is scheduled, since the completion supersedes it and never waits for
 // it, after the receiver refused progress, and when the counter is not above one already seen. A
 // delivery in flight takes the newest pending progress when it finishes, so a burst folds into it.
-func (c *Callback) DeliverProgress(ctx chasm.MutableContext, progress *nexuspb.NexusOperationProgress) error {
+func (c *Callback) DeliverProgress(
+	ctx chasm.MutableContext,
+	progress *nexuspb.NexusOperationProgress,
+) error {
 	if c.Status != callbackspb.CALLBACK_STATUS_STANDBY || c.ProgressDisabled {
 		return nil
 	}
@@ -85,8 +91,12 @@ type progressInvocation struct {
 	options  nexusrpc.CompleteOperationOptions
 }
 
-//nolint:revive // context.Context is an input parameter for chasm.ReadComponent, not a function parameter
-func (c *Callback) loadProgressArgs(ctx chasm.Context, _ chasm.NoValue) (progressInvocation, error) {
+// nolint:revive // context.Context is an input parameter for chasm.ReadComponent, not a function
+// parameter
+func (c *Callback) loadProgressArgs(
+	ctx chasm.Context,
+	_ chasm.NoValue,
+) (progressInvocation, error) {
 	invocation := progressInvocation{
 		callback: c.GetCallback().GetNexus(),
 		progress: common.CloneProto(c.GetPendingProgress()),
@@ -124,7 +134,10 @@ type saveProgressInput struct {
 	retryPolicy func(attempt int32, err error) time.Duration
 }
 
-func (c *Callback) saveProgressResult(ctx chasm.MutableContext, input saveProgressInput) (chasm.NoValue, error) {
+func (c *Callback) saveProgressResult(
+	ctx chasm.MutableContext,
+	input saveProgressInput,
+) (chasm.NoValue, error) {
 	// The completion took over, or this result is for a delivery that is no longer in flight.
 	if c.Status != callbackspb.CALLBACK_STATUS_STANDBY || c.ProgressInFlight != input.inFlight {
 		return nil, nil
@@ -147,9 +160,15 @@ func (c *Callback) saveProgressResult(ctx chasm.MutableContext, input saveProgre
 		// No attempt cap. The completion clears progress, and one delivery in flight at the
 		// maximum backoff interval keeps a caller that answers 503 for ever cheap.
 		c.ProgressAttempt++
-		ctx.AddTask(c, chasm.TaskAttributes{
-			ScheduledTime: ctx.Now(c).Add(input.retryPolicy(c.ProgressAttempt, input.err)),
-		}, &callbackspb.ProgressBackoffTask{Counter: c.ProgressInFlight, Attempt: c.ProgressAttempt})
+		backoff := input.retryPolicy(c.ProgressAttempt, input.err)
+		ctx.AddTask(
+			c,
+			chasm.TaskAttributes{ScheduledTime: ctx.Now(c).Add(backoff)},
+			&callbackspb.ProgressBackoffTask{
+				Counter: c.ProgressInFlight,
+				Attempt: c.ProgressAttempt,
+			},
+		)
 	default:
 		return nil, fmt.Errorf("unknown progress delivery result %d", input.result)
 	}
@@ -187,7 +206,8 @@ func progressRefusedByHandler(err error) bool {
 	if unexpected, ok := errors.AsType[*nexusrpc.UnexpectedResponseError](err); ok {
 		response, ok := unexpected.Details.(*http.Response)
 		return ok && response.StatusCode >= 400 && response.StatusCode < 500 &&
-			response.StatusCode != http.StatusRequestTimeout && response.StatusCode != http.StatusTooManyRequests
+			response.StatusCode != http.StatusRequestTimeout &&
+			response.StatusCode != http.StatusTooManyRequests
 	}
 	handlerErr, ok := errors.AsType[*nexus.HandlerError](err)
 	if !ok {
@@ -214,7 +234,12 @@ func newProgressTaskHandler(opts invocationTaskHandlerOptions) *progressTaskHand
 	return &progressTaskHandler{invocation: newInvocationTaskHandler(opts)}
 }
 
-func (h *progressTaskHandler) Validate(_ chasm.Context, cb *Callback, _ chasm.TaskInvocation, task *callbackspb.ProgressTask) (bool, error) {
+func (h *progressTaskHandler) Validate(
+	_ chasm.Context,
+	cb *Callback,
+	_ chasm.TaskInvocation,
+	task *callbackspb.ProgressTask,
+) (bool, error) {
 	return cb.Status == callbackspb.CALLBACK_STATUS_STANDBY &&
 		!cb.ProgressDisabled &&
 		cb.ProgressInFlight == task.Counter &&
@@ -235,7 +260,10 @@ func (h *progressTaskHandler) Execute(
 	if err != nil {
 		return err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, h.invocation.config.RequestTimeout(ns.Name().String(), taskAttr.Destination))
+	callCtx, cancel := context.WithTimeout(
+		ctx,
+		h.invocation.config.RequestTimeout(ns.Name().String(), taskAttr.Destination),
+	)
 	defer cancel()
 
 	var result progressResult
@@ -305,8 +333,12 @@ func (h *progressTaskHandler) deliverOutbound(
 
 // deliverInternal hands the progress to the caller's operation in History, for a caller on this
 // cluster reached through the internal completion handler.
-func (h *progressTaskHandler) deliverInternal(ctx context.Context, invocation progressInvocation) (progressResult, error) {
-	encodedToken := nexus.Header(invocation.callback.GetHeader()).Get(commonnexus.CallbackTokenHeader)
+func (h *progressTaskHandler) deliverInternal(
+	ctx context.Context,
+	invocation progressInvocation,
+) (progressResult, error) {
+	encodedToken := nexus.Header(invocation.callback.GetHeader()).
+		Get(commonnexus.CallbackTokenHeader)
 	if encodedToken == "" {
 		return progressRefused, errors.New("callback has no token")
 	}
@@ -319,19 +351,26 @@ func (h *progressTaskHandler) deliverInternal(ctx context.Context, invocation pr
 	if err := componentRef.Unmarshal(ref); err != nil {
 		return progressRefused, err
 	}
-	callerNamespace, err := h.invocation.namespaceRegistry.GetNamespaceByID(namespace.ID(componentRef.GetNamespaceId()))
+	callerNamespace, err := h.invocation.namespaceRegistry.GetNamespaceByID(
+		namespace.ID(componentRef.GetNamespaceId()),
+	)
 	if err != nil {
 		return progressRetry, err
 	}
 	if !h.invocation.config.EnableProgress(callerNamespace.Name().String()) {
-		return progressRefused, errors.New("operation progress is not enabled for the caller's namespace")
+		return progressRefused, errors.New(
+			"operation progress is not enabled for the caller's namespace",
+		)
 	}
-	_, err = h.invocation.historyClient.CompleteNexusOperationChasm(ctx, &historyservice.CompleteNexusOperationChasmRequest{
-		Completion: &tokenspb.NexusOperationCompletion{ComponentRef: ref, RequestId: requestID},
-		Outcome: &historyservice.CompleteNexusOperationChasmRequest_Progress{
-			Progress: proto.CloneOf(invocation.progress),
+	_, err = h.invocation.historyClient.CompleteNexusOperationChasm(
+		ctx,
+		&historyservice.CompleteNexusOperationChasmRequest{
+			Completion: &tokenspb.NexusOperationCompletion{ComponentRef: ref, RequestId: requestID},
+			Outcome: &historyservice.CompleteNexusOperationChasmRequest_Progress{
+				Progress: proto.CloneOf(invocation.progress),
+			},
 		},
-	})
+	)
 	if err == nil {
 		return progressDelivered, nil
 	}
@@ -363,7 +402,12 @@ func newProgressBackoffTaskHandler(progressBackoffTaskHandlerOptions) *progressB
 	return &progressBackoffTaskHandler{}
 }
 
-func (h *progressBackoffTaskHandler) Validate(_ chasm.Context, cb *Callback, _ chasm.TaskInvocation, task *callbackspb.ProgressBackoffTask) (bool, error) {
+func (h *progressBackoffTaskHandler) Validate(
+	_ chasm.Context,
+	cb *Callback,
+	_ chasm.TaskInvocation,
+	task *callbackspb.ProgressBackoffTask,
+) (bool, error) {
 	return cb.Status == callbackspb.CALLBACK_STATUS_STANDBY &&
 		!cb.ProgressDisabled &&
 		cb.ProgressInFlight == task.Counter &&

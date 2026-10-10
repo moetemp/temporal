@@ -56,10 +56,10 @@ internally.`,
 var NexusOperationEnableProgress = dynamicconfig.NewNamespaceBoolSetting(
 	"nexusoperation.enableProgress",
 	false,
-	`Experimental. Accepts non-terminal progress deliveries ("Nexus-Operation-State: running") on the completion
-callback for operations of CHASM-based workflow callers, and folds the latest one per operation onto the caller's next
-Workflow Task scheduled event. When false, a progress delivery is refused with a 400, which tells the handler to stop
-sending progress.`,
+	`Experimental. Accepts non-terminal progress deliveries ("Nexus-Operation-State: running")
+on the completion callback for operations of CHASM-based workflow callers, and folds the latest
+one per operation onto the caller's next Workflow Task scheduled event. When false, a progress
+delivery is refused with a 400, which tells the handler to stop sending progress.`,
 )
 
 type Config struct {

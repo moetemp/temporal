@@ -55,13 +55,17 @@ type progressTest struct {
 	progressEnabled bool
 }
 
-func newProgressTest(t *testing.T, cb *Callback, historyClient resource.HistoryClient) *progressTest {
+func newProgressTest(
+	t *testing.T,
+	cb *Callback,
+	historyClient resource.HistoryClient,
+) *progressTest {
 	pt := &progressTest{t: t, answer: http.StatusOK, progressEnabled: true}
 	ctrl := gomock.NewController(t)
 	nsRegistry := namespace.NewMockRegistry(ctrl)
-	nsRegistry.EXPECT().GetNamespaceByID(gomock.Any()).Return(
-		namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "ns"}, nil, "active"), nil,
-	).AnyTimes()
+	ns := namespace.NewLocalNamespaceForTest(
+		&persistencespb.NamespaceInfo{Name: "ns"}, nil, "active")
+	nsRegistry.EXPECT().GetNamespaceByID(gomock.Any()).Return(ns, nil).AnyTimes()
 	pt.handler = newProgressTaskHandler(invocationTaskHandlerOptions{
 		Config: &Config{
 			RequestTimeout: dynamicconfig.GetDurationPropertyFnFilteredByDestination(time.Second),
@@ -95,19 +99,29 @@ func newProgressTest(t *testing.T, cb *Callback, historyClient resource.HistoryC
 			}
 		},
 	})
-	pt.ctx, pt.ref = newInvocationTaskTest(t, pt.handler.invocation, cb, nexusrpc.CompleteOperationOptions{})
+	pt.ctx, pt.ref = newInvocationTaskTest(
+		t,
+		pt.handler.invocation,
+		cb,
+		nexusrpc.CompleteOperationOptions{},
+	)
 	return pt
 }
 
 func (pt *progressTest) deliver(counter int64) {
 	pt.t.Helper()
-	_, _, err := chasm.UpdateComponent(pt.ctx, pt.ref, func(c *Callback, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-		return struct{}{}, c.DeliverProgress(ctx, &nexuspb.NexusOperationProgress{
-			Position: "p",
-			Counter:  counter,
-			Metadata: map[string]string{"topic": "t"},
-		})
-	}, struct{}{})
+	_, _, err := chasm.UpdateComponent(
+		pt.ctx,
+		pt.ref,
+		func(c *Callback, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			return struct{}{}, c.DeliverProgress(ctx, &nexuspb.NexusOperationProgress{
+				Position: "p",
+				Counter:  counter,
+				Metadata: map[string]string{"topic": "t"},
+			})
+		},
+		struct{}{},
+	)
 	require.NoError(pt.t, err)
 }
 
@@ -124,7 +138,10 @@ func (pt *progressTest) state() *callbackspb.CallbackState {
 func (pt *progressTest) runInFlight() error {
 	pt.t.Helper()
 	state := pt.state()
-	task := &callbackspb.ProgressTask{Counter: state.GetProgressInFlight(), Attempt: state.GetProgressAttempt()}
+	task := &callbackspb.ProgressTask{
+		Counter: state.GetProgressInFlight(),
+		Attempt: state.GetProgressAttempt(),
+	}
 	var valid bool
 	readCallbackState(pt.ctx, pt.t, pt.ref, func(ctx chasm.Context, c *Callback) {
 		var err error
@@ -132,7 +149,12 @@ func (pt *progressTest) runInFlight() error {
 		require.NoError(pt.t, err)
 	})
 	require.True(pt.t, valid, "the delivery in flight has a valid task")
-	return pt.handler.Execute(pt.ctx, pt.ref, chasm.TaskAttributes{Destination: "http://localhost"}, task)
+	return pt.handler.Execute(
+		pt.ctx,
+		pt.ref,
+		chasm.TaskAttributes{Destination: "http://localhost"},
+		task,
+	)
 }
 
 func newNexusCallback(url string, header map[string]string) *Callback {
@@ -152,28 +174,54 @@ func newNexusCallback(url string, header map[string]string) *Callback {
 
 func TestProgressDeliveryOutbound(t *testing.T) {
 	t.Run("OneInFlightAndABurstFoldsIntoTheNext", func(t *testing.T) {
-		pt := newProgressTest(t, newNexusCallback("http://localhost/callback", map[string]string{"token": "abc"}), nil)
+		pt := newProgressTest(
+			t,
+			newNexusCallback("http://localhost/callback", map[string]string{"token": "abc"}),
+			nil,
+		)
 		pt.deliver(1)
 		pt.deliver(3)
 		pt.deliver(2) // stale behind 3
 		state := pt.state()
 		require.Equal(t, int64(1), state.GetProgressInFlight(), "one delivery in flight")
-		require.Equal(t, int64(3), state.GetPendingProgress().GetCounter(), "later progress waits, folded")
+		require.Equal(
+			t,
+			int64(3),
+			state.GetPendingProgress().GetCounter(),
+			"later progress waits, folded",
+		)
 
 		require.NoError(t, pt.runInFlight())
 		require.Len(t, pt.requests, 1)
 		require.Equal(t, "running", pt.requests[0].state)
-		require.Equal(t, "abc", pt.requests[0].header.Get("token"), "the callback's headers ride along")
+		require.Equal(
+			t,
+			"abc",
+			pt.requests[0].header.Get("token"),
+			"the callback's headers ride along",
+		)
 		require.Empty(t, pt.requests[0].header.Get("Nexus-Operation-Close-Time"))
-		require.Equal(t, map[string]any{"position": "p", "counter": "3", "metadata": map[string]any{"topic": "t"}}, pt.requests[0].body,
-			"the delivery carries the newest pending progress")
+		require.Equal(
+			t,
+			map[string]any{
+				"position": "p",
+				"counter":  "3",
+				"metadata": map[string]any{"topic": "t"},
+			},
+			pt.requests[0].body,
+			"the delivery carries the newest pending progress",
+		)
 		state = pt.state()
 		require.Equal(t, int64(3), state.GetDeliveredProgressCounter())
 		require.Zero(t, state.GetProgressInFlight())
 		require.Nil(t, state.GetPendingProgress())
 
 		pt.deliver(3)
-		require.Zero(t, pt.state().GetProgressInFlight(), "a counter already delivered starts nothing")
+		require.Zero(
+			t,
+			pt.state().GetProgressInFlight(),
+			"a counter already delivered starts nothing",
+		)
 	})
 
 	t.Run("ProgressDuringADeliveryGetsAnotherOne", func(t *testing.T) {
@@ -183,7 +231,12 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 		require.NoError(t, pt.runInFlight())
 		state := pt.state()
 		require.Equal(t, int64(1), state.GetDeliveredProgressCounter())
-		require.Equal(t, int64(5), state.GetProgressInFlight(), "the newer progress is the next delivery")
+		require.Equal(
+			t,
+			int64(5),
+			state.GetProgressInFlight(),
+			"the newer progress is the next delivery",
+		)
 		require.NoError(t, pt.runInFlight())
 		require.Equal(t, "5", pt.requests[1].body["counter"])
 		require.Zero(t, pt.state().GetProgressInFlight())
@@ -191,7 +244,8 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 
 	for _, status := range []int{
 		http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone,
-		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity,
+		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType,
+		http.StatusUnprocessableEntity,
 	} {
 		t.Run(fmt.Sprintf("A%dTurnsProgressOff", status), func(t *testing.T) {
 			pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil), nil)
@@ -203,7 +257,12 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 			require.Zero(t, state.GetProgressInFlight())
 			pt.deliver(2)
 			require.Nil(t, pt.state().GetPendingProgress(), "progress stays off for the callback")
-			require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, pt.state().GetStatus(), "the completion is still delivered")
+			require.Equal(
+				t,
+				callbackspb.CALLBACK_STATUS_STANDBY,
+				pt.state().GetStatus(),
+				"the completion is still delivered",
+			)
 			require.Equal(t, status == http.StatusNotFound, pt.state().GetCallerOperationClosed(),
 				"only a 404 says the caller's operation is gone")
 		})
@@ -242,17 +301,34 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 		pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil), nil)
 		pt.deliver(1)
 		pt.during = func() {
-			_, _, err := chasm.UpdateComponent(pt.ctx, pt.ref, func(c *Callback, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-				return struct{}{}, TransitionScheduled.Apply(c, ctx, EventScheduled{})
-			}, struct{}{})
+			_, _, err := chasm.UpdateComponent(
+				pt.ctx,
+				pt.ref,
+				func(c *Callback, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+					return struct{}{}, TransitionScheduled.Apply(c, ctx, EventScheduled{})
+				},
+				struct{}{},
+			)
 			require.NoError(t, err)
 		}
 		state := pt.state()
 		task := &callbackspb.ProgressTask{Counter: state.GetProgressInFlight()}
-		require.NoError(t, pt.handler.Execute(pt.ctx, pt.ref, chasm.TaskAttributes{Destination: "http://localhost"}, task))
+		require.NoError(
+			t,
+			pt.handler.Execute(
+				pt.ctx,
+				pt.ref,
+				chasm.TaskAttributes{Destination: "http://localhost"},
+				task,
+			),
+		)
 		state = pt.state()
 		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, state.GetStatus())
-		require.Zero(t, state.GetProgressInFlight(), "a result after the completion was scheduled is ignored")
+		require.Zero(
+			t,
+			state.GetProgressInFlight(),
+			"a result after the completion was scheduled is ignored",
+		)
 		require.Nil(t, state.GetPendingProgress())
 		pt.deliver(2)
 		require.Nil(t, pt.state().GetPendingProgress(), "progress after the completion is dropped")
@@ -260,7 +336,9 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 
 	t.Run("AWorkerHandlerTakesNoProgressYet", func(t *testing.T) {
 		cb := newNexusCallback("http://localhost/callback", nil)
-		cb.Callback.Variant = &callbackspb.Callback_NexusHandler_{NexusHandler: &callbackspb.Callback_NexusHandler{TaskQueueName: "tq"}}
+		cb.Callback.Variant = &callbackspb.Callback_NexusHandler_{
+			NexusHandler: &callbackspb.Callback_NexusHandler{TaskQueueName: "tq"},
+		}
 		pt := newProgressTest(t, cb, nil)
 		pt.deliver(1)
 		require.Nil(t, pt.state().GetPendingProgress())
@@ -268,10 +346,19 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 }
 
 func TestProgressDeliveryInternal(t *testing.T) {
-	ref := &persistencespb.ChasmComponentRef{NamespaceId: "namespace-id", BusinessId: "caller", RunId: "run", ArchetypeId: 1234}
+	ref := &persistencespb.ChasmComponentRef{
+		NamespaceId: "namespace-id",
+		BusinessId:  "caller",
+		RunId:       "run",
+		ArchetypeId: 1234,
+	}
 	serialized, err := ref.Marshal()
 	require.NoError(t, err)
-	header := map[string]string{strings.ToLower(commonnexus.CallbackTokenHeader): base64.RawURLEncoding.EncodeToString(serialized)}
+	header := map[string]string{
+		strings.ToLower(commonnexus.CallbackTokenHeader): base64.RawURLEncoding.EncodeToString(
+			serialized,
+		),
+	}
 
 	for _, tc := range []struct {
 		name         string
@@ -281,7 +368,12 @@ func TestProgressDeliveryInternal(t *testing.T) {
 		wantInFlight int64
 	}{
 		{name: "Delivered"},
-		{name: "ClosedOperationTurnsProgressOff", err: serviceerror.NewNotFound("operation not found"), wantDisabled: true, wantClosed: true},
+		{
+			name:         "ClosedOperationTurnsProgressOff",
+			err:          serviceerror.NewNotFound("operation not found"),
+			wantDisabled: true,
+			wantClosed:   true,
+		},
 		{name: "UnavailableRetries", err: serviceerror.NewUnavailable("busy"), wantInFlight: 1},
 		{
 			name:         "NamespaceNotActiveRetries",
@@ -308,13 +400,21 @@ func TestProgressDeliveryInternal(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			client := historyservicemock.NewMockHistoryServiceClient(ctrl)
 			client.EXPECT().CompleteNexusOperationChasm(gomock.Any(), gomock.Any()).DoAndReturn(
-				func(_ context.Context, req *historyservice.CompleteNexusOperationChasmRequest, _ ...grpc.CallOption) (*historyservice.CompleteNexusOperationChasmResponse, error) {
+				func(
+					_ context.Context,
+					req *historyservice.CompleteNexusOperationChasmRequest,
+					_ ...grpc.CallOption,
+				) (*historyservice.CompleteNexusOperationChasmResponse, error) {
 					require.Equal(t, serialized, req.GetCompletion().GetComponentRef())
 					require.Equal(t, int64(1), req.GetProgress().GetCounter())
 					require.Equal(t, "p", req.GetProgress().GetPosition())
 					return &historyservice.CompleteNexusOperationChasmResponse{}, tc.err
 				})
-			pt := newProgressTest(t, newNexusCallback(chasm.NexusCompletionHandlerURL, header), client)
+			pt := newProgressTest(
+				t,
+				newNexusCallback(chasm.NexusCompletionHandlerURL, header),
+				client,
+			)
 			pt.deliver(1)
 			require.NoError(t, pt.runInFlight())
 			state := pt.state()
@@ -326,10 +426,19 @@ func TestProgressDeliveryInternal(t *testing.T) {
 }
 
 func TestProgressDeliveryInternalHonorsTheProgressFlag(t *testing.T) {
-	ref := &persistencespb.ChasmComponentRef{NamespaceId: "namespace-id", BusinessId: "caller", RunId: "run", ArchetypeId: 1234}
+	ref := &persistencespb.ChasmComponentRef{
+		NamespaceId: "namespace-id",
+		BusinessId:  "caller",
+		RunId:       "run",
+		ArchetypeId: 1234,
+	}
 	serialized, err := ref.Marshal()
 	require.NoError(t, err)
-	header := map[string]string{strings.ToLower(commonnexus.CallbackTokenHeader): base64.RawURLEncoding.EncodeToString(serialized)}
+	header := map[string]string{
+		strings.ToLower(commonnexus.CallbackTokenHeader): base64.RawURLEncoding.EncodeToString(
+			serialized,
+		),
+	}
 	// No call to History is expected: the caller's namespace does not take progress.
 	client := historyservicemock.NewMockHistoryServiceClient(gomock.NewController(t))
 	pt := newProgressTest(t, newNexusCallback(chasm.NexusCompletionHandlerURL, header), client)
