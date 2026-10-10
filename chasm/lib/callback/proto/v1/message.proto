@@ -5,6 +5,7 @@ package temporal.server.chasm.lib.callbacks.proto.v1;
 import "google/protobuf/timestamp.proto";
 import "temporal/api/common/v1/message.proto";
 import "temporal/api/failure/v1/message.proto";
+import "temporal/api/nexus/v1/message.proto";
 
 option go_package = "go.temporal.io/server/chasm/lib/callbacks/gen/callbackspb;callbackspb";
 
@@ -37,6 +38,18 @@ message CallbackState {
   // request ID (to serve as an idempotency key). As well as the source request ID, to identify
   // when the callback was added (for buffered workflow event scenarios).
   string request_id = 9;
+
+  // Progress of the source that no delivery carried yet: the latest one, so progress reported while
+  // a delivery is in flight folds into the next delivery.
+  temporal.api.nexus.v1.NexusOperationProgress pending_progress = 10;
+  // The counter of the progress delivery in flight, or zero when none is. At most one is in flight.
+  int64 progress_in_flight = 11;
+  // The highest counter a progress delivery carried.
+  int64 delivered_progress_counter = 12;
+  // The receiver refused progress (any 4xx), so the callback only delivers the completion.
+  bool progress_disabled = 13;
+  // The number of failed attempts of the progress delivery in flight.
+  int32 progress_attempt = 14;
 }
 
 // Status of a callback.

@@ -112,6 +112,114 @@ func (x *BackoffTask) GetAttempt() int32 {
 	return 0
 }
 
+// Delivers the callback's pending progress while the source runs.
+type ProgressTask struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The counter of the delivery in flight when the task was scheduled.
+	Counter int64 `protobuf:"varint,1,opt,name=counter,proto3" json:"counter,omitempty"`
+	// The attempt of that delivery.
+	Attempt       int32 `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProgressTask) Reset() {
+	*x = ProgressTask{}
+	mi := &file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProgressTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProgressTask) ProtoMessage() {}
+
+func (x *ProgressTask) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProgressTask.ProtoReflect.Descriptor instead.
+func (*ProgressTask) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ProgressTask) GetCounter() int64 {
+	if x != nil {
+		return x.Counter
+	}
+	return 0
+}
+
+func (x *ProgressTask) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+// Retries a progress delivery that failed with a retryable error.
+type ProgressBackoffTask struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Counter       int64                  `protobuf:"varint,1,opt,name=counter,proto3" json:"counter,omitempty"`
+	Attempt       int32                  `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProgressBackoffTask) Reset() {
+	*x = ProgressBackoffTask{}
+	mi := &file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProgressBackoffTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProgressBackoffTask) ProtoMessage() {}
+
+func (x *ProgressBackoffTask) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProgressBackoffTask.ProtoReflect.Descriptor instead.
+func (*ProgressBackoffTask) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ProgressBackoffTask) GetCounter() int64 {
+	if x != nil {
+		return x.Counter
+	}
+	return 0
+}
+
+func (x *ProgressBackoffTask) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
 var File_temporal_server_chasm_lib_callback_proto_v1_tasks_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDesc = "" +
@@ -120,7 +228,13 @@ const file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDesc = "" 
 	"\x0eInvocationTask\x12\x18\n" +
 	"\aattempt\x18\x01 \x01(\x05R\aattempt\"'\n" +
 	"\vBackoffTask\x12\x18\n" +
-	"\aattempt\x18\x01 \x01(\x05R\aattemptBGZEgo.temporal.io/server/chasm/lib/callbacks/gen/callbackspb;callbackspbb\x06proto3"
+	"\aattempt\x18\x01 \x01(\x05R\aattempt\"B\n" +
+	"\fProgressTask\x12\x18\n" +
+	"\acounter\x18\x01 \x01(\x03R\acounter\x12\x18\n" +
+	"\aattempt\x18\x02 \x01(\x05R\aattempt\"I\n" +
+	"\x13ProgressBackoffTask\x12\x18\n" +
+	"\acounter\x18\x01 \x01(\x03R\acounter\x12\x18\n" +
+	"\aattempt\x18\x02 \x01(\x05R\aattemptBGZEgo.temporal.io/server/chasm/lib/callbacks/gen/callbackspb;callbackspbb\x06proto3"
 
 var (
 	file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDescOnce sync.Once
@@ -134,10 +248,12 @@ func file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDescGZIP() 
 	return file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDescData
 }
 
-var file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_goTypes = []any{
-	(*InvocationTask)(nil), // 0: temporal.server.chasm.lib.callbacks.proto.v1.InvocationTask
-	(*BackoffTask)(nil),    // 1: temporal.server.chasm.lib.callbacks.proto.v1.BackoffTask
+	(*InvocationTask)(nil),      // 0: temporal.server.chasm.lib.callbacks.proto.v1.InvocationTask
+	(*BackoffTask)(nil),         // 1: temporal.server.chasm.lib.callbacks.proto.v1.BackoffTask
+	(*ProgressTask)(nil),        // 2: temporal.server.chasm.lib.callbacks.proto.v1.ProgressTask
+	(*ProgressBackoffTask)(nil), // 3: temporal.server.chasm.lib.callbacks.proto.v1.ProgressBackoffTask
 }
 var file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -158,7 +274,7 @@ func file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDesc), len(file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

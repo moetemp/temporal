@@ -12,8 +12,9 @@ import (
 	sync "sync"
 	unsafe "unsafe"
 
-	v11 "go.temporal.io/api/common/v1"
+	v12 "go.temporal.io/api/common/v1"
 	v1 "go.temporal.io/api/failure/v1"
+	v11 "go.temporal.io/api/nexus/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -130,9 +131,20 @@ type CallbackState struct {
 	// TODO(temporal/issues/11958): This field is overloaded. It is used for _both_, the outgoing
 	// request ID (to serve as an idempotency key). As well as the source request ID, to identify
 	// when the callback was added (for buffered workflow event scenarios).
-	RequestId     string `protobuf:"bytes,9,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RequestId string `protobuf:"bytes,9,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Progress of the source that no delivery carried yet: the latest one, so progress reported while
+	// a delivery is in flight folds into the next delivery.
+	PendingProgress *v11.NexusOperationProgress `protobuf:"bytes,10,opt,name=pending_progress,json=pendingProgress,proto3" json:"pending_progress,omitempty"`
+	// The counter of the progress delivery in flight, or zero when none is. At most one is in flight.
+	ProgressInFlight int64 `protobuf:"varint,11,opt,name=progress_in_flight,json=progressInFlight,proto3" json:"progress_in_flight,omitempty"`
+	// The highest counter a progress delivery carried.
+	DeliveredProgressCounter int64 `protobuf:"varint,12,opt,name=delivered_progress_counter,json=deliveredProgressCounter,proto3" json:"delivered_progress_counter,omitempty"`
+	// The receiver refused progress (any 4xx), so the callback only delivers the completion.
+	ProgressDisabled bool `protobuf:"varint,13,opt,name=progress_disabled,json=progressDisabled,proto3" json:"progress_disabled,omitempty"`
+	// The number of failed attempts of the progress delivery in flight.
+	ProgressAttempt int32 `protobuf:"varint,14,opt,name=progress_attempt,json=progressAttempt,proto3" json:"progress_attempt,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CallbackState) Reset() {
@@ -221,6 +233,41 @@ func (x *CallbackState) GetRequestId() string {
 	return ""
 }
 
+func (x *CallbackState) GetPendingProgress() *v11.NexusOperationProgress {
+	if x != nil {
+		return x.PendingProgress
+	}
+	return nil
+}
+
+func (x *CallbackState) GetProgressInFlight() int64 {
+	if x != nil {
+		return x.ProgressInFlight
+	}
+	return 0
+}
+
+func (x *CallbackState) GetDeliveredProgressCounter() int64 {
+	if x != nil {
+		return x.DeliveredProgressCounter
+	}
+	return 0
+}
+
+func (x *CallbackState) GetProgressDisabled() bool {
+	if x != nil {
+		return x.ProgressDisabled
+	}
+	return false
+}
+
+func (x *CallbackState) GetProgressAttempt() int32 {
+	if x != nil {
+		return x.ProgressAttempt
+	}
+	return 0
+}
+
 type Callback struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Variant:
@@ -228,7 +275,7 @@ type Callback struct {
 	//	*Callback_Nexus_
 	//	*Callback_NexusHandler_
 	Variant       isCallback_Variant `protobuf_oneof:"variant"`
-	Links         []*v11.Link        `protobuf:"bytes,100,rep,name=links,proto3" json:"links,omitempty"`
+	Links         []*v12.Link        `protobuf:"bytes,100,rep,name=links,proto3" json:"links,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -288,7 +335,7 @@ func (x *Callback) GetNexusHandler() *Callback_NexusHandler {
 	return nil
 }
 
-func (x *Callback) GetLinks() []*v11.Link {
+func (x *Callback) GetLinks() []*v12.Link {
 	if x != nil {
 		return x.Links
 	}
@@ -414,7 +461,7 @@ type Callback_NexusHandler struct {
 	// Target operation.
 	Operation string `protobuf:"bytes,3,opt,name=operation,proto3" json:"operation,omitempty"`
 	// Arbitrary user-supplied data from the source operation's callsite.
-	SourceContext *v11.Payload `protobuf:"bytes,4,opt,name=source_context,json=sourceContext,proto3" json:"source_context,omitempty"`
+	SourceContext *v12.Payload `protobuf:"bytes,4,opt,name=source_context,json=sourceContext,proto3" json:"source_context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -470,7 +517,7 @@ func (x *Callback_NexusHandler) GetOperation() string {
 	return ""
 }
 
-func (x *Callback_NexusHandler) GetSourceContext() *v11.Payload {
+func (x *Callback_NexusHandler) GetSourceContext() *v12.Payload {
 	if x != nil {
 		return x.SourceContext
 	}
@@ -481,7 +528,7 @@ var File_temporal_server_chasm_lib_callback_proto_v1_message_proto protoreflect.
 
 const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\"\xd3\x04\n" +
+	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a#temporal/api/nexus/v1/message.proto\"\xf1\x06\n" +
 	"\rCallbackState\x12R\n" +
 	"\bcallback\x18\x01 \x01(\v26.temporal.server.chasm.lib.callbacks.proto.v1.CallbackR\bcallback\x12G\n" +
 	"\x11registration_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x10registrationTime\x12T\n" +
@@ -491,7 +538,13 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\x14last_attempt_failure\x18\a \x01(\v2 .temporal.api.failure.v1.FailureR\x12lastAttemptFailure\x12W\n" +
 	"\x1anext_attempt_schedule_time\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x17nextAttemptScheduleTime\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\t \x01(\tR\trequestId\x1a\x10\n" +
+	"request_id\x18\t \x01(\tR\trequestId\x12X\n" +
+	"\x10pending_progress\x18\n" +
+	" \x01(\v2-.temporal.api.nexus.v1.NexusOperationProgressR\x0fpendingProgress\x12,\n" +
+	"\x12progress_in_flight\x18\v \x01(\x03R\x10progressInFlight\x12<\n" +
+	"\x1adelivered_progress_counter\x18\f \x01(\x03R\x18deliveredProgressCounter\x12+\n" +
+	"\x11progress_disabled\x18\r \x01(\bR\x10progressDisabled\x12)\n" +
+	"\x10progress_attempt\x18\x0e \x01(\x05R\x0fprogressAttempt\x1a\x10\n" +
 	"\x0eWorkflowClosed\"\x83\x05\n" +
 	"\bCallback\x12T\n" +
 	"\x05nexus\x18\x02 \x01(\v2<.temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusH\x00R\x05nexus\x12j\n" +
@@ -541,8 +594,9 @@ var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_goTypes = []a
 	nil,                                  // 6: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntry
 	(*timestamppb.Timestamp)(nil),        // 7: google.protobuf.Timestamp
 	(*v1.Failure)(nil),                   // 8: temporal.api.failure.v1.Failure
-	(*v11.Link)(nil),                     // 9: temporal.api.common.v1.Link
-	(*v11.Payload)(nil),                  // 10: temporal.api.common.v1.Payload
+	(*v11.NexusOperationProgress)(nil),   // 9: temporal.api.nexus.v1.NexusOperationProgress
+	(*v12.Link)(nil),                     // 10: temporal.api.common.v1.Link
+	(*v12.Payload)(nil),                  // 11: temporal.api.common.v1.Payload
 }
 var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_depIdxs = []int32{
 	2,  // 0: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.callback:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback
@@ -551,16 +605,17 @@ var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_depIdxs = []i
 	7,  // 3: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.last_attempt_complete_time:type_name -> google.protobuf.Timestamp
 	8,  // 4: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.last_attempt_failure:type_name -> temporal.api.failure.v1.Failure
 	7,  // 5: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.next_attempt_schedule_time:type_name -> google.protobuf.Timestamp
-	4,  // 6: temporal.server.chasm.lib.callbacks.proto.v1.Callback.nexus:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus
-	5,  // 7: temporal.server.chasm.lib.callbacks.proto.v1.Callback.nexus_handler:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler
-	9,  // 8: temporal.server.chasm.lib.callbacks.proto.v1.Callback.links:type_name -> temporal.api.common.v1.Link
-	6,  // 9: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.header:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntry
-	10, // 10: temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler.source_context:type_name -> temporal.api.common.v1.Payload
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	9,  // 6: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.pending_progress:type_name -> temporal.api.nexus.v1.NexusOperationProgress
+	4,  // 7: temporal.server.chasm.lib.callbacks.proto.v1.Callback.nexus:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus
+	5,  // 8: temporal.server.chasm.lib.callbacks.proto.v1.Callback.nexus_handler:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler
+	10, // 9: temporal.server.chasm.lib.callbacks.proto.v1.Callback.links:type_name -> temporal.api.common.v1.Link
+	6,  // 10: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.header:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntry
+	11, // 11: temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler.source_context:type_name -> temporal.api.common.v1.Payload
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_callback_proto_v1_message_proto_init() }

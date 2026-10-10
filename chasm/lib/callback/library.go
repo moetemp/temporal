@@ -34,8 +34,10 @@ type (
 	Library struct {
 		chasm.UnimplementedLibrary
 
-		InvocationTaskHandler *invocationTaskHandler
-		BackoffTaskHandler    *backoffTaskHandler
+		InvocationTaskHandler      *invocationTaskHandler
+		BackoffTaskHandler         *backoffTaskHandler
+		ProgressTaskHandler        *progressTaskHandler
+		ProgressBackoffTaskHandler *progressBackoffTaskHandler
 
 		destinationBlocked DestinationBlockedFn
 	}
@@ -50,8 +52,10 @@ func NewNilLibrary() *Library {
 type libraryParams struct {
 	fx.In
 
-	InvocationTaskHandler *invocationTaskHandler
-	BackoffTaskHandler    *backoffTaskHandler
+	InvocationTaskHandler      *invocationTaskHandler
+	BackoffTaskHandler         *backoffTaskHandler
+	ProgressTaskHandler        *progressTaskHandler
+	ProgressBackoffTaskHandler *progressBackoffTaskHandler
 	// Only the history service runs the outbound queue, so only it provides this. Elsewhere it is
 	// absent and callbacks are simply never reported as blocked.
 	DestinationBlocked DestinationBlockedFn `optional:"true"`
@@ -59,9 +63,11 @@ type libraryParams struct {
 
 func newLibrary(params libraryParams) *Library {
 	return &Library{
-		InvocationTaskHandler: params.InvocationTaskHandler,
-		BackoffTaskHandler:    params.BackoffTaskHandler,
-		destinationBlocked:    params.DestinationBlocked,
+		InvocationTaskHandler:      params.InvocationTaskHandler,
+		BackoffTaskHandler:         params.BackoffTaskHandler,
+		ProgressTaskHandler:        params.ProgressTaskHandler,
+		ProgressBackoffTaskHandler: params.ProgressBackoffTaskHandler,
+		destinationBlocked:         params.DestinationBlocked,
 	}
 }
 
@@ -98,6 +104,15 @@ func (l *Library) Tasks() []*chasm.RegistrableTask {
 		chasm.NewRegistrablePureTask(
 			"backoff",
 			l.BackoffTaskHandler,
+		),
+		chasm.NewRegistrableSideEffectTask(
+			"progress",
+			l.ProgressTaskHandler,
+			chasm.WithTaskGroup(InvocationTaskGroup),
+		),
+		chasm.NewRegistrablePureTask(
+			"progressBackoff",
+			l.ProgressBackoffTaskHandler,
 		),
 	}
 }
