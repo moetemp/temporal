@@ -50,6 +50,9 @@ message CallbackState {
   bool progress_disabled = 13;
   // The number of failed attempts of the progress delivery in flight.
   int32 progress_attempt = 14;
+  // Set when a progress delivery found the caller's operation closed (404), so nothing will read
+  // this callback's progress or completion and its parent may drop it.
+  bool caller_operation_closed = 15;
 }
 
 // Status of a callback.

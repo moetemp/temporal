@@ -204,6 +204,8 @@ func TestProgressDeliveryOutbound(t *testing.T) {
 			pt.deliver(2)
 			require.Nil(t, pt.state().GetPendingProgress(), "progress stays off for the callback")
 			require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, pt.state().GetStatus(), "the completion is still delivered")
+			require.Equal(t, status == http.StatusNotFound, pt.state().GetCallerOperationClosed(),
+				"only a 404 says the caller's operation is gone")
 		})
 	}
 
@@ -275,10 +277,11 @@ func TestProgressDeliveryInternal(t *testing.T) {
 		name         string
 		err          error
 		wantDisabled bool
+		wantClosed   bool
 		wantInFlight int64
 	}{
 		{name: "Delivered"},
-		{name: "ClosedOperationTurnsProgressOff", err: serviceerror.NewNotFound("operation not found"), wantDisabled: true},
+		{name: "ClosedOperationTurnsProgressOff", err: serviceerror.NewNotFound("operation not found"), wantDisabled: true, wantClosed: true},
 		{name: "UnavailableRetries", err: serviceerror.NewUnavailable("busy"), wantInFlight: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -296,6 +299,7 @@ func TestProgressDeliveryInternal(t *testing.T) {
 			require.NoError(t, pt.runInFlight())
 			state := pt.state()
 			require.Equal(t, tc.wantDisabled, state.GetProgressDisabled())
+			require.Equal(t, tc.wantClosed, state.GetCallerOperationClosed())
 			require.Equal(t, tc.wantInFlight, state.GetProgressInFlight())
 		})
 	}

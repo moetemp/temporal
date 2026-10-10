@@ -10,6 +10,7 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/api/historyservice/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	tokenspb "go.temporal.io/server/api/token/v1"
@@ -109,6 +110,8 @@ const (
 	progressRefused
 	// The delivery may succeed on a later attempt.
 	progressRetry
+	// The caller's operation is closed (404), so nothing will read this callback any more.
+	progressCallerClosed
 )
 
 type saveProgressInput struct {
@@ -136,6 +139,10 @@ func (c *Callback) saveProgressResult(ctx chasm.MutableContext, input saveProgre
 	case progressRefused:
 		c.ProgressDisabled = true
 		c.stopProgress()
+	case progressCallerClosed:
+		c.ProgressDisabled = true
+		c.CallerOperationClosed = true
+		c.stopProgress()
 	case progressRetry:
 		c.ProgressAttempt++
 		ctx.AddTask(c, chasm.TaskAttributes{
@@ -159,6 +166,15 @@ func progressBody(progress *nexuspb.NexusOperationProgress) ([]byte, error) {
 		Metadata: progress.GetMetadata(),
 	}
 	return json.Marshal(body)
+}
+
+// progressFoundCallerClosed reports whether an outbound delivery got a 404, which says the caller's
+// operation is no longer open.
+func progressFoundCallerClosed(err error) bool {
+	if handlerErr, ok := errors.AsType[*nexus.HandlerError](err); ok {
+		return handlerErr.Type == nexus.HandlerErrorTypeNotFound
+	}
+	return false
 }
 
 // progressRefusedByHandler reports whether an outbound delivery got a 4xx other than one that asks
@@ -275,6 +291,8 @@ func (h *progressTaskHandler) deliverOutbound(
 	switch {
 	case err == nil:
 		return progressDelivered, nil
+	case progressFoundCallerClosed(err):
+		return progressCallerClosed, err
 	case progressRefusedByHandler(err):
 		return progressRefused, err
 	default:
@@ -311,13 +329,15 @@ func (h *progressTaskHandler) deliverInternal(ctx context.Context, invocation pr
 			Progress: proto.CloneOf(invocation.progress),
 		},
 	})
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return progressCallerClosed, err
+	}
 	switch {
 	case err == nil:
 		return progressDelivered, nil
 	case common.IsRetryableRPCError(err):
 		return progressRetry, err
 	default:
-		// Includes NotFound: the caller's operation closed, so nothing will read progress for it.
 		return progressRefused, err
 	}
 }
