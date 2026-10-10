@@ -42,6 +42,7 @@ import (
 	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
 	chasmscheduler "go.temporal.io/server/chasm/lib/scheduler"
 	schedulerpb "go.temporal.io/server/chasm/lib/scheduler/gen/schedulerpb/v1"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/chasm/lib/workflow"
 	"go.temporal.io/server/client/frontend"
 	matchingclient "go.temporal.io/server/client/matching"
@@ -121,12 +122,15 @@ type (
 	ActivityHandler = activity.FrontendHandler
 	// NexusOperationHandler is the nexus operation frontend handler, aliased to avoid embedding name collision.
 	NexusOperationHandler = chasmnexus.FrontendHandler
+	// StreamNotifierHandler is the stream notifier frontend handler, aliased to avoid embedding name collision.
+	StreamNotifierHandler = streamnotifier.FrontendHandler
 
 	// WorkflowHandler - gRPC handler interface for workflowservice
 	WorkflowHandler struct {
 		workflowservice.UnsafeWorkflowServiceServer
 		ActivityHandler
 		NexusOperationHandler
+		StreamNotifierHandler
 
 		validator *workflow.RequestValidator
 
@@ -341,6 +345,7 @@ func NewWorkflowHandler(
 	httpEnabled bool,
 	activityHandler activity.FrontendHandler,
 	nexusOperationHandler chasmnexus.FrontendHandler,
+	streamNotifierHandler streamnotifier.FrontendHandler,
 	registry *chasm.Registry,
 	workerDeploymentReadRateLimiter quotas.RequestRateLimiter,
 	validator *workflow.RequestValidator,
@@ -348,6 +353,7 @@ func NewWorkflowHandler(
 	handler := &WorkflowHandler{
 		ActivityHandler:       activityHandler,
 		NexusOperationHandler: nexusOperationHandler,
+		StreamNotifierHandler: streamNotifierHandler,
 		status:                common.DaemonStatusInitialized,
 		callbackValidator:     callbackValidator,
 		config:                config,

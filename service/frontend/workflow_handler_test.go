@@ -238,6 +238,7 @@ func (s *WorkflowHandlerSuite) getWorkflowHandler(config *Config) *WorkflowHandl
 			nil,
 			nil,
 		),
+		nil, // Not testing the stream notifier here
 		nil, // Not testing CHASM registry here
 		quotas.NoopRequestRateLimiter,
 		workflow.NewValidator(

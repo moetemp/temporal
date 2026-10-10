@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.streamnotifier.proto.v1;
+
+import "google/protobuf/timestamp.proto";
+import "temporal/api/common/v1/message.proto";
+import "temporal/api/stream/v1/message.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpb";
+
+// The state of one stream's notifier: the latest notification and whether the stream closed.
+message NotifierState {
+  // The stream, without a run ID: one notifier serves the stream across the owner's runs.
+  temporal.api.stream.v1.StreamReference stream_ref = 1;
+  // The highest counter notified so far, and the position and metadata that came with it.
+  int64 counter = 2;
+  string position = 3;
+  map<string, string> metadata = 4;
+  // Set once the stream closed. Callbacks attached afterwards complete right away.
+  bool closed = 5;
+  // The completion result the stream closed with, if any.
+  temporal.api.common.v1.Payload close_result = 6;
+  // When the stream closed.
+  google.protobuf.Timestamp close_time = 7;
+  // When the notifier last saw an attach or a notification. An open notifier that sees neither
+  // for the idle timeout closes, so an abandoned stream does not hold callbacks forever.
+  google.protobuf.Timestamp last_activity_time = 8;
+  // Set when the stream closed because the notifier was idle, so the callbacks complete with a
+  // failure rather than a result.
+  bool idle_closed = 9;
+  // Set once a closed notifier has stopped taking attaches, when its execution completes.
+  bool expired = 10;
+}

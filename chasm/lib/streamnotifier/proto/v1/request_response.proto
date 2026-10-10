@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.streamnotifier.proto.v1;
+
+import "temporal/api/workflowservice/v1/request_response.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpb";
+
+// The requests carry the notifier's business ID, derived from the stream by the frontend, so that
+// routing and the execution key agree.
+
+message AttachStreamCallbackRequest {
+  string namespace_id = 1;
+  string business_id = 2;
+  temporal.api.workflowservice.v1.AttachStreamCallbackRequest frontend_request = 3;
+}
+
+message AttachStreamCallbackResponse {
+  temporal.api.workflowservice.v1.AttachStreamCallbackResponse frontend_response = 1;
+}
+
+message DetachStreamCallbackRequest {
+  string namespace_id = 1;
+  string business_id = 2;
+  temporal.api.workflowservice.v1.DetachStreamCallbackRequest frontend_request = 3;
+}
+
+message DetachStreamCallbackResponse {
+  temporal.api.workflowservice.v1.DetachStreamCallbackResponse frontend_response = 1;
+}
+
+message NotifyStreamRequest {
+  string namespace_id = 1;
+  string business_id = 2;
+  temporal.api.workflowservice.v1.NotifyStreamRequest frontend_request = 3;
+}
+
+message NotifyStreamResponse {
+  temporal.api.workflowservice.v1.NotifyStreamResponse frontend_response = 1;
+}
+
+message DescribeStreamNotifierRequest {
+  string namespace_id = 1;
+  string business_id = 2;
+  temporal.api.workflowservice.v1.DescribeStreamNotifierRequest frontend_request = 3;
+}
+
+message DescribeStreamNotifierResponse {
+  temporal.api.workflowservice.v1.DescribeStreamNotifierResponse frontend_response = 1;
+}

@@ -14,6 +14,7 @@ import (
 	nexusoperationpb "go.temporal.io/server/chasm/lib/nexusoperation/gen/nexusoperationpb/v1"
 	chasmscheduler "go.temporal.io/server/chasm/lib/scheduler"
 	"go.temporal.io/server/chasm/lib/scheduler/gen/schedulerpb/v1"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 	chasmtests "go.temporal.io/server/chasm/lib/tests"
 	chasmworkflow "go.temporal.io/server/chasm/lib/workflow"
 	"go.temporal.io/server/client"
@@ -157,6 +158,7 @@ var Module = fx.Options(
 	chasmworkflow.Module,
 	chasmcallback.Module,
 	activity.FrontendModule,
+	streamnotifier.FrontendModule,
 	fx.Provide(visibility.ChasmVisibilityManagerProvider),
 	fx.Provide(chasm.ChasmVisibilityInterceptorProvider),
 )
@@ -998,6 +1000,7 @@ func HandlerProvider(
 	activityHandler activity.FrontendHandler,
 	callbackValidator callbacks.Validator,
 	nexusOperationHandler chasmnexus.FrontendHandler,
+	streamNotifierHandler streamnotifier.FrontendHandler,
 	registry *chasm.Registry,
 	frontendServiceResolver membership.ServiceResolver,
 ) Handler {
@@ -1039,6 +1042,7 @@ func HandlerProvider(
 		httpEnabled(cfg, serviceName),
 		activityHandler,
 		nexusOperationHandler,
+		streamNotifierHandler,
 		registry,
 		workerDeploymentReadRateLimiter,
 		chasmworkflow.NewValidator(

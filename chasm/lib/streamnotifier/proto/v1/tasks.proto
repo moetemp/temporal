@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.streamnotifier.proto.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpb";
+
+// Fires when an open notifier has been idle for the idle timeout, which closes it, or when a closed
+// notifier has taken late attaches for the closed retention, which ends its execution.
+message ExpiryTask {
+  // The last activity time the task was scheduled against. Activity since then makes it stale.
+  google.protobuf.Timestamp last_activity_time = 1;
+}
