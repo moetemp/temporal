@@ -375,6 +375,11 @@ func (n *StreamNotifier) describeCallbacks(ctx chasm.Context) ([]*streampb.Strea
 		if err != nil {
 			return nil, err
 		}
+		// The header holds the caller's callback token. A reader of this namespace could forge a
+		// completion with it, also for a caller in another namespace.
+		if nexusCallback := apiCallback.GetNexus(); nexusCallback != nil {
+			nexusCallback.Header = nil
+		}
 		state, _, err := cb.APIState(ctx)
 		if err != nil {
 			return nil, err

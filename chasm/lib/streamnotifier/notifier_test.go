@@ -125,7 +125,10 @@ func (nt *notifierTest) attach(requestID string) error {
 			Namespace: "ns",
 			StreamRef: nt.ref,
 			RequestId: requestID,
-			Callback:  &commonpb.Callback_Nexus{Url: "http://caller/" + requestID},
+			Callback: &commonpb.Callback_Nexus{
+				Url:    "http://caller/" + requestID,
+				Header: map[string]string{"temporal-callback-token": "secret-" + requestID},
+			},
 		},
 	})
 	return err
@@ -251,6 +254,9 @@ func TestStreamNotifier(t *testing.T) {
 		require.False(t, desc.GetClosed())
 		require.Equal(t, []string{"a", "b"}, []string{desc.GetCallbacks()[0].GetRequestId(), desc.GetCallbacks()[1].GetRequestId()})
 		require.Equal(t, enumspb.CALLBACK_STATE_STANDBY, desc.GetCallbacks()[0].GetState())
+		require.Equal(t, "http://caller/a", desc.GetCallbacks()[0].GetCallback().GetNexus().GetUrl())
+		require.Empty(t, desc.GetCallbacks()[0].GetCallback().GetNexus().GetHeader(),
+			"the header holds the caller's token, which would let a reader forge a completion")
 	})
 
 	t.Run("CloseCompletesEveryCallbackAndLateAttachesRightAway", func(t *testing.T) {
