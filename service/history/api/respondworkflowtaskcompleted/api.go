@@ -626,6 +626,13 @@ func (handler *WorkflowTaskCompletedHandler) Invoke(
 			bypassTaskGeneration = false
 		}
 
+		if request.GetForceCreateNewWorkflowTask() {
+			// A worker forces a new task to heartbeat a long local activity. SDKs replay such a task
+			// as part of a heartbeat chain, so progress on it could reach the Workflow in a different
+			// activation on replay than live. It waits for the next task instead.
+			ms.HoldNexusProgress()
+		}
+
 		var newWTErr error
 		// If we checked WT heartbeat timeout before and WT wasn't timed out,
 		// then OriginalScheduledTime needs to be carried over to the new WT.
