@@ -111,8 +111,8 @@ type attachInput struct {
 }
 
 // attach adds a callback, or changes nothing when one with the request ID is attached. On a
-// closed stream the callback completes right away. A full notifier makes room by dropping
-// callbacks that are done, then the oldest one that no longer takes progress.
+// closed stream the callback completes right away. A full notifier makes room only by dropping
+// callbacks that are done.
 func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error {
 	if n.Expired {
 		return serviceerror.NewFailedPrecondition("the stream closed and its notifier no longer takes callbacks")
@@ -166,34 +166,25 @@ func (n *StreamNotifier) dropClosedCallers(ctx chasm.MutableContext) {
 	}
 }
 
-// evictOne drops the oldest callback that is done, or else the oldest one that no longer takes
-// progress, and reports whether it dropped one.
+// evictOne drops the oldest callback that is done and reports whether it dropped one. A callback
+// whose caller still waits for its completion is never dropped, even one that takes no progress,
+// such as an HSM caller's; callbacks whose caller closed are already gone (dropClosedCallers).
 func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) bool {
-	var done, quiet *callback.Callback
-	older := func(a, b *callback.Callback) bool {
-		return b == nil || a.GetRegistrationTime().AsTime().Before(b.GetRegistrationTime().AsTime())
-	}
+	var done *callback.Callback
 	for _, field := range n.Callbacks {
 		cb := field.Get(ctx)
-		switch {
-		case cb.Status == callbackspb.CALLBACK_STATUS_SUCCEEDED || cb.Status == callbackspb.CALLBACK_STATUS_FAILED:
-			if older(cb, done) {
-				done = cb
-			}
-		case cb.ProgressDisabled:
-			if older(cb, quiet) {
-				quiet = cb
-			}
-		default:
+		if cb.Status != callbackspb.CALLBACK_STATUS_SUCCEEDED && cb.Status != callbackspb.CALLBACK_STATUS_FAILED {
+			continue
+		}
+		if done == nil || cb.GetRegistrationTime().AsTime().Before(done.GetRegistrationTime().AsTime()) {
+			done = cb
 		}
 	}
-	for _, cb := range []*callback.Callback{done, quiet} {
-		if cb != nil {
-			n.detach(cb.GetRequestId())
-			return true
-		}
+	if done == nil {
+		return false
 	}
-	return false
+	n.detach(done.GetRequestId())
+	return true
 }
 
 // hasWaitingCallbacks reports whether a callback still waits for the stream's close.
