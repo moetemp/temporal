@@ -14,6 +14,10 @@ import (
 // notification and the data travels on the read path.
 const maxNexusProgressMetadataBytes = 2 * 1024
 
+// maxNexusProgressPositionBytes bounds the position, which History copies onto the caller's
+// Workflow Task scheduled event.
+const maxNexusProgressPositionBytes = 1024
+
 // nexusProgress is the body of a Nexus progress delivery, the OperationProgress object of the
 // Nexus HTTP spec.
 type nexusProgress struct {
@@ -36,6 +40,9 @@ func parseNexusProgress(body []byte) (nexusProgress, error) {
 	counter, err := parseNexusProgressCounter(wire.Counter)
 	if err != nil {
 		return nexusProgress{}, err
+	}
+	if len(wire.Position) > maxNexusProgressPositionBytes {
+		return nexusProgress{}, fmt.Errorf("progress position is %d bytes, more than the %d allowed", len(wire.Position), maxNexusProgressPositionBytes)
 	}
 	size := 0
 	for key, value := range wire.Metadata {
@@ -60,8 +67,9 @@ func parseNexusProgressCounter(raw json.RawMessage) (int64, error) {
 			return 0, fmt.Errorf("progress counter is not a string: %w", err)
 		}
 	}
+	// The spec says decimal, so a sign is refused even though ParseInt takes one.
 	counter, err := strconv.ParseInt(text, 10, 64)
-	if err != nil || counter <= 0 {
+	if err != nil || counter <= 0 || text[0] == '+' {
 		return 0, fmt.Errorf("progress counter must be a positive integer, got %s", raw)
 	}
 	return counter, nil
