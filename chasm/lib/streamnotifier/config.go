@@ -42,14 +42,19 @@ type Config struct {
 	MaxCallbacks    dynamicconfig.IntPropertyFnWithNamespaceFilter
 	IdleTimeout     dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	ClosedRetention dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	// The close result becomes the operation's result, so it takes the payload blob limits.
+	BlobSizeLimitError dynamicconfig.IntPropertyFnWithNamespaceFilter
+	BlobSizeLimitWarn  dynamicconfig.IntPropertyFnWithNamespaceFilter
 }
 
 func configProvider(dc *dynamicconfig.Collection) *Config {
 	return &Config{
-		Enabled:         Enabled.Get(dc),
-		ChasmEnabled:    dynamicconfig.EnableChasm.Get(dc),
-		MaxCallbacks:    MaxCallbacks.Get(dc),
-		IdleTimeout:     IdleTimeout.Get(dc),
-		ClosedRetention: ClosedRetention.Get(dc),
+		Enabled:            Enabled.Get(dc),
+		ChasmEnabled:       dynamicconfig.EnableChasm.Get(dc),
+		MaxCallbacks:       MaxCallbacks.Get(dc),
+		IdleTimeout:        IdleTimeout.Get(dc),
+		ClosedRetention:    ClosedRetention.Get(dc),
+		BlobSizeLimitError: dynamicconfig.BlobSizeLimitError.Get(dc),
+		BlobSizeLimitWarn:  dynamicconfig.BlobSizeLimitWarn.Get(dc),
 	}
 }
