@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/server/api/historyservice/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
 	tokenspb "go.temporal.io/server/api/token/v1"
 	"go.temporal.io/server/chasm"
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
@@ -162,6 +164,12 @@ func progressBody(progress *nexuspb.NexusOperationProgress) ([]byte, error) {
 // progressRefusedByHandler reports whether an outbound delivery got a 4xx other than one that asks
 // to try again later, which tells the handler to stop sending progress.
 func progressRefusedByHandler(err error) bool {
+	// A status with no handler error type, such as 405 or 422, arrives with the response itself.
+	if unexpected, ok := errors.AsType[*nexusrpc.UnexpectedResponseError](err); ok {
+		response, ok := unexpected.Details.(*http.Response)
+		return ok && response.StatusCode >= 400 && response.StatusCode < 500 &&
+			response.StatusCode != http.StatusRequestTimeout && response.StatusCode != http.StatusTooManyRequests
+	}
 	handlerErr, ok := errors.AsType[*nexus.HandlerError](err)
 	if !ok {
 		return false
@@ -284,6 +292,18 @@ func (h *progressTaskHandler) deliverInternal(ctx context.Context, invocation pr
 	ref, requestID, err := chasm.UnpackNexusCallbackToken(encodedToken)
 	if err != nil {
 		return progressRefused, err
+	}
+	// The frontend checks the caller's flag for a delivery from outside; this one skips it.
+	componentRef := &persistencespb.ChasmComponentRef{}
+	if err := componentRef.Unmarshal(ref); err != nil {
+		return progressRefused, err
+	}
+	callerNamespace, err := h.invocation.namespaceRegistry.GetNamespaceByID(namespace.ID(componentRef.GetNamespaceId()))
+	if err != nil {
+		return progressRetry, err
+	}
+	if !h.invocation.config.EnableProgress(callerNamespace.Name().String()) {
+		return progressRefused, errors.New("operation progress is not enabled for the caller's namespace")
 	}
 	_, err = h.invocation.historyClient.CompleteNexusOperationChasm(ctx, &historyservice.CompleteNexusOperationChasmRequest{
 		Completion: &tokenspb.NexusOperationCompletion{ComponentRef: ref, RequestId: requestID},
