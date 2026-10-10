@@ -4,23 +4,27 @@ import (
 	"context"
 	"errors"
 
+	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/resource"
 )
 
 type handler struct {
 	streamnotifierpb.UnimplementedStreamNotifierServiceServer
 
-	config *Config
-	logger log.Logger
+	config        *Config
+	logger        log.Logger
+	historyClient resource.HistoryClient
 }
 
-func newHandler(config *Config, logger log.Logger) *handler {
-	return &handler{config: config, logger: logger}
+func newHandler(config *Config, logger log.Logger, historyClient resource.HistoryClient) *handler {
+	return &handler{config: config, logger: logger, historyClient: historyClient}
 }
 
 // startOrUpdate applies update to the stream's notifier, creating it if the stream has none. A
@@ -61,6 +65,9 @@ func (h *handler) AttachStreamCallback(
 	defer log.CapturePanic(h.logger, &retErr)
 	fe := req.GetFrontendRequest()
 	ns := fe.GetNamespace()
+	if err := h.checkFirstRun(ctx, req.GetNamespaceId(), ns, fe.GetStreamRef()); err != nil {
+		return nil, err
+	}
 	err := startOrUpdate(ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(),
 		func(n *StreamNotifier, mctx chasm.MutableContext, r *workflowservice.AttachStreamCallbackRequest) (struct{}, error) {
 			return struct{}{}, n.attach(mctx, attachInput{
@@ -163,4 +170,28 @@ func (h *handler) DescribeStreamNotifier(
 		return nil, err
 	}
 	return &streamnotifierpb.DescribeStreamNotifierResponse{FrontendResponse: resp}, nil
+}
+
+// checkFirstRun refuses a reference whose run ID is not the first run of its owner's chain. Such a
+// reference would key a second notifier for the stream, and the owner check would take the owner
+// for ended and close that notifier while the stream runs. An owner that does not exist is left to
+// the owner check.
+func (h *handler) checkFirstRun(ctx context.Context, namespaceID, namespaceName string, ref *streampb.StreamReference) error {
+	resp, err := h.historyClient.DescribeWorkflowExecution(ctx, &historyservice.DescribeWorkflowExecutionRequest{
+		NamespaceId: namespaceID,
+		Request: &workflowservice.DescribeWorkflowExecutionRequest{
+			Namespace: namespaceName,
+			Execution: &commonpb.WorkflowExecution{WorkflowId: ref.GetWorkflowId()},
+		},
+	})
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if first := resp.GetWorkflowExecutionInfo().GetFirstRunId(); first != ref.GetRunId() {
+		return serviceerror.NewInvalidArgumentf("stream_ref.run_id %q is not the first run of the owner's run chain", ref.GetRunId())
+	}
+	return nil
 }

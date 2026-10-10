@@ -38,6 +38,9 @@ type notifierTest struct {
 	ownerCheck *ownerCheckTaskHandler
 	history    *historyservicemock.MockHistoryServiceClient
 	ref        *streampb.StreamReference
+	// ownerFirstRun is the first run of the owner's chain as an attach sees it; empty means the
+	// owner does not exist.
+	ownerFirstRun string
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
@@ -55,7 +58,18 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	registryMock.EXPECT().GetNamespaceByID(gomock.Any()).Return(
 		namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Id: "namespace-id", Name: "ns"}, nil, "active"), nil,
 	).AnyTimes()
-	h := newHandler(config, log.NewTestLogger())
+	nt := &notifierTest{}
+	attachHistory := historyservicemock.NewMockHistoryServiceClient(ctrl)
+	attachHistory.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, *historyservice.DescribeWorkflowExecutionRequest, ...grpc.CallOption) (*historyservice.DescribeWorkflowExecutionResponse, error) {
+			if nt.ownerFirstRun == "" {
+				return nil, serviceerror.NewNotFound("workflow not found")
+			}
+			return &historyservice.DescribeWorkflowExecutionResponse{
+				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{FirstRunId: nt.ownerFirstRun},
+			}, nil
+		}).AnyTimes()
+	h := newHandler(config, log.NewTestLogger(), attachHistory)
 	expiry := newExpiryTaskHandler(expiryTaskHandlerOptions{Config: config})
 	ownerCheck := newOwnerCheckTaskHandler(ownerCheckTaskHandlerOptions{
 		Config:            config,
@@ -66,7 +80,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
 	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck)))
-	return &notifierTest{
+	*nt = notifierTest{
 		t:          t,
 		ctx:        chasm.NewEngineContext(context.Background(), chasmtest.NewEngine(t, registry)),
 		handler:    h,
@@ -79,6 +93,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 			Topic:      "tokens",
 		},
 	}
+	return nt
 }
 
 func (nt *notifierTest) key() chasm.ExecutionKey {
@@ -302,6 +317,16 @@ func TestStreamNotifier(t *testing.T) {
 			require.Equal(t, "token-a", completion.OperationToken, "a completion before the start response still names the operation")
 			require.Equal(t, start, completion.StartTime)
 		})
+	})
+
+	t.Run("AnAttachNamingAnotherRunThanTheChainsFirstIsRefused", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "wf", RunId: "a-later-run", Topic: "t"}
+		nt.ownerFirstRun = "first-run"
+		var invalid *serviceerror.InvalidArgument
+		require.ErrorAs(t, nt.attach("a"), &invalid, "a run that is not the chain's first would key another notifier")
+		nt.ref.RunId = "first-run"
+		require.NoError(t, nt.attach("a"))
 	})
 
 	t.Run("AReusedWorkflowIDGetsAFreshNotifier", func(t *testing.T) {
