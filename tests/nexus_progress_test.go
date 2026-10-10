@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
+	commandpb "go.temporal.io/api/command/v1"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
+	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -438,6 +440,118 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatTasks(c
 	replayer := worker.NewWorkflowReplayer()
 	replayer.RegisterWorkflow(callerWF)
 	s.NoError(replayer.ReplayWorkflowHistory(nil, &historypb.History{Events: history()}))
+}
+
+// TestNexusOperationProgressSkipsHeartbeatRetries checks that the retry of a failed heartbeat task
+// holds progress like the task it retries, and that the next normal task carries it. A Signal
+// arrives before the retry starts, so the retry gets a scheduled event of its own.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatRetries(chasmEnabled bool) {
+	if !chasmEnabled {
+		// An HSM caller refuses progress; TestNexusOperationProgress covers it.
+		return
+	}
+	env := s.newTestEnv(chasmEnabled, testcore.WithDynamicConfig(chasmnexus.EnableProgress, true))
+	ctx := s.Context()
+	taskQueue := testcore.RandomizeStr(s.T().Name())
+	ns := env.Namespace().String()
+
+	var callbackToken, callbackURL string
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			callbackToken = options.CallbackHeader.Get(commonnexus.CallbackTokenHeader)
+			callbackURL = options.CallbackURL
+			return &nexus.HandlerStartOperationResultAsync{OperationToken: "test"}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+
+	run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, "workflow")
+	s.NoError(err)
+	frontend := env.FrontendClient()
+	poll := func() *workflowservice.PollWorkflowTaskQueueResponse {
+		resp, err := frontend.PollWorkflowTaskQueue(ctx, &workflowservice.PollWorkflowTaskQueueRequest{
+			Namespace: ns,
+			TaskQueue: &taskqueuepb.TaskQueue{Name: taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
+			Identity:  "test",
+		})
+		s.NoError(err)
+		s.NotEmpty(resp.GetTaskToken())
+		return resp
+	}
+	respond := func(task *workflowservice.PollWorkflowTaskQueueResponse, forceCreate bool, commands ...*commandpb.Command) {
+		_, err := frontend.RespondWorkflowTaskCompleted(ctx, &workflowservice.RespondWorkflowTaskCompletedRequest{
+			Namespace:                  ns,
+			Identity:                   "test",
+			TaskToken:                  task.GetTaskToken(),
+			Commands:                   commands,
+			ForceCreateNewWorkflowTask: forceCreate,
+		})
+		s.NoError(err)
+	}
+	// lastScheduled is the scheduled event of the task a poll answered.
+	lastScheduled := func(task *workflowservice.PollWorkflowTaskQueueResponse) *historypb.HistoryEvent {
+		events := task.GetHistory().GetEvents()
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
+				return events[i]
+			}
+		}
+		s.FailNow("the task has no scheduled event")
+		return nil
+	}
+
+	respond(poll(), false, &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
+		Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
+			ScheduleNexusOperationCommandAttributes: &commandpb.ScheduleNexusOperationCommandAttributes{
+				Endpoint:  endpointName,
+				Service:   "service",
+				Operation: "operation",
+				Input:     testcore.MustToPayload(s.T(), "input"),
+			},
+		},
+	})
+	startedTask := poll()
+	s.RequireHistoryEvent(startedTask.GetHistory().GetEvents(), enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED)
+
+	// The worker forces a heartbeat task, takes it, gets progress meanwhile, and fails it.
+	respond(startedTask, true)
+	heartbeatTask := poll()
+	s.Empty(lastScheduled(heartbeatTask).GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress())
+	status, err := postNexusProgress(ctx, callbackURL, callbackToken, `{"position": "p1", "counter": 1}`)
+	s.NoError(err)
+	s.Equal(http.StatusOK, status)
+	_, err = frontend.RespondWorkflowTaskFailed(ctx, &workflowservice.RespondWorkflowTaskFailedRequest{
+		Namespace: ns,
+		Identity:  "test",
+		TaskToken: heartbeatTask.GetTaskToken(),
+		Cause:     enumspb.WORKFLOW_TASK_FAILED_CAUSE_WORKFLOW_WORKER_UNHANDLED_FAILURE,
+	})
+	s.NoError(err)
+	s.NoError(env.SdkClient().SignalWorkflow(ctx, run.GetID(), run.GetRunID(), "wake", nil))
+
+	retryTask := poll()
+	s.RequireHistoryEvent(retryTask.GetHistory().GetEvents(), enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED)
+	s.Empty(lastScheduled(retryTask).GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress(),
+		"the retry of a heartbeat task carries no progress")
+	respond(retryTask, false)
+
+	normalTask := poll()
+	carried := lastScheduled(normalTask).GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()
+	s.Len(carried, 1, "the next normal task carries the progress")
+	s.Equal(int64(1), carried[0].GetCounter())
+	respond(normalTask, false, &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
+			CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{},
+		},
+	})
+	s.NoError(run.Get(ctx, nil))
 }
 
 func (s *NexusWorkflowTestSuite) scheduledEventID(hist []*historypb.HistoryEvent) int64 {

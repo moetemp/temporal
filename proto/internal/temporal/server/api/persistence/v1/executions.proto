@@ -113,6 +113,9 @@ message WorkflowExecutionInfo {
   // (-- api-linter: core::0140::prepositions=disabled
   //     aip.dev/not-precedent: "since" is needed here. --)
   int32 workflow_task_attempts_since_last_success = 111;
+  // Set while the pending Workflow Task, or a retry of it, was forced by a worker to heartbeat a
+  // local activity. Nexus operation progress waits for a task without it.
+  bool workflow_task_holds_nexus_progress = 118;
 
   bool cancel_requested = 29;
   string cancel_request_id = 32;
