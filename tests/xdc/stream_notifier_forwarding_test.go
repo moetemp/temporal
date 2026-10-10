@@ -36,9 +36,15 @@ func (s *StreamNotifierForwardingSuite) SetupSuite() {
 		dynamicconfig.FrontendGlobalNamespaceNamespaceReplicationInducingAPIsRPS.Key(): 1000,
 		dynamicconfig.EnableChasm.Key(): true,
 		streamnotifier.Enabled.Key():    true,
-		callback.AllowedAddresses.Key(): []any{map[string]any{"Pattern": "*", "AllowInsecure": true}},
+		callback.AllowedAddresses.Key(): []any{
+			map[string]any{"Pattern": "*", "AllowInsecure": true},
+		},
 	}
-	s.setupSuite(testcore.WithDCRedirectionPolicy(config.DCRedirectionPolicy{Policy: "selected-apis-forwarding"}))
+	s.setupSuite(
+		testcore.WithDCRedirectionPolicy(
+			config.DCRedirectionPolicy{Policy: "selected-apis-forwarding"},
+		),
+	)
 }
 
 func (s *StreamNotifierForwardingSuite) SetupTest() {

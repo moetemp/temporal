@@ -19,9 +19,18 @@ import (
 // endpoint. It runs on the history host that owns the stream's notifier, since the operation is
 // routed by the notifier's business ID, so it calls the notifier in process.
 type SystemNexusHandler interface {
-	AttachStreamCallback(context.Context, *workflowservice.AttachStreamCallbackRequest) (*workflowservice.AttachStreamCallbackResponse, error)
-	DetachStreamCallback(context.Context, *workflowservice.DetachStreamCallbackRequest) (*workflowservice.DetachStreamCallbackResponse, error)
-	NotifyStream(context.Context, *workflowservice.NotifyStreamRequest) (*workflowservice.NotifyStreamResponse, error)
+	AttachStreamCallback(
+		context.Context,
+		*workflowservice.AttachStreamCallbackRequest,
+	) (*workflowservice.AttachStreamCallbackResponse, error)
+	DetachStreamCallback(
+		context.Context,
+		*workflowservice.DetachStreamCallbackRequest,
+	) (*workflowservice.DetachStreamCallbackResponse, error)
+	NotifyStream(
+		context.Context,
+		*workflowservice.NotifyStreamRequest,
+	) (*workflowservice.NotifyStreamResponse, error)
 }
 
 // localClient hands requests to the notifier's handler without a network hop.
@@ -29,19 +38,35 @@ type localClient struct {
 	handler *handler
 }
 
-func (c localClient) AttachStreamCallback(ctx context.Context, in *streamnotifierpb.AttachStreamCallbackRequest, _ ...grpc.CallOption) (*streamnotifierpb.AttachStreamCallbackResponse, error) {
+func (c localClient) AttachStreamCallback(
+	ctx context.Context,
+	in *streamnotifierpb.AttachStreamCallbackRequest,
+	_ ...grpc.CallOption,
+) (*streamnotifierpb.AttachStreamCallbackResponse, error) {
 	return c.handler.AttachStreamCallback(ctx, in)
 }
 
-func (c localClient) DetachStreamCallback(ctx context.Context, in *streamnotifierpb.DetachStreamCallbackRequest, _ ...grpc.CallOption) (*streamnotifierpb.DetachStreamCallbackResponse, error) {
+func (c localClient) DetachStreamCallback(
+	ctx context.Context,
+	in *streamnotifierpb.DetachStreamCallbackRequest,
+	_ ...grpc.CallOption,
+) (*streamnotifierpb.DetachStreamCallbackResponse, error) {
 	return c.handler.DetachStreamCallback(ctx, in)
 }
 
-func (c localClient) NotifyStream(ctx context.Context, in *streamnotifierpb.NotifyStreamRequest, _ ...grpc.CallOption) (*streamnotifierpb.NotifyStreamResponse, error) {
+func (c localClient) NotifyStream(
+	ctx context.Context,
+	in *streamnotifierpb.NotifyStreamRequest,
+	_ ...grpc.CallOption,
+) (*streamnotifierpb.NotifyStreamResponse, error) {
 	return c.handler.NotifyStream(ctx, in)
 }
 
-func (c localClient) DescribeStreamNotifier(ctx context.Context, in *streamnotifierpb.DescribeStreamNotifierRequest, _ ...grpc.CallOption) (*streamnotifierpb.DescribeStreamNotifierResponse, error) {
+func (c localClient) DescribeStreamNotifier(
+	ctx context.Context,
+	in *streamnotifierpb.DescribeStreamNotifierRequest,
+	_ ...grpc.CallOption,
+) (*streamnotifierpb.DescribeStreamNotifierResponse, error) {
 	return c.handler.DescribeStreamNotifier(ctx, in)
 }
 

@@ -60,7 +60,12 @@ func TestNotifyStreamProcessorRoutesToTheStreamsNotifier(t *testing.T) {
 		&commonpb.Payloads{Payloads: []*commonpb.Payload{result.ReserializedInputPayload}},
 		&forwarded,
 	))
-	require.Equal(t, "ns", forwarded.GetNamespace(), "the namespace comes from the calling Workflow")
+	require.Equal(
+		t,
+		"ns",
+		forwarded.GetNamespace(),
+		"the namespace comes from the calling Workflow",
+	)
 	require.Empty(t, forwarded.GetIdentity(), "the identity is not taken from the Workflow")
 }
 
@@ -77,13 +82,39 @@ func TestStreamNotifierProcessorsRejectAnotherNamespaceAndABadReference(t *testi
 		operation string
 		request   any
 	}{
-		"another namespace": {ops.AttachStreamCallback.Name(), &workflowservice.AttachStreamCallbackRequest{Namespace: "other", StreamRef: good}},
-		"no topic":          {ops.DetachStreamCallback.Name(), &workflowservice.DetachStreamCallbackRequest{StreamRef: &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "owner"}}},
-		"no owner kind":     {ops.NotifyStream.Name(), &workflowservice.NotifyStreamRequest{StreamRef: &streampb.StreamReference{WorkflowId: "owner", Topic: "tokens"}}},
-		"no first run":      {ops.NotifyStream.Name(), &workflowservice.NotifyStreamRequest{StreamRef: &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "owner", Topic: "tokens"}}},
+		"another namespace": {
+			ops.AttachStreamCallback.Name(),
+			&workflowservice.AttachStreamCallbackRequest{Namespace: "other", StreamRef: good},
+		},
+		"no topic": {
+			ops.DetachStreamCallback.Name(),
+			&workflowservice.DetachStreamCallbackRequest{StreamRef: &streampb.StreamReference{
+				OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+				WorkflowId: "owner",
+			}},
+		},
+		"no owner kind": {
+			ops.NotifyStream.Name(),
+			&workflowservice.NotifyStreamRequest{StreamRef: &streampb.StreamReference{
+				WorkflowId: "owner",
+				Topic:      "tokens",
+			}},
+		},
+		"no first run": {
+			ops.NotifyStream.Name(),
+			&workflowservice.NotifyStreamRequest{StreamRef: &streampb.StreamReference{
+				OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+				WorkflowId: "owner",
+				Topic:      "tokens",
+			}},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := sp.ProcessInput(streamNotifierProcessorContext(), input.operation, payloads.MustEncodeSingle(input.request))
+			_, err := sp.ProcessInput(
+				streamNotifierProcessorContext(),
+				input.operation,
+				payloads.MustEncodeSingle(input.request),
+			)
 			require.Error(t, err)
 		})
 	}

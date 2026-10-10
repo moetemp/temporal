@@ -20,7 +20,9 @@ import (
 
 var ErrSignalWithStartOperationDisabled = serviceerror.NewUnimplemented("SignalWithStart operation is disabled")
 
-var errStreamNotifierUnavailable = serviceerror.NewUnimplemented("the stream notifier is not served by this host")
+var errStreamNotifierUnavailable = serviceerror.NewUnimplemented(
+	"the stream notifier is not served by this host",
+)
 
 type workflowServiceNexusHandler struct {
 	config            Config
@@ -105,8 +107,12 @@ func mustNewWorkflowServiceNexusHandler(
 		ops.SignalWithStartWorkflowExecution.Name(),
 		handler.signalWithStartWorkflowExecution,
 	))
-	svc.MustRegister(nexus.NewSyncOperation(ops.AttachStreamCallback.Name(), handler.attachStreamCallback))
-	svc.MustRegister(nexus.NewSyncOperation(ops.DetachStreamCallback.Name(), handler.detachStreamCallback))
+	svc.MustRegister(
+		nexus.NewSyncOperation(ops.AttachStreamCallback.Name(), handler.attachStreamCallback),
+	)
+	svc.MustRegister(
+		nexus.NewSyncOperation(ops.DetachStreamCallback.Name(), handler.detachStreamCallback),
+	)
 	svc.MustRegister(nexus.NewSyncOperation(ops.NotifyStream.Name(), handler.notifyStream))
 	return svc
 }
@@ -134,7 +140,10 @@ type streamNotifierOperationProcessor[R streamNotifierRequest] struct {
 	clearIdentity func(R)
 }
 
-func (o streamNotifierOperationProcessor[R]) ProcessInput(ctx chasm.NexusOperationProcessorContext, request R) (*chasm.NexusOperationProcessorResult, error) {
+func (o streamNotifierOperationProcessor[R]) ProcessInput(
+	ctx chasm.NexusOperationProcessorContext,
+	request R,
+) (*chasm.NexusOperationProcessorResult, error) {
 	// A nil request pointer is not a nil interface, so ask the message itself.
 	if !request.ProtoReflect().IsValid() {
 		return nil, serviceerror.NewInvalidArgument("Request is empty")
@@ -142,7 +151,9 @@ func (o streamNotifierOperationProcessor[R]) ProcessInput(ctx chasm.NexusOperati
 	if request.GetNamespace() == "" {
 		o.setNamespace(request, ctx.Namespace.Name().String())
 	} else if request.GetNamespace() != ctx.Namespace.Name().String() {
-		return nil, serviceerror.NewInvalidArgumentf("Namespace in request %q does not match namespace in context %q", request.GetNamespace(), ctx.Namespace.Name().String())
+		return nil, serviceerror.NewInvalidArgumentf(
+			"Namespace in request %q does not match namespace in context %q",
+			request.GetNamespace(), ctx.Namespace.Name().String())
 	}
 	o.clearIdentity(request)
 	if err := streamnotifier.ValidateReference(request.GetStreamRef()); err != nil {
@@ -218,22 +229,40 @@ func NewWorkflowServiceNexusServiceProcessor(
 		ops.SignalWithStartWorkflowExecution.Name(),
 		chasm.NewRegisterableNexusOperationProcessor(op),
 	)
-	sp.MustRegisterOperation(ops.AttachStreamCallback.Name(), chasm.NewRegisterableNexusOperationProcessor(
-		streamNotifierOperationProcessor[*workflowservice.AttachStreamCallbackRequest]{
-			setNamespace:  func(r *workflowservice.AttachStreamCallbackRequest, ns string) { r.Namespace = ns },
-			clearIdentity: func(r *workflowservice.AttachStreamCallbackRequest) { r.Identity = "" },
-		},
-	))
-	sp.MustRegisterOperation(ops.DetachStreamCallback.Name(), chasm.NewRegisterableNexusOperationProcessor(
-		streamNotifierOperationProcessor[*workflowservice.DetachStreamCallbackRequest]{
-			setNamespace:  func(r *workflowservice.DetachStreamCallbackRequest, ns string) { r.Namespace = ns },
-			clearIdentity: func(r *workflowservice.DetachStreamCallbackRequest) { r.Identity = "" },
-		},
-	))
+	sp.MustRegisterOperation(
+		ops.AttachStreamCallback.Name(),
+		chasm.NewRegisterableNexusOperationProcessor(
+			streamNotifierOperationProcessor[*workflowservice.AttachStreamCallbackRequest]{
+				setNamespace: func(r *workflowservice.AttachStreamCallbackRequest, ns string) {
+					r.Namespace = ns
+				},
+				clearIdentity: func(r *workflowservice.AttachStreamCallbackRequest) {
+					r.Identity = ""
+				},
+			},
+		),
+	)
+	sp.MustRegisterOperation(
+		ops.DetachStreamCallback.Name(),
+		chasm.NewRegisterableNexusOperationProcessor(
+			streamNotifierOperationProcessor[*workflowservice.DetachStreamCallbackRequest]{
+				setNamespace: func(r *workflowservice.DetachStreamCallbackRequest, ns string) {
+					r.Namespace = ns
+				},
+				clearIdentity: func(r *workflowservice.DetachStreamCallbackRequest) {
+					r.Identity = ""
+				},
+			},
+		),
+	)
 	sp.MustRegisterOperation(ops.NotifyStream.Name(), chasm.NewRegisterableNexusOperationProcessor(
 		streamNotifierOperationProcessor[*workflowservice.NotifyStreamRequest]{
-			setNamespace:  func(r *workflowservice.NotifyStreamRequest, ns string) { r.Namespace = ns },
-			clearIdentity: func(r *workflowservice.NotifyStreamRequest) { r.Identity = "" },
+			setNamespace: func(r *workflowservice.NotifyStreamRequest, ns string) {
+				r.Namespace = ns
+			},
+			clearIdentity: func(r *workflowservice.NotifyStreamRequest) {
+				r.Identity = ""
+			},
 		},
 	))
 	return sp

@@ -108,7 +108,9 @@ func (h *frontendHandler) resolve(
 // ValidateReference rejects a stream reference the notifier cannot key a stream by.
 func ValidateReference(ref *streampb.StreamReference) error {
 	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
-		return serviceerror.NewInvalidArgument("stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW")
+		return serviceerror.NewInvalidArgument(
+			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW",
+		)
 	}
 	if ref.GetWorkflowId() == "" {
 		return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
@@ -119,7 +121,9 @@ func ValidateReference(ref *streampb.StreamReference) error {
 	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
 	// its own; without it the request would reach a different notifier.
 	if ref.GetRunId() == "" {
-		return serviceerror.NewInvalidArgument("stream_ref.run_id must name the run chain's first run")
+		return serviceerror.NewInvalidArgument(
+			"stream_ref.run_id must name the run chain's first run",
+		)
 	}
 	return nil
 }
