@@ -318,6 +318,12 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 		return nil, m.ms.createInternalServerError(opTag)
 	}
 
+	// A heartbeat task holds Nexus progress, and so do its retries, which SDKs replay within the
+	// same heartbeat chain. Any other task releases it.
+	if m.ms.holdNexusProgress || !m.ms.IsTransientWorkflowTask() {
+		m.ms.executionInfo.WorkflowTaskHoldsNexusProgress = m.ms.holdNexusProgress
+	}
+
 	// Create real WorkflowTaskScheduledEvent when workflow task:
 	//  - is not transient (is not continuously failing)
 	//  and
