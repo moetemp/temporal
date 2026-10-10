@@ -2,6 +2,7 @@ package streamnotifier
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,6 +38,9 @@ type notifierTest struct {
 	ownerCheck *ownerCheckTaskHandler
 	history    *historyservicemock.MockHistoryServiceClient
 	ref        *streampb.StreamReference
+	// ownerFirstRun is the first run of the owner's chain as an attach sees it; empty means the
+	// owner does not exist.
+	ownerFirstRun string
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
@@ -54,7 +58,18 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	registryMock.EXPECT().GetNamespaceByID(gomock.Any()).Return(
 		namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Id: "namespace-id", Name: "ns"}, nil, "active"), nil,
 	).AnyTimes()
-	h := newHandler(config, log.NewTestLogger())
+	nt := &notifierTest{}
+	attachHistory := historyservicemock.NewMockHistoryServiceClient(ctrl)
+	attachHistory.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, *historyservice.DescribeWorkflowExecutionRequest, ...grpc.CallOption) (*historyservice.DescribeWorkflowExecutionResponse, error) {
+			if nt.ownerFirstRun == "" {
+				return nil, serviceerror.NewNotFound("workflow not found")
+			}
+			return &historyservice.DescribeWorkflowExecutionResponse{
+				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{FirstRunId: nt.ownerFirstRun},
+			}, nil
+		}).AnyTimes()
+	h := newHandler(config, log.NewTestLogger(), attachHistory)
 	expiry := newExpiryTaskHandler(expiryTaskHandlerOptions{Config: config})
 	ownerCheck := newOwnerCheckTaskHandler(ownerCheckTaskHandlerOptions{
 		Config:            config,
@@ -65,7 +80,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
 	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck)))
-	return &notifierTest{
+	*nt = notifierTest{
 		t:          t,
 		ctx:        chasm.NewEngineContext(context.Background(), chasmtest.NewEngine(t, registry)),
 		handler:    h,
@@ -78,6 +93,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 			Topic:      "tokens",
 		},
 	}
+	return nt
 }
 
 func (nt *notifierTest) key() chasm.ExecutionKey {
@@ -303,6 +319,16 @@ func TestStreamNotifier(t *testing.T) {
 		})
 	})
 
+	t.Run("AnAttachNamingAnotherRunThanTheChainsFirstIsRefused", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "wf", RunId: "a-later-run", Topic: "t"}
+		nt.ownerFirstRun = "first-run"
+		var invalid *serviceerror.InvalidArgument
+		require.ErrorAs(t, nt.attach("a"), &invalid, "a run that is not the chain's first would key another notifier")
+		nt.ref.RunId = "first-run"
+		require.NoError(t, nt.attach("a"))
+	})
+
 	t.Run("AReusedWorkflowIDGetsAFreshNotifier", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		nt.ref = &streampb.StreamReference{OwnerKind: enumspb.STREAM_OWNER_KIND_WORKFLOW, WorkflowId: "wf", RunId: "first-chain", Topic: "t"}
@@ -386,16 +412,28 @@ func TestStreamNotifier(t *testing.T) {
 		require.Contains(t, nt.callbacks(), "b")
 	})
 
-	t.Run("AFullNotifierMakesRoomFromCallbacksThatAreDoneOrTakeNoProgress", func(t *testing.T) {
+	t.Run("AFullNotifierNeverDropsACallerThatStillWaits", func(t *testing.T) {
+		nt := newNotifierTest(t, 100)
+		for i := range 100 {
+			require.NoError(t, nt.attach(fmt.Sprintf("caller-%d", i)))
+		}
+		// Every caller refused progress, the way an HSM caller does, and still waits for the close.
+		for i := range 100 {
+			nt.updateCallback(fmt.Sprintf("caller-%d", i), func(cb *callback.Callback) { cb.ProgressDisabled = true })
+		}
+		var failed *serviceerror.FailedPrecondition
+		require.ErrorAs(t, nt.attach("caller-100"), &failed, "a full notifier of waiting callers refuses the attach")
+		cbs := nt.callbacks()
+		require.Len(t, cbs, 100)
+		for id, cb := range cbs {
+			require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, cb.GetStatus(), "%s still waits for its completion", id)
+		}
+	})
+
+	t.Run("AFullNotifierMakesRoomFromCallbacksThatAreDone", func(t *testing.T) {
 		nt := newNotifierTest(t, 2)
 		require.NoError(t, nt.attach("a"))
 		require.NoError(t, nt.attach("b"))
-		nt.updateCallback("b", func(cb *callback.Callback) { cb.ProgressDisabled = true })
-		require.NoError(t, nt.attach("c"), "the callback that takes no progress makes room")
-		require.NotContains(t, nt.callbacks(), "b")
-		var failed *serviceerror.FailedPrecondition
-		require.ErrorAs(t, nt.attach("d"), &failed, "every callback still takes progress")
-
 		require.NoError(t, nt.notify(1, true))
 		nt.updateCallback("a", func(cb *callback.Callback) { cb.Status = callbackspb.CALLBACK_STATUS_SUCCEEDED })
 		require.NoError(t, nt.attach("late"), "a callback that is done makes room for a late attach")
