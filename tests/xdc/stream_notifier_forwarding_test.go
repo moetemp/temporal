@@ -57,6 +57,7 @@ func (s *StreamNotifierForwardingSuite) TestWritesForwardedFromStandbyToActive()
 	stream := &streampb.StreamReference{
 		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
 		WorkflowId: "producer-" + uuid.NewString(),
+		RunId:      "first-run",
 		Topic:      "tokens",
 	}
 	standby := s.clusters[1].FrontendClient()

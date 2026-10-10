@@ -7,6 +7,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
@@ -106,7 +107,7 @@ func (h *ownerCheckTaskHandler) Execute(
 	if err != nil {
 		return err
 	}
-	ended, err := h.ownerEnded(ctx, ns, stream.GetStreamRef().GetWorkflowId())
+	ended, err := h.ownerEnded(ctx, ns, stream.GetStreamRef())
 	if err != nil {
 		return err
 	}
@@ -129,8 +130,10 @@ func (h *ownerCheckTaskHandler) Execute(
 }
 
 // ownerEnded reports whether the owner Workflow's run chain is closed. A Workflow that does not
-// exist (or whose retention passed) counts as ended.
-func (h *ownerCheckTaskHandler) ownerEnded(ctx context.Context, ns *namespace.Namespace, workflowID string) (bool, error) {
+// exist (or whose retention passed) counts as ended, and so does a current run of another chain
+// that reused the Workflow ID.
+func (h *ownerCheckTaskHandler) ownerEnded(ctx context.Context, ns *namespace.Namespace, stream *streampb.StreamReference) (bool, error) {
+	workflowID := stream.GetWorkflowId()
 	resp, err := h.historyClient.DescribeWorkflowExecution(ctx, &historyservice.DescribeWorkflowExecutionRequest{
 		NamespaceId: ns.ID().String(),
 		Request: &workflowservice.DescribeWorkflowExecutionRequest{
@@ -146,6 +149,9 @@ func (h *ownerCheckTaskHandler) ownerEnded(ctx context.Context, ns *namespace.Na
 	}
 	// The described run is the chain's current one, so a retry, a cron run or Continue-as-New has
 	// already moved past a closed earlier run.
+	if firstRunID := stream.GetRunId(); firstRunID != "" && resp.GetWorkflowExecutionInfo().GetFirstRunId() != firstRunID {
+		return true, nil
+	}
 	status := resp.GetWorkflowExecutionInfo().GetStatus()
 	return status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING && status != enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED, nil
 }
