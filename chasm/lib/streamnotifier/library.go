@@ -38,12 +38,13 @@ func (l *componentOnlyLibrary) Components() []*chasm.RegistrableComponent {
 type library struct {
 	componentOnlyLibrary
 
-	handler           *handler
-	expiryTaskHandler *expiryTaskHandler
+	handler               *handler
+	expiryTaskHandler     *expiryTaskHandler
+	ownerCheckTaskHandler *ownerCheckTaskHandler
 }
 
-func newLibrary(handler *handler, expiryTaskHandler *expiryTaskHandler) *library {
-	return &library{handler: handler, expiryTaskHandler: expiryTaskHandler}
+func newLibrary(handler *handler, expiryTaskHandler *expiryTaskHandler, ownerCheckTaskHandler *ownerCheckTaskHandler) *library {
+	return &library{handler: handler, expiryTaskHandler: expiryTaskHandler, ownerCheckTaskHandler: ownerCheckTaskHandler}
 }
 
 func (l *library) RegisterServices(server *grpc.Server) {
@@ -53,6 +54,7 @@ func (l *library) RegisterServices(server *grpc.Server) {
 func (l *library) Tasks() []*chasm.RegistrableTask {
 	return []*chasm.RegistrableTask{
 		chasm.NewRegistrablePureTask("expiry", l.expiryTaskHandler),
+		chasm.NewRegistrableSideEffectTask("ownerCheck", l.ownerCheckTaskHandler),
 	}
 }
 

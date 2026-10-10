@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -21,10 +22,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// BusinessID is the notifier's execution ID for a stream: its owner and topic, escaped so that no
-// two streams map to one ID. The run ID is left out, so one notifier serves the stream across runs.
+// BusinessID is the notifier's execution ID for a stream: its owner kind, owner and topic, escaped
+// so that no two streams map to one ID. The run ID is left out, so one notifier serves the stream
+// across runs.
 func BusinessID(ref *streampb.StreamReference) string {
-	return url.PathEscape(ref.GetWorkflowId()) + "/" + url.PathEscape(ref.GetTopic())
+	kind := strings.ToLower(strings.TrimPrefix(ref.GetOwnerKind().String(), "STREAM_OWNER_KIND_"))
+	return kind + "/" + url.PathEscape(ref.GetWorkflowId()) + "/" + url.PathEscape(ref.GetTopic())
 }
 
 var _ chasm.RootComponent = (*StreamNotifier)(nil)
@@ -55,11 +58,18 @@ func newStreamNotifier(ref *streampb.StreamReference) *StreamNotifier {
 	}
 }
 
+// LifecycleState is Completed for a closed stream whose retention passed, so the stream stays
+// closed, and Failed for an open one that went idle with no callbacks, so a later attach or
+// notification starts a new notifier.
 func (n *StreamNotifier) LifecycleState(chasm.Context) chasm.LifecycleState {
-	if n.Expired {
+	switch {
+	case n.Expired && n.Closed:
 		return chasm.LifecycleStateCompleted
+	case n.Expired:
+		return chasm.LifecycleStateFailed
+	default:
+		return chasm.LifecycleStateRunning
 	}
-	return chasm.LifecycleStateRunning
 }
 
 func (n *StreamNotifier) ContextMetadata(chasm.Context) map[string]string {
@@ -70,7 +80,7 @@ func (n *StreamNotifier) ContextMetadata(chasm.Context) map[string]string {
 // execution.
 func (n *StreamNotifier) Terminate(ctx chasm.MutableContext, _ chasm.TerminateComponentRequest) (chasm.TerminateComponentResponse, error) {
 	if !n.Closed {
-		if err := n.close(ctx, nil, true); err != nil {
+		if err := n.close(ctx, nil, "the stream's notifier was terminated"); err != nil {
 			return chasm.TerminateComponentResponse{}, err
 		}
 	}
@@ -88,14 +98,16 @@ func (n *StreamNotifier) touch(ctx chasm.MutableContext, after time.Duration) {
 }
 
 type attachInput struct {
-	requestID    string
-	callback     *commonpb.Callback_Nexus
-	maxCallbacks int
-	idleTimeout  time.Duration
+	requestID          string
+	callback           *commonpb.Callback_Nexus
+	maxCallbacks       int
+	idleTimeout        time.Duration
+	ownerCheckInterval time.Duration
 }
 
 // attach adds a callback, or changes nothing when one with the request ID is attached. On a
-// closed stream the callback completes right away.
+// closed stream the callback completes right away. A full notifier makes room by dropping
+// callbacks that are done, then the oldest one that no longer takes progress.
 func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error {
 	if n.Expired {
 		return serviceerror.NewFailedPrecondition("the stream closed and its notifier no longer takes callbacks")
@@ -103,7 +115,8 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 	if _, ok := n.Callbacks[in.requestID]; ok {
 		return nil
 	}
-	if len(n.Callbacks) >= in.maxCallbacks {
+	n.dropClosedCallers(ctx)
+	if len(n.Callbacks) >= in.maxCallbacks && !n.evictOne(ctx) {
 		return serviceerror.NewFailedPreconditionf("the stream notifier holds the maximum of %d callbacks", in.maxCallbacks)
 	}
 	cb := callback.NewCallback(in.requestID, timestamppb.New(ctx.Now(n)), &callbackspb.Callback{
@@ -127,13 +140,95 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 			return err
 		}
 	}
+	n.armOwnerCheck(ctx, in.ownerCheckInterval)
 	n.touch(ctx, in.idleTimeout)
 	return nil
+}
+
+// dropClosedCallers forgets the callbacks whose caller's operation closed: nothing will read their
+// progress or their completion.
+func (n *StreamNotifier) dropClosedCallers(ctx chasm.MutableContext) {
+	for requestID, field := range n.Callbacks {
+		if field.Get(ctx).GetCallerOperationClosed() {
+			n.detach(requestID)
+		}
+	}
+}
+
+// evictOne drops the oldest callback that is done, or else the oldest one that no longer takes
+// progress, and reports whether it dropped one.
+func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) bool {
+	var done, quiet *callback.Callback
+	older := func(a, b *callback.Callback) bool {
+		return b == nil || a.GetRegistrationTime().AsTime().Before(b.GetRegistrationTime().AsTime())
+	}
+	for _, field := range n.Callbacks {
+		cb := field.Get(ctx)
+		switch {
+		case cb.Status == callbackspb.CALLBACK_STATUS_SUCCEEDED || cb.Status == callbackspb.CALLBACK_STATUS_FAILED:
+			if older(cb, done) {
+				done = cb
+			}
+		case cb.ProgressDisabled:
+			if older(cb, quiet) {
+				quiet = cb
+			}
+		default:
+		}
+	}
+	for _, cb := range []*callback.Callback{done, quiet} {
+		if cb != nil {
+			n.detach(cb.GetRequestId())
+			return true
+		}
+	}
+	return false
+}
+
+// hasWaitingCallbacks reports whether a callback still waits for the stream's close.
+func (n *StreamNotifier) hasWaitingCallbacks(ctx chasm.Context) bool {
+	for _, field := range n.Callbacks {
+		cb := field.Get(ctx)
+		if cb.Status == callbackspb.CALLBACK_STATUS_STANDBY && !cb.GetCallerOperationClosed() {
+			return true
+		}
+	}
+	return false
+}
+
+// armOwnerCheck arms an owner check if none is armed, while callbacks wait for the close.
+func (n *StreamNotifier) armOwnerCheck(ctx chasm.MutableContext, interval time.Duration) {
+	if n.Closed || n.OwnerCheckTime != nil || !n.hasWaitingCallbacks(ctx) {
+		return
+	}
+	at := timestamppb.New(ctx.Now(n).Add(interval))
+	n.OwnerCheckTime = at
+	ctx.AddTask(n, chasm.TaskAttributes{ScheduledTime: at.AsTime()}, &streamnotifierpb.OwnerCheckTask{ScheduledTime: at})
+}
+
+// failIdleCallbacks fails the callbacks that wait for the close, keeping the stream open, and
+// reports whether there were any.
+func (n *StreamNotifier) failIdleCallbacks(ctx chasm.MutableContext) (bool, error) {
+	failed := false
+	for requestID, field := range n.Callbacks {
+		cb := field.Get(ctx)
+		if cb.Status != callbackspb.CALLBACK_STATUS_STANDBY || cb.GetCallerOperationClosed() {
+			continue
+		}
+		n.IdleFailedRequestIds = append(n.IdleFailedRequestIds, requestID)
+		if err := callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{}); err != nil {
+			return false, err
+		}
+		failed = true
+	}
+	slices.Sort(n.IdleFailedRequestIds)
+	return failed, nil
 }
 
 // detach removes a callback. Its completion, if already scheduled, is not delivered.
 func (n *StreamNotifier) detach(requestID string) {
 	delete(n.Callbacks, requestID)
+	n.IdleFailedRequestIds = slices.DeleteFunc(n.IdleFailedRequestIds, func(id string) bool { return id == requestID })
 }
 
 type notifyInput struct {
@@ -152,6 +247,7 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 	if n.Closed {
 		return nil
 	}
+	n.dropClosedCallers(ctx)
 	if in.counter > n.Counter {
 		n.Counter = in.counter
 		n.Position = in.position
@@ -164,7 +260,7 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 		}
 	}
 	if in.close {
-		if err := n.close(ctx, in.closeResult, false); err != nil {
+		if err := n.close(ctx, in.closeResult, ""); err != nil {
 			return err
 		}
 		n.touch(ctx, in.retention)
@@ -174,11 +270,13 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 	return nil
 }
 
-func (n *StreamNotifier) close(ctx chasm.MutableContext, result *commonpb.Payload, idle bool) error {
+// close completes every callback still waiting: with the result, or with failure when it is set.
+func (n *StreamNotifier) close(ctx chasm.MutableContext, result *commonpb.Payload, failure string) error {
 	n.Closed = true
-	n.IdleClosed = idle
+	n.CloseFailure = failure
 	n.CloseResult = result
 	n.CloseTime = timestamppb.New(ctx.Now(n))
+	n.OwnerCheckTime = nil
 	return callback.ScheduleStandbyCallbacks(ctx, n.Callbacks)
 }
 
@@ -190,13 +288,19 @@ func (n *StreamNotifier) progress() *nexuspb.NexusOperationProgress {
 	}
 }
 
-// GetNexusCompletion is the completion the callbacks deliver when the stream closes.
-func (n *StreamNotifier) GetNexusCompletion(chasm.Context, string) (nexusrpc.CompleteOperationOptions, error) {
+// GetNexusCompletion is the completion a callback delivers: a failure if an idle timeout failed it
+// or the stream closed with a failure, otherwise the stream's close result.
+func (n *StreamNotifier) GetNexusCompletion(ctx chasm.Context, requestID string) (nexusrpc.CompleteOperationOptions, error) {
 	completion := nexusrpc.CompleteOperationOptions{CloseTime: n.GetCloseTime().AsTime()}
-	if n.IdleClosed {
+	failure := n.CloseFailure
+	if _, idle := slices.BinarySearch(n.IdleFailedRequestIds, requestID); idle {
+		failure = "the stream was idle for too long, so its notifier failed the callers waiting on it"
+		completion.CloseTime = ctx.Now(n)
+	}
+	if failure != "" {
 		completion.Error = &nexus.OperationError{
 			State: nexus.OperationStateFailed,
-			Cause: &nexus.FailureError{Failure: nexus.Failure{Message: "the stream was idle for too long and its notifier closed it"}},
+			Cause: &nexus.FailureError{Failure: nexus.Failure{Message: failure}},
 		}
 		return completion, nil
 	}

@@ -43,13 +43,20 @@ type NotifierState struct {
 	// When the notifier last saw an attach or a notification. An open notifier that sees neither
 	// for the idle timeout closes, so an abandoned stream does not hold callbacks forever.
 	LastActivityTime *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=last_activity_time,json=lastActivityTime,proto3" json:"last_activity_time,omitempty"`
-	// Set when the stream closed because the notifier was idle, so the callbacks complete with a
-	// failure rather than a result.
-	IdleClosed bool `protobuf:"varint,9,opt,name=idle_closed,json=idleClosed,proto3" json:"idle_closed,omitempty"`
-	// Set once a closed notifier has stopped taking attaches, when its execution completes.
-	Expired       bool `protobuf:"varint,10,opt,name=expired,proto3" json:"expired,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Set once the notifier's execution ends: a closed one after its closed retention, an open one
+	// that went idle with no callbacks left.
+	Expired bool `protobuf:"varint,10,opt,name=expired,proto3" json:"expired,omitempty"`
+	// Set when the stream closed with a failure instead of a result, such as when its owner
+	// Workflow ended without closing it. The callbacks complete with this failure message.
+	CloseFailure string `protobuf:"bytes,11,opt,name=close_failure,json=closeFailure,proto3" json:"close_failure,omitempty"`
+	// The callbacks an idle timeout failed while the stream stayed open. Their completion is a
+	// failure; the other callbacks still get the stream's close.
+	IdleFailedRequestIds []string `protobuf:"bytes,12,rep,name=idle_failed_request_ids,json=idleFailedRequestIds,proto3" json:"idle_failed_request_ids,omitempty"`
+	// When the armed owner check fires, or unset when none is armed. While callbacks are attached,
+	// the notifier checks now and then whether its owner Workflow ended.
+	OwnerCheckTime *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=owner_check_time,json=ownerCheckTime,proto3" json:"owner_check_time,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NotifierState) Reset() {
@@ -138,13 +145,6 @@ func (x *NotifierState) GetLastActivityTime() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *NotifierState) GetIdleClosed() bool {
-	if x != nil {
-		return x.IdleClosed
-	}
-	return false
-}
-
 func (x *NotifierState) GetExpired() bool {
 	if x != nil {
 		return x.Expired
@@ -152,11 +152,32 @@ func (x *NotifierState) GetExpired() bool {
 	return false
 }
 
+func (x *NotifierState) GetCloseFailure() string {
+	if x != nil {
+		return x.CloseFailure
+	}
+	return ""
+}
+
+func (x *NotifierState) GetIdleFailedRequestIds() []string {
+	if x != nil {
+		return x.IdleFailedRequestIds
+	}
+	return nil
+}
+
+func (x *NotifierState) GetOwnerCheckTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.OwnerCheckTime
+	}
+	return nil
+}
+
 var File_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDesc = "" +
 	"\n" +
-	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xd2\x04\n" +
+	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xd9\x05\n" +
 	"\rNotifierState\x12F\n" +
 	"\n" +
 	"stream_ref\x18\x01 \x01(\v2'.temporal.api.stream.v1.StreamReferenceR\tstreamRef\x12\x18\n" +
@@ -167,14 +188,16 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawD
 	"\fclose_result\x18\x06 \x01(\v2\x1f.temporal.api.common.v1.PayloadR\vcloseResult\x129\n" +
 	"\n" +
 	"close_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcloseTime\x12H\n" +
-	"\x12last_activity_time\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x10lastActivityTime\x12\x1f\n" +
-	"\vidle_closed\x18\t \x01(\bR\n" +
-	"idleClosed\x12\x18\n" +
+	"\x12last_activity_time\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x10lastActivityTime\x12\x18\n" +
 	"\aexpired\x18\n" +
-	" \x01(\bR\aexpired\x1a;\n" +
+	" \x01(\bR\aexpired\x12#\n" +
+	"\rclose_failure\x18\v \x01(\tR\fcloseFailure\x125\n" +
+	"\x17idle_failed_request_ids\x18\f \x03(\tR\x14idleFailedRequestIds\x12D\n" +
+	"\x10owner_check_time\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\x0eownerCheckTime\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01BVZTgo.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpbb\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\t\x10\n" +
+	"BVZTgo.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpbb\x06proto3"
 
 var (
 	file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDescOnce sync.Once
@@ -202,11 +225,12 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_depIdx
 	3, // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_result:type_name -> temporal.api.common.v1.Payload
 	4, // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_time:type_name -> google.protobuf.Timestamp
 	4, // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.last_activity_time:type_name -> google.protobuf.Timestamp
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.owner_check_time:type_name -> google.protobuf.Timestamp
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_init() }

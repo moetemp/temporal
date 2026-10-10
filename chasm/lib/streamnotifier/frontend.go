@@ -20,6 +20,10 @@ import (
 // travels on the read path.
 const maxMetadataBytes = 2 * 1024
 
+// maxPositionBytes bounds a notification's position, which every callback copies into its
+// caller's history.
+const maxPositionBytes = 1024
+
 // FrontendHandler serves the stream notifier RPCs of the WorkflowService.
 type FrontendHandler interface {
 	AttachStreamCallback(context.Context, *workflowservice.AttachStreamCallbackRequest) (*workflowservice.AttachStreamCallbackResponse, error)
@@ -74,6 +78,13 @@ func (h *frontendHandler) resolve(namespaceName string, ref *streampb.StreamRefe
 	if ref.GetTopic() == "" {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is required")
 	}
+	// Both become part of the notifier's business ID.
+	if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
+		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
+	}
+	if len(ref.GetTopic()) > h.config.MaxIDLength() {
+		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is too long")
+	}
 	id, err := h.namespaceRegistry.GetNamespaceID(namespace.Name(namespaceName))
 	if err != nil {
 		return "", "", err
@@ -91,6 +102,9 @@ func (h *frontendHandler) AttachStreamCallback(
 	}
 	if req.GetRequestId() == "" {
 		return nil, serviceerror.NewInvalidArgument("request_id is required")
+	}
+	if len(req.GetRequestId()) > h.config.MaxIDLength() {
+		return nil, serviceerror.NewInvalidArgument("request_id is too long")
 	}
 	if req.GetCallback().GetUrl() == "" {
 		return nil, serviceerror.NewInvalidArgument("callback.url is required")
@@ -122,6 +136,9 @@ func (h *frontendHandler) DetachStreamCallback(
 	if req.GetRequestId() == "" {
 		return nil, serviceerror.NewInvalidArgument("request_id is required")
 	}
+	if len(req.GetRequestId()) > h.config.MaxIDLength() {
+		return nil, serviceerror.NewInvalidArgument("request_id is too long")
+	}
 	resp, err := h.client.DetachStreamCallback(ctx, &streamnotifierpb.DetachStreamCallbackRequest{
 		NamespaceId:     namespaceID,
 		BusinessId:      businessID,
@@ -141,6 +158,9 @@ func (h *frontendHandler) NotifyStream(
 	if req.GetCounter() <= 0 {
 		return nil, serviceerror.NewInvalidArgument("counter must be positive")
 	}
+	if len(req.GetPosition()) > maxPositionBytes {
+		return nil, serviceerror.NewInvalidArgumentf("position is %d bytes, more than the %d allowed", len(req.GetPosition()), maxPositionBytes)
+	}
 	size := 0
 	for key, value := range req.GetMetadata() {
 		size += len(key) + len(value)
@@ -155,7 +175,7 @@ func (h *frontendHandler) NotifyStream(
 		req.GetCloseResult().Size(),
 		h.config.BlobSizeLimitWarn(req.GetNamespace()),
 		h.config.BlobSizeLimitError(req.GetNamespace()),
-		namespaceID,
+		req.GetNamespace(),
 		req.GetStreamRef().GetWorkflowId(),
 		"",
 		h.metricsHandler,
