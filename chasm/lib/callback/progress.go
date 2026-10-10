@@ -330,17 +330,23 @@ func (h *progressTaskHandler) deliverInternal(ctx context.Context, invocation pr
 			Progress: proto.CloneOf(invocation.progress),
 		},
 	})
+	if err == nil {
+		return progressDelivered, nil
+	}
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return progressCallerClosed, err
 	}
-	switch {
-	case err == nil:
-		return progressDelivered, nil
-	case common.IsRetryableRPCError(err):
-		return progressRetry, err
-	default:
+	// A refusal turns progress off for good, so only an answer a retry won't change is one. This
+	// matches the frontend's answer to a delivery from outside. NamespaceNotActive and an older
+	// History's Unimplemented pass with the failover or the upgrade, and NamespaceNotActive is its
+	// own error type, so the FailedPrecondition match doesn't catch it.
+	if _, ok := errors.AsType[*serviceerror.InvalidArgument](err); ok {
 		return progressRefused, err
 	}
+	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
+		return progressRefused, err
+	}
+	return progressRetry, err
 }
 
 type progressBackoffTaskHandler struct {

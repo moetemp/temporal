@@ -283,6 +283,26 @@ func TestProgressDeliveryInternal(t *testing.T) {
 		{name: "Delivered"},
 		{name: "ClosedOperationTurnsProgressOff", err: serviceerror.NewNotFound("operation not found"), wantDisabled: true, wantClosed: true},
 		{name: "UnavailableRetries", err: serviceerror.NewUnavailable("busy"), wantInFlight: 1},
+		{
+			name:         "NamespaceNotActiveRetries",
+			err:          serviceerror.NewNamespaceNotActive("ns", "active", "standby"),
+			wantInFlight: 1,
+		},
+		{
+			name:         "UnimplementedDuringAnUpgradeRetries",
+			err:          serviceerror.NewUnimplemented("unhandled Nexus operation outcome"),
+			wantInFlight: 1,
+		},
+		{
+			name:         "InvalidArgumentTurnsProgressOff",
+			err:          serviceerror.NewInvalidArgument("odd"),
+			wantDisabled: true,
+		},
+		{
+			name:         "FailedPreconditionTurnsProgressOff",
+			err:          serviceerror.NewFailedPrecondition("no"),
+			wantDisabled: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
