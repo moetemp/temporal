@@ -72,11 +72,6 @@ func (h *frontendHandler) resolve(namespaceName string, ref *streampb.StreamRefe
 	if err := ValidateReference(ref); err != nil {
 		return "", "", err
 	}
-	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
-	// its own; without it the request would reach a different notifier.
-	if ref.GetRunId() == "" {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.run_id must name the run chain's first run")
-	}
 	// Both become part of the notifier's business ID.
 	if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
@@ -101,6 +96,11 @@ func ValidateReference(ref *streampb.StreamReference) error {
 	}
 	if ref.GetTopic() == "" {
 		return serviceerror.NewInvalidArgument("stream_ref.topic is required")
+	}
+	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
+	// its own; without it the request would reach a different notifier.
+	if ref.GetRunId() == "" {
+		return serviceerror.NewInvalidArgument("stream_ref.run_id must name the run chain's first run")
 	}
 	return nil
 }
