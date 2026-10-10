@@ -265,7 +265,10 @@ type progressHandler struct {
 	body chan []byte
 }
 
-func (h *progressHandler) CompleteOperation(ctx context.Context, completion *nexusrpc.CompletionRequest) error {
+func (h *progressHandler) CompleteOperation(
+	ctx context.Context,
+	completion *nexusrpc.CompletionRequest,
+) error {
 	body, err := io.ReadAll(completion.Result.Reader)
 	if err != nil {
 		return err
@@ -276,13 +279,19 @@ func (h *progressHandler) CompleteOperation(ctx context.Context, completion *nex
 }
 
 func TestProgressDelivery(t *testing.T) {
-	h := &progressHandler{got: make(chan *nexusrpc.CompletionRequest, 1), body: make(chan []byte, 1)}
+	h := &progressHandler{
+		got:  make(chan *nexusrpc.CompletionRequest, 1),
+		body: make(chan []byte, 1),
+	}
 	ctx, callbackURL, teardown := setupForCompletion(t, h, nil, nil)
 	defer teardown()
 
 	c := nexusrpc.NewCompletionHTTPClient(nexusrpc.CompletionHTTPClientOptions{})
 	err := c.CompleteOperation(ctx, callbackURL, nexusrpc.CompleteOperationOptions{
-		Result:         &nexus.Content{Header: nexus.Header{"type": "application/json"}, Data: []byte(`{"counter": 2}`)},
+		Result: &nexus.Content{
+			Header: nexus.Header{"type": "application/json"},
+			Data:   []byte(`{"counter": 2}`),
+		},
 		Progress:       true,
 		OperationToken: "test-operation-token",
 	})

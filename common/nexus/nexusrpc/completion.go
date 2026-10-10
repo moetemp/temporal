@@ -106,8 +106,8 @@ type CompleteOperationOptions struct {
 	// Result to deliver with the completion. Uses the client's serializer to serialize the result into the request body.
 	// Only used for successful completions and progress.
 	Result any
-	// Progress makes the request a progress delivery rather than a completion: the state is running and Result holds
-	// the progress body. The operation stays open.
+	// Progress makes the request a progress delivery rather than a completion: the state is running
+	// and Result holds the progress body. The operation stays open.
 	Progress bool
 }
 

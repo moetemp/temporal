@@ -627,9 +627,9 @@ func (handler *WorkflowTaskCompletedHandler) Invoke(
 		}
 
 		if request.GetForceCreateNewWorkflowTask() {
-			// A worker forces a new task to heartbeat a long local activity. SDKs replay such a task
-			// as part of a heartbeat chain, so progress on it could reach the Workflow in a different
-			// activation on replay than live. It waits for the next task instead.
+			// A worker forces a new task to heartbeat a long local activity. SDKs replay such a
+			// task as part of a heartbeat chain, so progress on it could reach the Workflow in a
+			// different activation on replay than live. It waits for the next task instead.
 			ms.HoldNexusProgress()
 		}
 

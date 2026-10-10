@@ -82,6 +82,12 @@ func (l *library) Components() []*chasm.RegistrableComponent {
 	}
 }
 
+func (l *library) Tasks() []*chasm.RegistrableTask {
+	return []*chasm.RegistrableTask{
+		chasm.NewRegistrablePureTask("nexusProgressRelease", nexusProgressReleaseTaskHandler{}),
+	}
+}
+
 // SetEventRegistryOnContext injects the event registry into a CHASM context. This is primarily
 // useful for tests that construct MockMutableContext directly.
 func SetEventRegistryOnContext[C chasm.Context](ctx C, registry *Registry) C {

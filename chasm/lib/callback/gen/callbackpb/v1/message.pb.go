@@ -144,7 +144,8 @@ type CallbackState struct {
 	// The number of failed attempts of the progress delivery in flight.
 	ProgressAttempt int32 `protobuf:"varint,14,opt,name=progress_attempt,json=progressAttempt,proto3" json:"progress_attempt,omitempty"`
 	// Set when a progress delivery found the caller's operation closed (404), so nothing will read
-	// this callback's progress or completion and its parent may drop it.
+	// this callback's progress or completion and its parent may drop it. Dropping it drops its
+	// pending completion too, which a closed caller wouldn't take.
 	CallerOperationClosed bool `protobuf:"varint,15,opt,name=caller_operation_closed,json=callerOperationClosed,proto3" json:"caller_operation_closed,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache

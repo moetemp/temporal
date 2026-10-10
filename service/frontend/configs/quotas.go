@@ -96,7 +96,6 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/StartActivityExecution":           1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartNexusOperationExecution":     1,
 		"/temporal.api.workflowservice.v1.WorkflowService/AttachStreamCallback":             1,
-		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStream":                     1,
 		DispatchNexusTaskByNamespaceAndTaskQueueAPIName:                                     1,
 		DispatchNexusTaskByEndpointAPIName:                                                  1,
 
@@ -178,6 +177,10 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/ListWorkers":                                  3,
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeWorker":                               3,
 		"/temporal.api.workflowservice.v1.WorkflowService/CountWorkers":                                 3,
+
+		// P3: A stream notification is a hint the next append repeats, so it yields to starts and
+		// signals under namespace rate limiting.
+		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStream": 3,
 
 		// P3: Progress APIs for reporting cancellations and failures.
 		// They are relatively low priority as the tasks need to be retried anyway.
