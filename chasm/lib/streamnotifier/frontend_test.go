@@ -105,5 +105,9 @@ func TestNotifierRequestsAreBounded(t *testing.T) {
 	})
 	require.ErrorAs(t, err, &invalid)
 	require.ErrorContains(t, err, "run_id must name the run chain's first run")
+	_, err = h.DetachStreamCallback(context.Background(), &workflowservice.DetachStreamCallbackRequest{
+		Namespace: "ns", StreamRef: noRun, RequestId: "r",
+	})
+	require.ErrorAs(t, err, &invalid, "a detach without the chain's first run is refused")
 	require.Equal(t, 1, client.notified, "only the notification within bounds reached History")
 }
