@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/searchattribute"
+	"google.golang.org/protobuf/proto"
 )
 
 var ErrSignalWithStartOperationDisabled = serviceerror.NewUnimplemented("SignalWithStart operation is disabled")
@@ -120,6 +121,7 @@ func (h *workflowServiceNexusHandler) setStreamNotifier(handler streamnotifier.S
 
 // streamNotifierRequest is a notifier request a Workflow sends through System Nexus.
 type streamNotifierRequest interface {
+	proto.Message
 	GetNamespace() string
 	GetStreamRef() *streampb.StreamReference
 }
@@ -133,7 +135,8 @@ type streamNotifierOperationProcessor[R streamNotifierRequest] struct {
 }
 
 func (o streamNotifierOperationProcessor[R]) ProcessInput(ctx chasm.NexusOperationProcessorContext, request R) (*chasm.NexusOperationProcessorResult, error) {
-	if any(request) == nil {
+	// A nil request pointer is not a nil interface, so ask the message itself.
+	if !request.ProtoReflect().IsValid() {
 		return nil, serviceerror.NewInvalidArgument("Request is empty")
 	}
 	if request.GetNamespace() == "" {

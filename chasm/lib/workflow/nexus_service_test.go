@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/api/workflowservice/v1/workflowservicenexus"
@@ -83,4 +84,14 @@ func TestStreamNotifierProcessorsRejectAnotherNamespaceAndABadReference(t *testi
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestStreamNotifierProcessorRefusesANilRequest(t *testing.T) {
+	processor := streamNotifierOperationProcessor[*workflowservice.NotifyStreamRequest]{
+		setNamespace:  func(r *workflowservice.NotifyStreamRequest, ns string) { r.Namespace = ns },
+		clearIdentity: func(r *workflowservice.NotifyStreamRequest) { r.Identity = "" },
+	}
+	_, err := processor.ProcessInput(streamNotifierProcessorContext(), nil)
+	var invalid *serviceerror.InvalidArgument
+	require.ErrorAs(t, err, &invalid)
 }
