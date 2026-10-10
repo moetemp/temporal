@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"slices"
+	"time"
 
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/nexusoperation"
 	chasmworkflowpb "go.temporal.io/server/chasm/lib/workflow/gen/workflowpb/v1"
 	"go.temporal.io/server/common"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var _ nexusoperation.ProgressStore = (*Workflow)(nil)
@@ -31,8 +33,12 @@ func (w *Workflow) nexusProgressIndex(ctx chasm.Context) *chasmworkflowpb.NexusP
 
 // setNexusProgressIndex stores the index, or drops it when it is empty, so a Workflow whose
 // operations report no progress carries nothing.
-func (w *Workflow) setNexusProgressIndex(ctx chasm.MutableContext, index *chasmworkflowpb.NexusProgressState) {
-	if len(index.GetPending()) == 0 && len(index.GetScheduled()) == 0 && len(index.GetFolded()) == 0 {
+func (w *Workflow) setNexusProgressIndex(
+	ctx chasm.MutableContext,
+	index *chasmworkflowpb.NexusProgressState,
+) {
+	if len(index.GetPending()) == 0 && len(index.GetScheduled()) == 0 &&
+		len(index.GetFolded()) == 0 && index.GetLastCarriedTime() == nil {
 		if _, ok := w.NexusProgress.TryGet(ctx); ok {
 			w.NexusProgress = chasm.NewEmptyField[*chasmworkflowpb.NexusProgressState]()
 		}
@@ -44,7 +50,10 @@ func (w *Workflow) setNexusProgressIndex(ctx chasm.MutableContext, index *chasmw
 // OnNexusOperationProgress records that an operation holds progress for the next Workflow Task
 // scheduled event. Progress for an operation that rides a scheduled Workflow Task that has not
 // started folds into that task: it asks for no task of its own until that one starts.
-func (w *Workflow) OnNexusOperationProgress(ctx chasm.MutableContext, op *nexusoperation.Operation) error {
+func (w *Workflow) OnNexusOperationProgress(
+	ctx chasm.MutableContext,
+	op *nexusoperation.Operation,
+) error {
 	key, ok := nexusProgressKey(op)
 	if !ok {
 		op.DropPendingProgress(ctx)
@@ -99,8 +108,56 @@ func (w *Workflow) TakeNexusProgress(ctx chasm.MutableContext) []*nexuspb.NexusO
 	}
 	slices.Sort(index.Scheduled)
 	index.Pending = nil
+	index.ReleaseTime = nil
+	if len(taken) > 0 {
+		index.LastCarriedTime = timestamppb.New(ctx.Now(w))
+	}
 	w.setNexusProgressIndex(ctx, index)
 	return taken
+}
+
+// NexusProgressReadyAt answers when pending progress may schedule a Workflow Task of its own:
+// minInterval after the last task that carried progress.
+func (w *Workflow) NexusProgressReadyAt(ctx chasm.Context, minInterval time.Duration) time.Time {
+	last := w.nexusProgressIndex(ctx).GetLastCarriedTime()
+	if last == nil {
+		return time.Time{}
+	}
+	return last.AsTime().Add(minInterval)
+}
+
+// HoldNexusProgress keeps pending progress waiting until readyAt, when a NexusProgressReleaseTask
+// lets it schedule a Workflow Task. A task scheduled for any other reason still takes it sooner.
+func (w *Workflow) HoldNexusProgress(ctx chasm.MutableContext, readyAt time.Time) {
+	index := w.nexusProgressIndex(ctx)
+	// A release armed for the future and no later than readyAt already covers this. One that
+	// fires early releases nothing, since the progress is held again until readyAt.
+	if release := index.GetReleaseTime(); release != nil && release.AsTime().After(ctx.Now(w)) &&
+		!release.AsTime().After(readyAt) {
+		return
+	}
+	index = common.CloneProto(index)
+	index.ReleaseTime = timestamppb.New(readyAt)
+	w.setNexusProgressIndex(ctx, index)
+	ctx.AddTask(
+		w,
+		chasm.TaskAttributes{ScheduledTime: readyAt},
+		&chasmworkflowpb.NexusProgressReleaseTask{},
+	)
+}
+
+// releaseNexusProgress lets held progress schedule a Workflow Task. It changes the Workflow, so
+// the transaction that closes after it schedules the task.
+func (w *Workflow) releaseNexusProgress(ctx chasm.MutableContext) {
+	index := common.CloneProto(w.nexusProgressIndex(ctx))
+	index.ReleaseTime = nil
+	w.setNexusProgressIndex(ctx, index)
+}
+
+// nexusProgressHeld reports whether a release is armed for pending progress.
+func (w *Workflow) nexusProgressHeld(ctx chasm.Context) bool {
+	index := w.nexusProgressIndex(ctx)
+	return index.GetReleaseTime() != nil && len(index.GetPending()) > 0
 }
 
 // ClearScheduledNexusProgress forgets which operations the scheduled Workflow Task carries. Called
@@ -121,24 +178,6 @@ func (w *Workflow) ClearScheduledNexusProgress(ctx chasm.MutableContext) {
 	slices.Sort(index.Pending)
 	index.Scheduled = nil
 	index.Folded = nil
-	w.setNexusProgressIndex(ctx, index)
-}
-
-// DropPendingNexusProgress forgets every operation's pending progress. It guards against a Workflow
-// Task that was scheduled for progress but could not carry it, which would otherwise schedule
-// another task on every transaction.
-func (w *Workflow) DropPendingNexusProgress(ctx chasm.MutableContext) {
-	index := w.nexusProgressIndex(ctx)
-	if len(index.GetPending()) == 0 {
-		return
-	}
-	for _, key := range index.GetPending() {
-		if field, ok := w.Operations[key]; ok {
-			field.Get(ctx).DropPendingProgress(ctx)
-		}
-	}
-	index = common.CloneProto(index)
-	index.Pending = nil
 	w.setNexusProgressIndex(ctx, index)
 }
 

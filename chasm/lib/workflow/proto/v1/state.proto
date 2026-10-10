@@ -4,6 +4,8 @@ package temporal.server.chasm.lib.workflow.proto.v1;
 
 option go_package = "go.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpb";
 
+import "google/protobuf/timestamp.proto";
+
 // NexusOperationParentData contains workflow-specific data stored in a nexus operation's
 // parent_data field when the operation is embedded in a workflow.
 message NexusOperationParentData {
@@ -38,4 +40,10 @@ message NexusProgressState {
   // carries. Once the task starts, fails or times out they wait like pending ones, so one follow-up
   // task carries the highest counter.
   repeated int64 folded = 3;
+  // When a Workflow Task last carried progress. Progress waits at least
+  // nexusoperation.progressMinInterval after it before it schedules a task of its own, so a long
+  // stream can't fill the caller's History.
+  google.protobuf.Timestamp last_carried_time = 4;
+  // When the armed NexusProgressReleaseTask lets waiting progress schedule a task.
+  google.protobuf.Timestamp release_time = 5;
 }

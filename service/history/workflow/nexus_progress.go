@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	historypb "go.temporal.io/api/history/v1"
 	enumsspb "go.temporal.io/server/api/enums/v1"
@@ -47,7 +48,9 @@ func (ms *MutableStateImpl) attachNexusProgress(event *historypb.HistoryEvent) {
 		return
 	}
 	attrs := event.GetWorkflowTaskScheduledEventAttributes()
-	attrs.NexusOperationProgress = append(attrs.NexusOperationProgress, wf.TakeNexusProgress(chasmCtx)...)
+	attrs.NexusOperationProgress = append(
+		attrs.NexusOperationProgress,
+		wf.TakeNexusProgress(chasmCtx)...)
 }
 
 // clearScheduledNexusProgress forgets which operations the scheduled Workflow Task carries, once
@@ -66,24 +69,54 @@ func (ms *MutableStateImpl) clearScheduledNexusProgress() {
 	wf.ClearScheduledNexusProgress(mutableCtx)
 }
 
+// nexusProgressMinInterval is the shortest time between a Workflow Task that carried progress and
+// the next task progress schedules.
+func (ms *MutableStateImpl) nexusProgressMinInterval() time.Duration {
+	if ms.config.NexusOperationProgressMinInterval == nil {
+		return 0
+	}
+	return ms.config.NexusOperationProgressMinInterval(ms.GetNamespaceEntry().Name().String())
+}
+
 // scheduleWorkflowTaskForNexusProgress schedules a Workflow Task to carry pending Nexus operation
-// progress when no task is pending to carry it.
+// progress when no task is pending to carry it, unless a task carried progress too recently.
 func (ms *MutableStateImpl) scheduleWorkflowTaskForNexusProgress() error {
-	if ms.HasPendingWorkflowTask() || ms.IsWorkflowExecutionStatusPaused() || !ms.hasPendingNexusProgress() {
+	// Only a CHASM change (progress arrived, or a hold was released) or a Workflow Task change can
+	// make progress need a task, so most transactions skip resolving the CHASM root.
+	if !ms.workflowTaskUpdated && !ms.chasmTree.IsStateDirty() {
 		return nil
 	}
-	if _, err := ms.AddWorkflowTaskScheduledEvent(false, enumsspb.WORKFLOW_TASK_TYPE_NORMAL); err != nil {
+	if ms.HasPendingWorkflowTask() || ms.IsWorkflowExecutionStatusPaused() {
+		return nil
+	}
+	wf, chasmCtx, ok := ms.chasmWorkflowView()
+	if !ok || !wf.HasPendingNexusProgress(chasmCtx) {
+		return nil
+	}
+	minInterval := ms.nexusProgressMinInterval()
+	now := chasmCtx.Now(wf)
+	if readyAt := wf.NexusProgressReadyAt(chasmCtx, minInterval); now.Before(readyAt) {
+		return ms.waitNexusProgress(readyAt)
+	}
+	_, err := ms.AddWorkflowTaskScheduledEvent(false, enumsspb.WORKFLOW_TASK_TYPE_NORMAL)
+	if err != nil {
 		return err
 	}
-	// A task that was scheduled for progress but did not carry it would leave the progress
-	// pending, and every later transaction would schedule another task for it.
-	if ms.hasPendingNexusProgress() {
-		ms.logger.Warn("dropped Nexus operation progress that a scheduled Workflow Task did not carry")
-		wf, chasmCtx, err := ms.ChasmWorkflowComponent(context.Background())
-		if err != nil {
-			return err
-		}
-		wf.DropPendingNexusProgress(chasmCtx)
+	if !ms.hasPendingNexusProgress() {
+		return nil
 	}
+	// The task can't carry the progress, for example after a failover converted it. Without a
+	// hold, every later transaction would schedule another task for it. The floor stops that loop
+	// when the interval is zero.
+	ms.logger.Info("held Nexus operation progress that a scheduled Workflow Task can't carry")
+	return ms.waitNexusProgress(now.Add(max(minInterval, time.Second)))
+}
+
+func (ms *MutableStateImpl) waitNexusProgress(readyAt time.Time) error {
+	wf, chasmCtx, err := ms.ChasmWorkflowComponent(context.Background())
+	if err != nil {
+		return err
+	}
+	wf.HoldNexusProgress(chasmCtx, readyAt)
 	return nil
 }

@@ -331,8 +331,8 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 	createWorkflowTaskScheduledEvent := !m.ms.IsTransientWorkflowTask() && workflowTaskType != enumsspb.WORKFLOW_TASK_TYPE_SPECULATIVE
 
 	// A cluster rebuilt from replicated events never learns workflow_task_holds_nexus_progress, so
-	// a task a failover converts may retry a heartbeat task without the hold. Such a task carries no
-	// progress; the progress waits for the task after it.
+	// a task a failover converts may retry a heartbeat task without the hold. Such a task carries
+	// no progress; the progress waits for the task after it.
 	holdForFailover := false
 
 	// If while scheduling a workflow task and new events has come, then this workflow task cannot be a transient/speculative.
@@ -601,7 +601,8 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskStartedEvent(
 			startTime,
 		)
 		// The worker has not seen this task yet, so its scheduled event can carry what is pending,
-		// unless a failover converted it (see holdForFailover in AddWorkflowTaskScheduledEventAsHeartbeat).
+		// unless a failover converted it (see holdForFailover in
+		// AddWorkflowTaskScheduledEventAsHeartbeat).
 		if workflowTask.Version == m.ms.GetCurrentVersion() {
 			m.ms.attachNexusProgress(scheduledEvent)
 		}

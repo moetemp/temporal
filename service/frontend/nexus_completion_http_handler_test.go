@@ -245,25 +245,71 @@ func TestDeliverProgress_HistoryErrors(t *testing.T) {
 		err      error
 		wantType nexus.HandlerErrorType
 	}{
-		{name: "namespace not active", err: serviceerror.NewNamespaceNotActive("ns", "active", "standby"), wantType: nexus.HandlerErrorTypeUnavailable},
-		{name: "unavailable", err: serviceerror.NewUnavailable("busy"), wantType: nexus.HandlerErrorTypeUnavailable},
-		{name: "resource exhausted", err: serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_RPS_LIMIT, "slow down"), wantType: nexus.HandlerErrorTypeUnavailable},
-		{name: "deadline exceeded", err: serviceerror.NewDeadlineExceeded("late"), wantType: nexus.HandlerErrorTypeUnavailable},
-		{name: "internal", err: serviceerror.NewInternal("boom"), wantType: nexus.HandlerErrorTypeUnavailable},
-		{name: "unimplemented during an upgrade", err: serviceerror.NewUnimplemented("unhandled Nexus operation outcome"), wantType: nexus.HandlerErrorTypeUnavailable},
-		{name: "invalid argument", err: serviceerror.NewInvalidArgument("odd"), wantType: nexus.HandlerErrorTypeBadRequest},
-		{name: "failed precondition", err: serviceerror.NewFailedPrecondition("no"), wantType: nexus.HandlerErrorTypeBadRequest},
-		{name: "closed operation", err: serviceerror.NewNotFound("operation not found"), wantType: nexus.HandlerErrorTypeNotFound},
+		{
+			name:     "namespace not active",
+			err:      serviceerror.NewNamespaceNotActive("ns", "active", "standby"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "unavailable",
+			err:      serviceerror.NewUnavailable("busy"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name: "resource exhausted",
+			err: serviceerror.NewResourceExhausted(
+				enumspb.RESOURCE_EXHAUSTED_CAUSE_RPS_LIMIT, "slow down"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "deadline exceeded",
+			err:      serviceerror.NewDeadlineExceeded("late"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "internal",
+			err:      serviceerror.NewInternal("boom"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "unimplemented during an upgrade",
+			err:      serviceerror.NewUnimplemented("unhandled Nexus operation outcome"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "invalid argument",
+			err:      serviceerror.NewInvalidArgument("odd"),
+			wantType: nexus.HandlerErrorTypeBadRequest,
+		},
+		{
+			name:     "failed precondition",
+			err:      serviceerror.NewFailedPrecondition("no"),
+			wantType: nexus.HandlerErrorTypeBadRequest,
+		},
+		{
+			name:     "closed operation",
+			err:      serviceerror.NewNotFound("operation not found"),
+			wantType: nexus.HandlerErrorTypeNotFound,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			client := historyservicemock.NewMockHistoryServiceClient(ctrl)
-			client.EXPECT().CompleteNexusOperationChasm(gomock.Any(), gomock.Any()).Return(nil, tc.err)
+			client.EXPECT().
+				CompleteNexusOperationChasm(gomock.Any(), gomock.Any()).
+				Return(nil, tc.err)
+			enabled := dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true)
 			h := &nexusCompletionHandler{
 				HistoryClient: client,
-				Config:        &Config{EnableNexusOperationProgress: dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true)},
+				Config: &Config{
+					EnableNexusOperationProgress: enabled,
+				},
 			}
-			ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "ns"}, nil, "active")
+			ns := namespace.NewLocalNamespaceForTest(
+				&persistencespb.NamespaceInfo{Name: "ns"},
+				nil,
+				"active",
+			)
 			req := &nexusrpc.CompletionRequest{
 				State:          nexus.OperationStateRunning,
 				OperationToken: "operation-token",
@@ -271,7 +317,13 @@ func TestDeliverProgress_HistoryErrors(t *testing.T) {
 					ReadCloser: io.NopCloser(strings.NewReader(`{"position": "p", "counter": 1}`)),
 				}),
 			}
-			err := h.deliverProgress(context.Background(), log.NewNoopLogger(), ns, chasmCompletionToken(t), req)
+			err := h.deliverProgress(
+				context.Background(),
+				log.NewNoopLogger(),
+				ns,
+				chasmCompletionToken(t),
+				req,
+			)
 			var handlerErr *nexus.HandlerError
 			require.ErrorAs(t, err, &handlerErr)
 			require.Equal(t, tc.wantType, handlerErr.Type)

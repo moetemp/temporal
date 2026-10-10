@@ -13,6 +13,7 @@ import (
 
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -183,7 +184,13 @@ type NexusProgressState struct {
 	// Operations whose progress folded into that task but is newer than what its scheduled event
 	// carries. Once the task starts, fails or times out they wait like pending ones, so one follow-up
 	// task carries the highest counter.
-	Folded        []int64 `protobuf:"varint,3,rep,packed,name=folded,proto3" json:"folded,omitempty"`
+	Folded []int64 `protobuf:"varint,3,rep,packed,name=folded,proto3" json:"folded,omitempty"`
+	// When a Workflow Task last carried progress. Progress waits at least
+	// nexusoperation.progressMinInterval after it before it schedules a task of its own, so a long
+	// stream can't fill the caller's History.
+	LastCarriedTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_carried_time,json=lastCarriedTime,proto3" json:"last_carried_time,omitempty"`
+	// When the armed NexusProgressReleaseTask lets waiting progress schedule a task.
+	ReleaseTime   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=release_time,json=releaseTime,proto3" json:"release_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -239,22 +246,38 @@ func (x *NexusProgressState) GetFolded() []int64 {
 	return nil
 }
 
+func (x *NexusProgressState) GetLastCarriedTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastCarriedTime
+	}
+	return nil
+}
+
+func (x *NexusProgressState) GetReleaseTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ReleaseTime
+	}
+	return nil
+}
+
 var File_temporal_server_chasm_lib_workflow_proto_v1_state_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc = "" +
 	"\n" +
-	"7temporal/server/chasm/lib/workflow/proto/v1/state.proto\x12+temporal.server.chasm.lib.workflow.proto.v1\"|\n" +
+	"7temporal/server/chasm/lib/workflow/proto/v1/state.proto\x12+temporal.server.chasm.lib.workflow.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"|\n" +
 	"\x18NexusOperationParentData\x12,\n" +
 	"\x12scheduled_event_id\x18\x01 \x01(\x03R\x10scheduledEventId\x122\n" +
 	"\x15scheduled_event_token\x18\x02 \x01(\fR\x13scheduledEventToken\"K\n" +
 	"\x1bNexusCancellationParentData\x12,\n" +
 	"\x12requested_event_id\x18\x01 \x01(\x03R\x10requestedEventId\"/\n" +
 	"\x12IncomingSignalData\x12\x19\n" +
-	"\bevent_id\x18\x01 \x01(\x03R\aeventId\"d\n" +
+	"\bevent_id\x18\x01 \x01(\x03R\aeventId\"\xeb\x01\n" +
 	"\x12NexusProgressState\x12\x18\n" +
 	"\apending\x18\x01 \x03(\x03R\apending\x12\x1c\n" +
 	"\tscheduled\x18\x02 \x03(\x03R\tscheduled\x12\x16\n" +
-	"\x06folded\x18\x03 \x03(\x03R\x06foldedBDZBgo.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpbb\x06proto3"
+	"\x06folded\x18\x03 \x03(\x03R\x06folded\x12F\n" +
+	"\x11last_carried_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x0flastCarriedTime\x12=\n" +
+	"\frelease_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vreleaseTimeBDZBgo.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpbb\x06proto3"
 
 var (
 	file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDescOnce sync.Once
@@ -274,13 +297,16 @@ var file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_goTypes = []any
 	(*NexusCancellationParentData)(nil), // 1: temporal.server.chasm.lib.workflow.proto.v1.NexusCancellationParentData
 	(*IncomingSignalData)(nil),          // 2: temporal.server.chasm.lib.workflow.proto.v1.IncomingSignalData
 	(*NexusProgressState)(nil),          // 3: temporal.server.chasm.lib.workflow.proto.v1.NexusProgressState
+	(*timestamppb.Timestamp)(nil),       // 4: google.protobuf.Timestamp
 }
 var file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: temporal.server.chasm.lib.workflow.proto.v1.NexusProgressState.last_carried_time:type_name -> google.protobuf.Timestamp
+	4, // 1: temporal.server.chasm.lib.workflow.proto.v1.NexusProgressState.release_time:type_name -> google.protobuf.Timestamp
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_init() }
