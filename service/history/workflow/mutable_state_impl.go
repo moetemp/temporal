@@ -210,7 +210,10 @@ type (
 		// (via AttachChasmRequestID). It gates the lazy request-ID sweep at transaction close so only
 		// transactions that added an ID pay for the scan.
 		chasmRequestIDsAdded bool
-		updateInfoUpdated    map[string]struct{}
+		// holdNexusProgress keeps Nexus operation progress off the Workflow Task scheduled in the
+		// current transaction (see HoldNexusProgress).
+		holdNexusProgress bool
+		updateInfoUpdated map[string]struct{}
 		// following xxxUserDataUpdated fields are for tracking if activity/timer user data updated.
 		// This help to determine if we need to update transition history: For
 		// user data change, we need to update transition history. No update for
@@ -3640,6 +3643,10 @@ func (ms *MutableStateImpl) AddWorkflowTaskScheduledEventAsHeartbeat(
 		return nil, err
 	}
 	return ms.workflowTaskManager.AddWorkflowTaskScheduledEventAsHeartbeat(bypassTaskGeneration, originalScheduledTimestamp, workflowTaskType)
+}
+
+func (ms *MutableStateImpl) HoldNexusProgress() {
+	ms.holdNexusProgress = true
 }
 
 func (ms *MutableStateImpl) ApplyTransientWorkflowTaskScheduled() (*historyi.WorkflowTaskInfo, error) {
@@ -8584,6 +8591,7 @@ func (ms *MutableStateImpl) cleanupTransaction() error {
 	ms.executionStateUpdated = false
 	ms.workflowTaskUpdated = false
 	ms.chasmRequestIDsAdded = false
+	ms.holdNexusProgress = false
 	ms.isResetStateUpdated = false
 	ms.timeSkippingInfoUpdated = false
 	ms.updateInfoUpdated = make(map[string]struct{})

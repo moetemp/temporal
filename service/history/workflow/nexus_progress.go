@@ -38,7 +38,7 @@ func (ms *MutableStateImpl) hasPendingNexusProgress() bool {
 // attachNexusProgress puts the pending Nexus operation progress on a WorkflowTaskScheduled event
 // for a task no worker has seen yet. The event is the acknowledgment, so the progress is taken.
 func (ms *MutableStateImpl) attachNexusProgress(event *historypb.HistoryEvent) {
-	if !ms.hasPendingNexusProgress() {
+	if ms.holdNexusProgress || !ms.hasPendingNexusProgress() {
 		return
 	}
 	wf, chasmCtx, err := ms.ChasmWorkflowComponent(context.Background())

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -310,6 +311,133 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
 	})
 	s.NoError(err)
 	s.Len(carriedNexusProgress(resp.GetHistory().GetEvents()), 2, "the progress is part of History")
+}
+
+// TestNexusOperationProgressSkipsHeartbeatTasks checks that progress arriving during a long local
+// activity stays off the tasks a worker forces to heartbeat it, and rides the next normal task.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatTasks(chasmEnabled bool) {
+	if !chasmEnabled {
+		// An HSM caller refuses progress; TestNexusOperationProgress covers it.
+		return
+	}
+	env := s.newTestEnv(chasmEnabled, testcore.WithDynamicConfig(chasmnexus.EnableProgress, true))
+	ctx := s.Context()
+	taskQueue := testcore.RandomizeStr(s.T().Name())
+
+	var callbackToken, callbackURL string
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			callbackToken = options.CallbackHeader.Get(commonnexus.CallbackTokenHeader)
+			callbackURL = options.CallbackURL
+			return &nexus.HandlerStartOperationResultAsync{OperationToken: "test"}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+
+	laStarted := make(chan struct{})
+	var laStartedOnce sync.Once
+	releaseLA := make(chan struct{})
+	longLocalActivity := func(ctx context.Context) error {
+		laStartedOnce.Do(func() { close(laStarted) })
+		select {
+		case <-releaseLA:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	callerWF := func(ctx workflow.Context) (string, error) {
+		c := workflow.NewNexusClient(endpointName, "service")
+		fut := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{})
+		if err := fut.GetNexusOperationExecution().Get(ctx, nil); err != nil {
+			return "", err
+		}
+		laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: time.Minute})
+		if err := workflow.ExecuteLocalActivity(laCtx, longLocalActivity).Get(ctx, nil); err != nil {
+			return "", err
+		}
+		var result string
+		err := fut.Get(ctx, &result)
+		return result, err
+	}
+	w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
+	w.RegisterWorkflow(callerWF)
+	w.RegisterActivity(longLocalActivity)
+	s.NoError(w.Start())
+	defer w.Stop()
+
+	// A short task timeout makes the worker heartbeat the local activity often.
+	run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		TaskQueue:           taskQueue,
+		WorkflowTaskTimeout: time.Second,
+	}, callerWF)
+	s.NoError(err)
+	wfExec := &commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()}
+	history := func() []*historypb.HistoryEvent {
+		return env.GetHistory(env.Namespace().String(), wfExec)
+	}
+	select {
+	case <-laStarted:
+	case <-ctx.Done():
+		s.FailNow("the local activity did not start")
+	}
+
+	beforeProgress := history()
+	status, err := postNexusProgress(ctx, callbackURL, callbackToken, `{"position": "p1", "counter": 1}`)
+	s.NoError(err)
+	s.Equal(http.StatusOK, status)
+	countScheduled := func(hist []*historypb.HistoryEvent) int {
+		var n int
+		for _, event := range hist {
+			if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
+				n++
+			}
+		}
+		return n
+	}
+	var duringLA []*historypb.HistoryEvent
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		duringLA = history()[len(beforeProgress):]
+		s.GreaterOrEqual(countScheduled(duringLA), 2, "the worker keeps heartbeating the local activity")
+	}, 10*time.Second, 50*time.Millisecond)
+	s.Empty(carriedNexusProgress(duringLA), "no heartbeat task carries progress")
+
+	close(releaseLA)
+	var afterLA []*historypb.HistoryEvent
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		afterLA = history()[len(beforeProgress):]
+		s.Len(carriedNexusProgress(afterLA), 1)
+	}, 10*time.Second, 50*time.Millisecond)
+	markerIdx := -1
+	carrierIdx := -1
+	for i, event := range afterLA {
+		if event.GetEventType() == enumspb.EVENT_TYPE_MARKER_RECORDED {
+			markerIdx = i
+		}
+		if len(event.GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()) > 0 {
+			carrierIdx = i
+		}
+	}
+	s.Positive(markerIdx, "the local activity's result is recorded")
+	s.Greater(carrierIdx, markerIdx, "the first normal task after the heartbeats carries the progress")
+	s.Equal(int64(1), carriedNexusProgress(afterLA)[0].GetCounter())
+
+	s.NoError(s.sendNexusCompletionRequest(ctx, callbackURL, nexusrpc.CompleteOperationOptions{
+		Result: testcore.MustToPayload(s.T(), "result"),
+		Header: nexus.Header{commonnexus.CallbackTokenHeader: callbackToken},
+	}))
+	var result string
+	s.NoError(run.Get(ctx, &result))
+	s.Equal("result", result)
+
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(callerWF)
+	s.NoError(replayer.ReplayWorkflowHistory(nil, &historypb.History{Events: history()}))
 }
 
 func (s *NexusWorkflowTestSuite) scheduledEventID(hist []*historypb.HistoryEvent) int64 {
