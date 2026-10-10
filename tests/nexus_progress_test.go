@@ -15,6 +15,7 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
+	updatepb "go.temporal.io/api/update/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -23,6 +24,8 @@ import (
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"go.temporal.io/server/common/nexus/nexustest"
+	"go.temporal.io/server/common/testing/testvars"
+	"go.temporal.io/server/common/testing/updateutils"
 	"go.temporal.io/server/tests/testcore"
 )
 
@@ -550,6 +553,151 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatRetries
 	s.Len(carried, 1, "the next normal task carries the progress")
 	s.Equal(int64(1), carried[0].GetCounter())
 	respond(normalTask, false, &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
+			CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{},
+		},
+	})
+	s.NoError(run.Get(ctx, nil))
+}
+
+// TestNexusOperationProgressRidesSpeculativeTasks checks that progress reaches the Workflow when it
+// arrives while a speculative task for an Update is pending, and the Update is then rejected. The
+// progress transaction turns the speculative task into a normal one: one that has not started
+// carries the progress, and one already started is kept, so a follow-up task carries it.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgressRidesSpeculativeTasks(chasmEnabled bool) {
+	if !chasmEnabled {
+		// An HSM caller refuses progress; TestNexusOperationProgress covers it.
+		return
+	}
+	env := s.newTestEnv(chasmEnabled, testcore.WithDynamicConfig(chasmnexus.EnableProgress, true))
+	ctx := s.Context()
+	taskQueue := testcore.RandomizeStr(s.T().Name())
+	ns := env.Namespace().String()
+	tv := testvars.New(s.T())
+	updates := updateutils.New(s.T())
+
+	var callbackToken, callbackURL string
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			callbackToken = options.CallbackHeader.Get(commonnexus.CallbackTokenHeader)
+			callbackURL = options.CallbackURL
+			return &nexus.HandlerStartOperationResultAsync{OperationToken: "test"}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+
+	run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, "workflow")
+	s.NoError(err)
+	wfExec := &commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()}
+	frontend := env.FrontendClient()
+	poll := func() *workflowservice.PollWorkflowTaskQueueResponse {
+		resp, err := frontend.PollWorkflowTaskQueue(ctx, &workflowservice.PollWorkflowTaskQueueRequest{
+			Namespace: ns,
+			TaskQueue: &taskqueuepb.TaskQueue{Name: taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
+			Identity:  "test",
+		})
+		s.NoError(err)
+		s.NotEmpty(resp.GetTaskToken())
+		return resp
+	}
+	respond := func(task *workflowservice.PollWorkflowTaskQueueResponse, commands ...*commandpb.Command) {
+		_, err := frontend.RespondWorkflowTaskCompleted(ctx, &workflowservice.RespondWorkflowTaskCompletedRequest{
+			Namespace: ns,
+			Identity:  "test",
+			TaskToken: task.GetTaskToken(),
+			Commands:  commands,
+		})
+		s.NoError(err)
+	}
+	rejectUpdate := func(task *workflowservice.PollWorkflowTaskQueueResponse) {
+		s.Len(task.GetMessages(), 1, "the task carries the Update request")
+		_, err := frontend.RespondWorkflowTaskCompleted(ctx, &workflowservice.RespondWorkflowTaskCompletedRequest{
+			Namespace: ns,
+			Identity:  "test",
+			TaskToken: task.GetTaskToken(),
+			Messages:  updates.UpdateRejectMessages(tv, task.GetMessages()[0]),
+		})
+		s.NoError(err)
+	}
+	sendUpdate := func(updateID string) <-chan *updatepb.Outcome {
+		done := make(chan *updatepb.Outcome, 1)
+		go func() {
+			resp, err := frontend.UpdateWorkflowExecution(ctx, &workflowservice.UpdateWorkflowExecutionRequest{
+				Namespace:         ns,
+				WorkflowExecution: wfExec,
+				Request: &updatepb.Request{
+					Meta:  &updatepb.Meta{UpdateId: updateID},
+					Input: &updatepb.Input{Name: "update"},
+				},
+				WaitPolicy: &updatepb.WaitPolicy{LifecycleStage: enumspb.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED},
+			})
+			s.NoError(err)
+			done <- resp.GetOutcome()
+		}()
+		return done
+	}
+	// carried is the progress on the scheduled event of the task a poll answered.
+	carried := func(task *workflowservice.PollWorkflowTaskQueueResponse) []*nexuspb.NexusOperationProgress {
+		events := task.GetHistory().GetEvents()
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
+				return events[i].GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()
+			}
+		}
+		return nil
+	}
+	postProgress := func(counter int) {
+		status, err := postNexusProgress(ctx, callbackURL, callbackToken, fmt.Sprintf(`{"position": "p%d", "counter": %d}`, counter, counter))
+		s.NoError(err)
+		s.Equal(http.StatusOK, status)
+	}
+
+	respond(poll(), &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
+		Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
+			ScheduleNexusOperationCommandAttributes: &commandpb.ScheduleNexusOperationCommandAttributes{
+				Endpoint:  endpointName,
+				Service:   "service",
+				Operation: "operation",
+				Input:     testcore.MustToPayload(s.T(), "input"),
+			},
+		},
+	})
+	startedTask := poll()
+	s.RequireHistoryEvent(startedTask.GetHistory().GetEvents(), enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED)
+	respond(startedTask)
+
+	// An Update schedules a speculative task, and progress arrives before any worker takes it.
+	firstUpdate := sendUpdate("unstarted")
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		desc, err := env.SdkClient().DescribeWorkflowExecution(ctx, run.GetID(), run.GetRunID())
+		s.NoError(err)
+		s.NotNil(desc.GetPendingWorkflowTask())
+	}, 10*time.Second, 50*time.Millisecond)
+	postProgress(1)
+	unstartedTask := poll()
+	s.Len(carried(unstartedTask), 1, "the task that was speculative carries the progress")
+	s.Equal(int64(1), carried(unstartedTask)[0].GetCounter())
+	rejectUpdate(unstartedTask)
+	s.NotNil((<-firstUpdate).GetFailure(), "the Update was rejected")
+
+	// This time the worker has already started the speculative task when progress arrives.
+	secondUpdate := sendUpdate("started")
+	startedSpeculative := poll()
+	s.Len(startedSpeculative.GetMessages(), 1)
+	postProgress(2)
+	rejectUpdate(startedSpeculative)
+	s.NotNil((<-secondUpdate).GetFailure(), "the Update was rejected")
+	followUp := poll()
+	s.Len(carried(followUp), 1, "a follow-up task carries the progress the started task could not")
+	s.Equal(int64(2), carried(followUp)[0].GetCounter())
+	respond(followUp, &commandpb.Command{
 		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
 		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
 			CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{},
