@@ -34,4 +34,8 @@ message NexusProgressState {
   // Operations whose latest progress rides a scheduled Workflow Task that has not started yet.
   // Newer progress for one of them folds into that task, since the read it triggers sees it.
   repeated int64 scheduled = 2;
+  // Operations whose progress folded into that task but is newer than what its scheduled event
+  // carries. Once the task starts, fails or times out they wait like pending ones, so one follow-up
+  // task carries the highest counter.
+  repeated int64 folded = 3;
 }
