@@ -3125,6 +3125,18 @@ func (mr *MockMutableStateMockRecorder) HasStartedWorkflowTask() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasStartedWorkflowTask", reflect.TypeOf((*MockMutableState)(nil).HasStartedWorkflowTask))
 }
 
+// HoldNexusProgress mocks base method.
+func (m *MockMutableState) HoldNexusProgress() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "HoldNexusProgress")
+}
+
+// HoldNexusProgress indicates an expected call of HoldNexusProgress.
+func (mr *MockMutableStateMockRecorder) HoldNexusProgress() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HoldNexusProgress", reflect.TypeOf((*MockMutableState)(nil).HoldNexusProgress))
+}
+
 // InitTransitionHistory mocks base method.
 func (m *MockMutableState) InitTransitionHistory() {
 	m.ctrl.T.Helper()
