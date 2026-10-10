@@ -10,7 +10,11 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
+	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/server/api/historyservice/v1"
+	"go.temporal.io/server/api/historyservicemock/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/chasmtest"
 	"go.temporal.io/server/chasm/lib/callback"
@@ -18,34 +22,54 @@ import (
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/namespace"
+	"go.uber.org/mock/gomock"
+	"google.golang.org/grpc"
 )
 
 type notifierTest struct {
-	t       *testing.T
-	ctx     context.Context
-	handler *handler
-	expiry  *expiryTaskHandler
-	ref     *streampb.StreamReference
+	t          *testing.T
+	ctx        context.Context
+	handler    *handler
+	expiry     *expiryTaskHandler
+	ownerCheck *ownerCheckTaskHandler
+	history    *historyservicemock.MockHistoryServiceClient
+	ref        *streampb.StreamReference
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	config := &Config{
-		Enabled:         dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
-		MaxCallbacks:    dynamicconfig.GetIntPropertyFnFilteredByNamespace(maxCallbacks),
-		IdleTimeout:     dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Hour),
-		ClosedRetention: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
+		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		MaxCallbacks:       dynamicconfig.GetIntPropertyFnFilteredByNamespace(maxCallbacks),
+		IdleTimeout:        dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Hour),
+		ClosedRetention:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
+		OwnerCheckInterval: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(5 * time.Minute),
+		MaxIDLength:        dynamicconfig.GetIntPropertyFn(1000),
 	}
+	ctrl := gomock.NewController(t)
+	history := historyservicemock.NewMockHistoryServiceClient(ctrl)
+	registryMock := namespace.NewMockRegistry(ctrl)
+	registryMock.EXPECT().GetNamespaceByID(gomock.Any()).Return(
+		namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Id: "namespace-id", Name: "ns"}, nil, "active"), nil,
+	).AnyTimes()
 	h := newHandler(config, log.NewTestLogger())
 	expiry := newExpiryTaskHandler(expiryTaskHandlerOptions{Config: config})
+	ownerCheck := newOwnerCheckTaskHandler(ownerCheckTaskHandlerOptions{
+		Config:            config,
+		HistoryClient:     history,
+		NamespaceRegistry: registryMock,
+	})
 	registry := chasm.NewRegistry(log.NewTestLogger())
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
-	require.NoError(t, registry.Register(newLibrary(h, expiry)))
+	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck)))
 	return &notifierTest{
-		t:       t,
-		ctx:     chasm.NewEngineContext(context.Background(), chasmtest.NewEngine(t, registry)),
-		handler: h,
-		expiry:  expiry,
+		t:          t,
+		ctx:        chasm.NewEngineContext(context.Background(), chasmtest.NewEngine(t, registry)),
+		handler:    h,
+		expiry:     expiry,
+		ownerCheck: ownerCheck,
+		history:    history,
 		ref: &streampb.StreamReference{
 			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
 			WorkflowId: "wf/1",
@@ -132,6 +156,38 @@ func (nt *notifierTest) expire() {
 	require.NoError(nt.t, err)
 }
 
+// updateCallback changes one callback's state, standing in for its delivery tasks.
+func (nt *notifierTest) updateCallback(requestID string, fn func(*callback.Callback)) {
+	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+		func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			fn(n.Callbacks[requestID].Get(ctx))
+			return struct{}{}, nil
+		}, struct{}{})
+	require.NoError(nt.t, err)
+}
+
+// runOwnerCheck runs the armed owner check, with History describing the owner as answered.
+func (nt *notifierTest) runOwnerCheck(status enumspb.WorkflowExecutionStatus, err error) {
+	var armed *streamnotifierpb.OwnerCheckTask
+	nt.read(func(n *StreamNotifier, _ chasm.Context) {
+		require.NotNil(nt.t, n.GetOwnerCheckTime(), "an owner check is armed")
+		armed = &streamnotifierpb.OwnerCheckTask{ScheduledTime: n.GetOwnerCheckTime()}
+	})
+	nt.history.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, req *historyservice.DescribeWorkflowExecutionRequest, _ ...grpc.CallOption) (*historyservice.DescribeWorkflowExecutionResponse, error) {
+			require.Equal(nt.t, nt.ref.GetWorkflowId(), req.GetRequest().GetExecution().GetWorkflowId())
+			require.Empty(nt.t, req.GetRequest().GetExecution().GetRunId(), "the chain's current run is described")
+			if err != nil {
+				return nil, err
+			}
+			return &historyservice.DescribeWorkflowExecutionResponse{
+				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: status},
+			}, nil
+		})
+	ref := chasm.NewComponentRef[*StreamNotifier](nt.key())
+	require.NoError(nt.t, nt.ownerCheck.Execute(nt.ctx, ref, chasm.TaskAttributes{}, armed))
+}
+
 func TestStreamNotifier(t *testing.T) {
 	t.Run("NotificationsReachEveryCallbackAsFoldedProgress", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
@@ -206,7 +262,7 @@ func TestStreamNotifier(t *testing.T) {
 		require.ErrorAs(t, nt.attach("c"), &failed)
 	})
 
-	t.Run("AnIdleStreamClosesWithAFailureThenStopsTakingAttaches", func(t *testing.T) {
+	t.Run("AnIdleTimeoutFailsTheCallersAndKeepsTheStreamOpen", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attach("a"))
 		nt.expire()
@@ -214,17 +270,116 @@ func TestStreamNotifier(t *testing.T) {
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
 			completion, err := n.GetNexusCompletion(ctx, "a")
 			require.NoError(t, err)
-			require.NotNil(t, completion.Error, "an idle close fails the callbacks")
-			require.Equal(t, chasm.LifecycleStateRunning, n.LifecycleState(ctx), "late attaches still complete")
+			require.NotNil(t, completion.Error, "the idle timeout fails the waiting callers")
+			require.False(t, n.GetClosed(), "the stream stays open")
 		})
-		require.NoError(t, nt.attach("late"))
 
+		require.NoError(t, nt.notify(1, false), "the producer goes on")
+		require.NoError(t, nt.attach("b"))
+		require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, nt.callbacks()["b"].GetStatus())
+		require.Equal(t, int64(1), nt.callbacks()["b"].GetPendingProgress().GetCounter())
+		require.NoError(t, nt.notify(2, true))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			completion, err := n.GetNexusCompletion(ctx, "b")
+			require.NoError(t, err)
+			require.Nil(t, completion.Error, "a later caller gets the close result")
+		})
+	})
+
+	t.Run("AnIdleNotifierWithNoCallersEndsAndANewOneStarts", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.notify(1, false))
+		nt.expire()
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Equal(t, chasm.LifecycleStateFailed, n.LifecycleState(ctx))
+		})
+		require.NoError(t, nt.attach("later"), "a later attach starts a new notifier")
+		require.Contains(t, nt.callbacks(), "later")
+	})
+
+	t.Run("AClosedStreamStaysClosed", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.notify(1, true))
 		nt.expire()
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
 			require.Equal(t, chasm.LifecycleStateCompleted, n.LifecycleState(ctx))
 		})
 		var failed *serviceerror.FailedPrecondition
 		require.ErrorAs(t, nt.attach("too-late"), &failed)
+	})
+
+	t.Run("ACallbackWhoseCallerClosedIsDropped", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		require.NoError(t, nt.attach("b"))
+		nt.updateCallback("a", func(cb *callback.Callback) { cb.CallerOperationClosed = true })
+		require.NoError(t, nt.notify(1, false))
+		require.NotContains(t, nt.callbacks(), "a")
+		require.Contains(t, nt.callbacks(), "b")
+	})
+
+	t.Run("AFullNotifierMakesRoomFromCallbacksThatAreDoneOrTakeNoProgress", func(t *testing.T) {
+		nt := newNotifierTest(t, 2)
+		require.NoError(t, nt.attach("a"))
+		require.NoError(t, nt.attach("b"))
+		nt.updateCallback("b", func(cb *callback.Callback) { cb.ProgressDisabled = true })
+		require.NoError(t, nt.attach("c"), "the callback that takes no progress makes room")
+		require.NotContains(t, nt.callbacks(), "b")
+		var failed *serviceerror.FailedPrecondition
+		require.ErrorAs(t, nt.attach("d"), &failed, "every callback still takes progress")
+
+		require.NoError(t, nt.notify(1, true))
+		nt.updateCallback("a", func(cb *callback.Callback) { cb.Status = callbackspb.CALLBACK_STATUS_SUCCEEDED })
+		require.NoError(t, nt.attach("late"), "a callback that is done makes room for a late attach")
+		require.NotContains(t, nt.callbacks(), "a")
+		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["late"].GetStatus())
+	})
+
+	t.Run("AnOwnerThatEndedWithoutClosingClosesTheStreamWithAFailure", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			status enumspb.WorkflowExecutionStatus
+			err    error
+		}{
+			{name: "completed", status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED},
+			{name: "terminated", status: enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED},
+			{name: "gone", err: serviceerror.NewNotFound("workflow not found")},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				nt := newNotifierTest(t, 10)
+				require.NoError(t, nt.attach("a"))
+				nt.runOwnerCheck(tc.status, tc.err)
+				require.True(t, nt.describe().GetClosed())
+				require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["a"].GetStatus())
+				nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+					completion, err := n.GetNexusCompletion(ctx, "a")
+					require.NoError(t, err)
+					require.NotNil(t, completion.Error)
+					require.ErrorContains(t, completion.Error.Cause, ownerEndedFailure)
+				})
+			})
+		}
+	})
+
+	t.Run("ARunningOwnerArmsTheNextCheck", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		var first time.Time
+		nt.read(func(n *StreamNotifier, _ chasm.Context) { first = n.GetOwnerCheckTime().AsTime() })
+		nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil)
+		require.False(t, nt.describe().GetClosed())
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.NotNil(t, n.GetOwnerCheckTime())
+			require.False(t, n.GetOwnerCheckTime().AsTime().Before(first), "the next check is armed")
+		})
+	})
+
+	t.Run("BusinessIDsNameTheOwnerKind", func(t *testing.T) {
+		require.Equal(t, "workflow/wf%2F1/tokens", BusinessID(&streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "wf/1",
+			Topic:      "tokens",
+		}))
 	})
 
 	t.Run("BusinessIDsDoNotCollide", func(t *testing.T) {

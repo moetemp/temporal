@@ -12,3 +12,10 @@ message ExpiryTask {
   // The last activity time the task was scheduled against. Activity since then makes it stale.
   google.protobuf.Timestamp last_activity_time = 1;
 }
+
+// Fires while callbacks are attached, to check whether the stream's owner Workflow ended without
+// closing the stream, which would leave the callers waiting until the idle timeout.
+message OwnerCheckTask {
+  // The owner check time the task was scheduled for. A newer arming makes it stale.
+  google.protobuf.Timestamp scheduled_time = 1;
+}

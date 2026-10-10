@@ -330,6 +330,11 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 	//  - is not speculative.
 	createWorkflowTaskScheduledEvent := !m.ms.IsTransientWorkflowTask() && workflowTaskType != enumsspb.WORKFLOW_TASK_TYPE_SPECULATIVE
 
+	// A cluster rebuilt from replicated events never learns workflow_task_holds_nexus_progress, so
+	// a task a failover converts may retry a heartbeat task without the hold. Such a task carries no
+	// progress; the progress waits for the task after it.
+	holdForFailover := false
+
 	// If while scheduling a workflow task and new events has come, then this workflow task cannot be a transient/speculative.
 	// Flush any buffered events before creating the workflow task, otherwise it will result in invalid IDs for
 	// transient/speculative workflow task and will cause in timeout processing to not work for transient workflow tasks.
@@ -354,6 +359,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 			m.ms.executionInfo.WorkflowTaskAttempt = 1
 			workflowTaskType = enumsspb.WORKFLOW_TASK_TYPE_NORMAL
 			createWorkflowTaskScheduledEvent = true
+			holdForFailover = true
 		}
 	}
 
@@ -374,7 +380,9 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 			attempt,
 			scheduleTime,
 		)
-		m.ms.attachNexusProgress(scheduledEvent)
+		if !holdForFailover {
+			m.ms.attachNexusProgress(scheduledEvent)
+		}
 		scheduledEventID = scheduledEvent.GetEventId()
 	} else {
 		// WorkflowTaskScheduledEvent will be created later.
@@ -592,8 +600,11 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskStartedEvent(
 			workflowTask.Attempt,
 			startTime,
 		)
-		// The worker has not seen this task yet, so its scheduled event can carry what is pending.
-		m.ms.attachNexusProgress(scheduledEvent)
+		// The worker has not seen this task yet, so its scheduled event can carry what is pending,
+		// unless a failover converted it (see holdForFailover in AddWorkflowTaskScheduledEventAsHeartbeat).
+		if workflowTask.Version == m.ms.GetCurrentVersion() {
+			m.ms.attachNexusProgress(scheduledEvent)
+		}
 		scheduledEventID = scheduledEvent.GetEventId()
 	}
 

@@ -40,6 +40,17 @@ func TestParseNexusProgress(t *testing.T) {
 		{name: "counter not numeric", body: `{"counter": "x"}`, wantErr: "positive integer"},
 		{name: "counter past int64", body: `{"counter": "9223372036854775808"}`, wantErr: "positive integer"},
 		{name: "metadata not strings", body: `{"counter": 1, "metadata": {"k": 1}}`, wantErr: "not an OperationProgress object"},
+		{name: "counter with a sign", body: `{"counter": "+5"}`, wantErr: "positive integer"},
+		{
+			name:    "position over the limit",
+			body:    `{"counter": 1, "position": "` + strings.Repeat("x", 1025) + `"}`,
+			wantErr: "more than the 1024 allowed",
+		},
+		{
+			name: "position at the limit",
+			body: `{"counter": 1, "position": "` + strings.Repeat("x", 1024) + `"}`,
+			want: nexusProgress{Counter: 1, Position: strings.Repeat("x", 1024)},
+		},
 		{
 			name:    "metadata over the limit",
 			body:    `{"counter": 1, "metadata": {"k": "` + strings.Repeat("x", maxNexusProgressMetadataBytes) + `"}}`,

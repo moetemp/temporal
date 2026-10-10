@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/api/historyservice/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
 	tokenspb "go.temporal.io/server/api/token/v1"
 	"go.temporal.io/server/chasm"
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
@@ -107,6 +110,8 @@ const (
 	progressRefused
 	// The delivery may succeed on a later attempt.
 	progressRetry
+	// The caller's operation is closed (404), so nothing will read this callback any more.
+	progressCallerClosed
 )
 
 type saveProgressInput struct {
@@ -134,6 +139,10 @@ func (c *Callback) saveProgressResult(ctx chasm.MutableContext, input saveProgre
 	case progressRefused:
 		c.ProgressDisabled = true
 		c.stopProgress()
+	case progressCallerClosed:
+		c.ProgressDisabled = true
+		c.CallerOperationClosed = true
+		c.stopProgress()
 	case progressRetry:
 		c.ProgressAttempt++
 		ctx.AddTask(c, chasm.TaskAttributes{
@@ -159,9 +168,24 @@ func progressBody(progress *nexuspb.NexusOperationProgress) ([]byte, error) {
 	return json.Marshal(body)
 }
 
+// progressFoundCallerClosed reports whether an outbound delivery got a 404, which says the caller's
+// operation is no longer open.
+func progressFoundCallerClosed(err error) bool {
+	if handlerErr, ok := errors.AsType[*nexus.HandlerError](err); ok {
+		return handlerErr.Type == nexus.HandlerErrorTypeNotFound
+	}
+	return false
+}
+
 // progressRefusedByHandler reports whether an outbound delivery got a 4xx other than one that asks
 // to try again later, which tells the handler to stop sending progress.
 func progressRefusedByHandler(err error) bool {
+	// A status with no handler error type, such as 405 or 422, arrives with the response itself.
+	if unexpected, ok := errors.AsType[*nexusrpc.UnexpectedResponseError](err); ok {
+		response, ok := unexpected.Details.(*http.Response)
+		return ok && response.StatusCode >= 400 && response.StatusCode < 500 &&
+			response.StatusCode != http.StatusRequestTimeout && response.StatusCode != http.StatusTooManyRequests
+	}
 	handlerErr, ok := errors.AsType[*nexus.HandlerError](err)
 	if !ok {
 		return false
@@ -267,6 +291,8 @@ func (h *progressTaskHandler) deliverOutbound(
 	switch {
 	case err == nil:
 		return progressDelivered, nil
+	case progressFoundCallerClosed(err):
+		return progressCallerClosed, err
 	case progressRefusedByHandler(err):
 		return progressRefused, err
 	default:
@@ -285,19 +311,33 @@ func (h *progressTaskHandler) deliverInternal(ctx context.Context, invocation pr
 	if err != nil {
 		return progressRefused, err
 	}
+	// The frontend checks the caller's flag for a delivery from outside; this one skips it.
+	componentRef := &persistencespb.ChasmComponentRef{}
+	if err := componentRef.Unmarshal(ref); err != nil {
+		return progressRefused, err
+	}
+	callerNamespace, err := h.invocation.namespaceRegistry.GetNamespaceByID(namespace.ID(componentRef.GetNamespaceId()))
+	if err != nil {
+		return progressRetry, err
+	}
+	if !h.invocation.config.EnableProgress(callerNamespace.Name().String()) {
+		return progressRefused, errors.New("operation progress is not enabled for the caller's namespace")
+	}
 	_, err = h.invocation.historyClient.CompleteNexusOperationChasm(ctx, &historyservice.CompleteNexusOperationChasmRequest{
 		Completion: &tokenspb.NexusOperationCompletion{ComponentRef: ref, RequestId: requestID},
 		Outcome: &historyservice.CompleteNexusOperationChasmRequest_Progress{
 			Progress: proto.CloneOf(invocation.progress),
 		},
 	})
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return progressCallerClosed, err
+	}
 	switch {
 	case err == nil:
 		return progressDelivered, nil
 	case common.IsRetryableRPCError(err):
 		return progressRetry, err
 	default:
-		// Includes NotFound: the caller's operation closed, so nothing will read progress for it.
 		return progressRefused, err
 	}
 }

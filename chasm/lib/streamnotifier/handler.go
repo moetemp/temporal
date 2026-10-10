@@ -24,7 +24,8 @@ func newHandler(config *Config, logger log.Logger) *handler {
 }
 
 // startOrUpdate applies update to the stream's notifier, creating it if the stream has none. A
-// notifier whose execution completed is not replaced, so a stream closed long ago stays closed.
+// closed stream's notifier is not replaced once its execution completes, so the stream stays
+// closed; one that ended idle (failed) is, so the stream goes on.
 // A new notifier takes the update in its start function: what an update changes on a root created
 // in the same transaction is not persisted. The update is idempotent, so applying it again after
 // the start changes nothing.
@@ -45,7 +46,7 @@ func startOrUpdate[I any](
 		},
 		update,
 		input,
-		chasm.WithBusinessIDPolicy(chasm.BusinessIDReusePolicyRejectDuplicate, chasm.BusinessIDConflictPolicyUseExisting),
+		chasm.WithBusinessIDPolicy(chasm.BusinessIDReusePolicyAllowDuplicateFailedOnly, chasm.BusinessIDConflictPolicyUseExisting),
 	)
 	if _, ok := errors.AsType[*chasm.ExecutionAlreadyStartedError](err); ok {
 		return serviceerror.NewFailedPrecondition("the stream closed and its notifier no longer takes requests")
@@ -63,10 +64,11 @@ func (h *handler) AttachStreamCallback(
 	err := startOrUpdate(ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(),
 		func(n *StreamNotifier, mctx chasm.MutableContext, r *workflowservice.AttachStreamCallbackRequest) (struct{}, error) {
 			return struct{}{}, n.attach(mctx, attachInput{
-				requestID:    r.GetRequestId(),
-				callback:     r.GetCallback(),
-				maxCallbacks: h.config.MaxCallbacks(ns),
-				idleTimeout:  h.config.IdleTimeout(ns),
+				requestID:          r.GetRequestId(),
+				callback:           r.GetCallback(),
+				maxCallbacks:       h.config.MaxCallbacks(ns),
+				idleTimeout:        h.config.IdleTimeout(ns),
+				ownerCheckInterval: h.config.OwnerCheckInterval(ns),
 			})
 		},
 		fe,

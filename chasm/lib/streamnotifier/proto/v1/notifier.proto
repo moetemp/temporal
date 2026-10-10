@@ -25,9 +25,17 @@ message NotifierState {
   // When the notifier last saw an attach or a notification. An open notifier that sees neither
   // for the idle timeout closes, so an abandoned stream does not hold callbacks forever.
   google.protobuf.Timestamp last_activity_time = 8;
-  // Set when the stream closed because the notifier was idle, so the callbacks complete with a
-  // failure rather than a result.
-  bool idle_closed = 9;
-  // Set once a closed notifier has stopped taking attaches, when its execution completes.
+  reserved 9;
+  // Set once the notifier's execution ends: a closed one after its closed retention, an open one
+  // that went idle with no callbacks left.
   bool expired = 10;
+  // Set when the stream closed with a failure instead of a result, such as when its owner
+  // Workflow ended without closing it. The callbacks complete with this failure message.
+  string close_failure = 11;
+  // The callbacks an idle timeout failed while the stream stayed open. Their completion is a
+  // failure; the other callbacks still get the stream's close.
+  repeated string idle_failed_request_ids = 12;
+  // When the armed owner check fires, or unset when none is armed. While callbacks are attached,
+  // the notifier checks now and then whether its owner Workflow ended.
+  google.protobuf.Timestamp owner_check_time = 13;
 }

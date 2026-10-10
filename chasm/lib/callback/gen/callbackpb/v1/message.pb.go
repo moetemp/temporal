@@ -143,8 +143,11 @@ type CallbackState struct {
 	ProgressDisabled bool `protobuf:"varint,13,opt,name=progress_disabled,json=progressDisabled,proto3" json:"progress_disabled,omitempty"`
 	// The number of failed attempts of the progress delivery in flight.
 	ProgressAttempt int32 `protobuf:"varint,14,opt,name=progress_attempt,json=progressAttempt,proto3" json:"progress_attempt,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Set when a progress delivery found the caller's operation closed (404), so nothing will read
+	// this callback's progress or completion and its parent may drop it.
+	CallerOperationClosed bool `protobuf:"varint,15,opt,name=caller_operation_closed,json=callerOperationClosed,proto3" json:"caller_operation_closed,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CallbackState) Reset() {
@@ -266,6 +269,13 @@ func (x *CallbackState) GetProgressAttempt() int32 {
 		return x.ProgressAttempt
 	}
 	return 0
+}
+
+func (x *CallbackState) GetCallerOperationClosed() bool {
+	if x != nil {
+		return x.CallerOperationClosed
+	}
+	return false
 }
 
 type Callback struct {
@@ -528,7 +538,7 @@ var File_temporal_server_chasm_lib_callback_proto_v1_message_proto protoreflect.
 
 const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a#temporal/api/nexus/v1/message.proto\"\xf1\x06\n" +
+	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a#temporal/api/nexus/v1/message.proto\"\xa9\a\n" +
 	"\rCallbackState\x12R\n" +
 	"\bcallback\x18\x01 \x01(\v26.temporal.server.chasm.lib.callbacks.proto.v1.CallbackR\bcallback\x12G\n" +
 	"\x11registration_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x10registrationTime\x12T\n" +
@@ -544,7 +554,8 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\x12progress_in_flight\x18\v \x01(\x03R\x10progressInFlight\x12<\n" +
 	"\x1adelivered_progress_counter\x18\f \x01(\x03R\x18deliveredProgressCounter\x12+\n" +
 	"\x11progress_disabled\x18\r \x01(\bR\x10progressDisabled\x12)\n" +
-	"\x10progress_attempt\x18\x0e \x01(\x05R\x0fprogressAttempt\x1a\x10\n" +
+	"\x10progress_attempt\x18\x0e \x01(\x05R\x0fprogressAttempt\x126\n" +
+	"\x17caller_operation_closed\x18\x0f \x01(\bR\x15callerOperationClosed\x1a\x10\n" +
 	"\x0eWorkflowClosed\"\x83\x05\n" +
 	"\bCallback\x12T\n" +
 	"\x05nexus\x18\x02 \x01(\v2<.temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusH\x00R\x05nexus\x12j\n" +

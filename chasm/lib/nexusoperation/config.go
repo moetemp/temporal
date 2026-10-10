@@ -51,14 +51,8 @@ var EnableChasmWorkflowOperations = dynamicconfig.NewNamespaceBoolSetting(
 CHASM-based implementation of Nexus will be used when scheduling new Nexus Operations.`,
 )
 
-var EnableProgress = dynamicconfig.NewNamespaceBoolSetting(
-	"nexusoperation.enableProgress",
-	false,
-	`Experimental. Accepts non-terminal progress deliveries ("Nexus-Operation-State: running") on the completion
-callback for operations of CHASM-based workflow callers, and folds the latest one per operation onto the caller's next
-Workflow Task scheduled event. When false, a progress delivery is refused with a 400, which tells the handler to stop
-sending progress.`,
-)
+// EnableProgress is defined with the callbacks, which deliver progress internally and so check it too.
+var EnableProgress = callback.NexusOperationEnableProgress
 
 var ChasmWorkflowOperationsRolloutPercent = dynamicconfig.NewNamespaceIntSetting(
 	"nexusoperation.chasmWorkflowOperationsRolloutPercent",
