@@ -102,5 +102,7 @@ func (s *StreamNotifierForwardingSuite) TestWritesForwardedFromStandbyToActive()
 		StreamRef: stream,
 	})
 	s.NoError(err)
-	s.Empty(desc.GetCallbacks())
+	// A detach completes the caller as canceled, so the callback is scheduled, not waiting.
+	s.Len(desc.GetCallbacks(), 1)
+	s.NotEqual(enumspb.CALLBACK_STATE_STANDBY, desc.GetCallbacks()[0].GetState())
 }
