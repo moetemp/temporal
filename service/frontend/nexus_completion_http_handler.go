@@ -418,18 +418,21 @@ func (h *nexusCompletionHandler) deliverProgress(
 	r *nexusrpc.CompletionRequest,
 ) error {
 	if !h.Config.EnableNexusOperationProgress(ns.Name().String()) {
-		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "operation progress is not enabled")
+		return nexus.NewHandlerErrorf(
+			nexus.HandlerErrorTypeBadRequest, "operation progress is not enabled")
 	}
 	// Only the CHASM caller path folds progress; an HSM caller degrades to completion only.
 	if len(completion.GetComponentRef()) == 0 {
-		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "operation progress is not supported for this caller")
+		return nexus.NewHandlerErrorf(
+			nexus.HandlerErrorTypeBadRequest, "operation progress is not supported for this caller")
 	}
 	if r.Result == nil {
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress body is required")
 	}
 	body, err := io.ReadAll(r.Result.Reader)
 	if err != nil {
-		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "failed to read progress body")
+		return nexus.NewHandlerErrorf(
+			nexus.HandlerErrorTypeBadRequest, "failed to read progress body")
 	}
 	parsed, err := parseNexusProgress(body)
 	if err != nil {
@@ -438,7 +441,7 @@ func (h *nexusCompletionHandler) deliverProgress(
 	}
 	progress := nexusProgressProto(parsed)
 
-	_, err = h.HistoryClient.CompleteNexusOperationChasm(ctx, &historyservice.CompleteNexusOperationChasmRequest{
+	req := &historyservice.CompleteNexusOperationChasmRequest{
 		Completion: &tokenspb.NexusOperationCompletion{
 			RequestId:    completion.GetRequestId(),
 			ComponentRef: completion.GetComponentRef(),
@@ -447,26 +450,27 @@ func (h *nexusCompletionHandler) deliverProgress(
 		Outcome: &historyservice.CompleteNexusOperationChasmRequest_Progress{
 			Progress: progress,
 		},
-	})
+	}
+	_, err = h.HistoryClient.CompleteNexusOperationChasm(ctx, req)
 	if err == nil {
 		return nil
 	}
 	logger.Error("failed to process nexus progress request", tag.Error(err))
-	// Any 4xx turns progress off for the callback, so only an answer a retry will not change gets
-	// one. NamespaceNotActive shares FailedPrecondition's code but passes with the failover, and an
-	// older History answers Unimplemented during an upgrade, so both stay retryable.
+	// Any 4xx turns progress off for the callback, so only an answer a retry won't change gets one.
+	// NamespaceNotActive and an older History's Unimplemented pass with the failover or the
+	// upgrade, so they fall through to 503. NamespaceNotActive is its own error type, so the
+	// FailedPrecondition match below doesn't catch it.
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return commonnexus.ConvertGRPCError(err, true)
 	}
-	if _, ok := errors.AsType[*serviceerror.NamespaceNotActive](err); !ok {
-		if _, ok := errors.AsType[*serviceerror.InvalidArgument](err); ok {
-			return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress refused: %v", err)
-		}
-		if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
-			return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress refused: %v", err)
-		}
+	if _, ok := errors.AsType[*serviceerror.InvalidArgument](err); ok {
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress refused: %v", err)
 	}
-	return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeUnavailable, "progress could not be delivered, retry later")
+	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
+		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "progress refused: %v", err)
+	}
+	return nexus.NewHandlerErrorf(
+		nexus.HandlerErrorTypeUnavailable, "progress could not be delivered, retry later")
 }
 
 func (h *nexusCompletionHandler) forwardCompleteOperation(ctx context.Context, r *nexusrpc.CompletionRequest, rCtx *requestContext) error {
@@ -519,7 +523,8 @@ func (h *nexusCompletionHandler) forwardCompleteOperation(ctx context.Context, r
 	case nexus.OperationStateRunning:
 		// A 400 would turn progress off for the callback. Progress is not forwarded, and the next
 		// delivery after a failover reaches the active cluster.
-		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeUnavailable, "operation progress is not forwarded")
+		return nexus.NewHandlerErrorf(
+			nexus.HandlerErrorTypeUnavailable, "operation progress is not forwarded")
 	default:
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid operation state: %q", r.State)
 	}

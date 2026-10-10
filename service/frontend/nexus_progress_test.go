@@ -19,7 +19,9 @@ func TestParseNexusProgress(t *testing.T) {
 		{
 			name: "every member, counter as a number",
 			body: `{"position": "cursor-7", "counter": 3, "metadata": {"topic": "tokens"}}`,
-			want: nexusProgress{Position: "cursor-7", Counter: 3, Metadata: map[string]string{"topic": "tokens"}},
+			want: nexusProgress{
+				Position: "cursor-7", Counter: 3, Metadata: map[string]string{"topic": "tokens"},
+			},
 		},
 		{
 			name: "counter as a decimal string, as proto JSON writes a 64-bit integer",
@@ -38,8 +40,16 @@ func TestParseNexusProgress(t *testing.T) {
 		{name: "counter negative", body: `{"counter": -1}`, wantErr: "positive integer"},
 		{name: "counter fractional", body: `{"counter": 1.5}`, wantErr: "positive integer"},
 		{name: "counter not numeric", body: `{"counter": "x"}`, wantErr: "positive integer"},
-		{name: "counter past int64", body: `{"counter": "9223372036854775808"}`, wantErr: "positive integer"},
-		{name: "metadata not strings", body: `{"counter": 1, "metadata": {"k": 1}}`, wantErr: "not an OperationProgress object"},
+		{
+			name:    "counter past int64",
+			body:    `{"counter": "9223372036854775808"}`,
+			wantErr: "positive integer",
+		},
+		{
+			name:    "metadata not strings",
+			body:    `{"counter": 1, "metadata": {"k": 1}}`,
+			wantErr: "not an OperationProgress object",
+		},
 		{name: "counter with a sign", body: `{"counter": "+5"}`, wantErr: "positive integer"},
 		{
 			name:    "position over the limit",
@@ -52,8 +62,9 @@ func TestParseNexusProgress(t *testing.T) {
 			want: nexusProgress{Counter: 1, Position: strings.Repeat("x", 1024)},
 		},
 		{
-			name:    "metadata over the limit",
-			body:    `{"counter": 1, "metadata": {"k": "` + strings.Repeat("x", maxNexusProgressMetadataBytes) + `"}}`,
+			name: "metadata over the limit",
+			body: `{"counter": 1, "metadata": {"k": "` +
+				strings.Repeat("x", maxNexusProgressMetadataBytes) + `"}}`,
 			wantErr: "more than the 2048 allowed",
 		},
 	} {
@@ -88,5 +99,9 @@ func TestNexusProgressProto(t *testing.T) {
 	require.Equal(t, "cursor-7", progress.GetPosition())
 	require.Equal(t, int64(3), progress.GetCounter())
 	require.Equal(t, map[string]string{"topic": "tokens"}, progress.GetMetadata())
-	require.Nil(t, progress.GetOperation(), "the caller's server names the operation, not the handler")
+	require.Nil(
+		t,
+		progress.GetOperation(),
+		"the caller's server names the operation, not the handler",
+	)
 }

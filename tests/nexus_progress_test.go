@@ -24,7 +24,12 @@ import (
 // postNexusProgress posts a progress delivery to an operation's callback URL and answers the
 // status code.
 func postNexusProgress(ctx context.Context, callbackURL, callbackToken, body string) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		callbackURL,
+		strings.NewReader(body),
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -44,7 +49,10 @@ func postNexusProgress(ctx context.Context, callbackURL, callbackToken, body str
 // closed operation answers 404.
 func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled bool) {
 	for _, enabled := range []bool{false, true} {
-		env := s.newTestEnv(chasmEnabled, testcore.WithDynamicConfig(chasmnexus.EnableProgress, enabled))
+		env := s.newTestEnv(
+			chasmEnabled,
+			testcore.WithDynamicConfig(chasmnexus.EnableProgress, enabled),
+		)
 		ctx := s.Context()
 		taskQueue := testcore.RandomizeStr(s.T().Name())
 
@@ -73,10 +81,12 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 		callerWF := func(ctx workflow.Context) (string, error) {
 			c := workflow.NewNexusClient(endpointName, "service")
 			var result string
-			err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).Get(ctx, &result)
+			err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).
+				Get(ctx, &result)
 			return result, err
 		}
-		run, err := env.SdkClient().ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
+		run, err := env.SdkClient().
+			ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
 		s.NoError(err)
 		w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
 		w.RegisterWorkflow(callerWF)
@@ -90,7 +100,10 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 			s.Nil(desc.GetPendingWorkflowTask())
 			started = env.GetHistory(env.Namespace().String(), wfExec)
 			s.RequireHistoryEvent(started, enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED)
-			s.Equal(enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED, started[len(started)-1].GetEventType())
+			s.Equal(
+				enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED,
+				started[len(started)-1].GetEventType(),
+			)
 		}, 10*time.Second, 50*time.Millisecond)
 
 		progress := func(body string) int {
@@ -100,7 +113,11 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 		}
 		accepts := enabled && chasmEnabled
 		if accepts {
-			s.Equal(http.StatusOK, <-earlyStatus, "progress before the start response is dropped, not refused")
+			s.Equal(
+				http.StatusOK,
+				<-earlyStatus,
+				"progress before the start response is dropped, not refused",
+			)
 		} else {
 			s.Equal(http.StatusBadRequest, <-earlyStatus)
 		}
@@ -125,7 +142,8 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 			} {
 				s.Equal(http.StatusBadRequest, progress(body), body)
 			}
-			s.Equal(http.StatusOK, progress(`{"position": "cursor-2", "counter": "2", "metadata": {"topic": "t"}}`))
+			accepted := `{"position": "cursor-2", "counter": "2", "metadata": {"topic": "t"}}`
+			s.Equal(http.StatusOK, progress(accepted))
 			// Nothing folds progress yet, so an accepted delivery leaves History as it was.
 			require.Never(s.T(), func() bool {
 				return len(env.GetHistory(env.Namespace().String(), wfExec)) != len(started)
@@ -140,7 +158,11 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 		s.NoError(run.Get(ctx, &result))
 		s.Equal("result", result)
 		if accepts {
-			s.Equal(http.StatusNotFound, progress(`{"counter": 3}`), "a closed operation answers 404")
+			s.Equal(
+				http.StatusNotFound,
+				progress(`{"counter": 3}`),
+				"a closed operation answers 404",
+			)
 		}
 		w.Stop()
 	}
