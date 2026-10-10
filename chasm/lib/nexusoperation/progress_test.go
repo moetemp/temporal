@@ -10,22 +10,16 @@ import (
 	nexusoperationpb "go.temporal.io/server/chasm/lib/nexusoperation/gen/nexusoperationpb/v1"
 )
 
-// progressStoreComponent is a parent that takes progress, and can say that a scheduled task the
-// operation's progress rides has not started.
+// progressStoreComponent is a parent that takes progress.
 type progressStoreComponent struct {
 	mockStoreComponent
 
-	folds   bool
 	pending int
 }
 
 func (s *progressStoreComponent) OnNexusOperationProgress(chasm.MutableContext, *Operation) error {
 	s.pending++
 	return nil
-}
-
-func (s *progressStoreComponent) NexusOperationProgressFolds(chasm.Context, *Operation) bool {
-	return s.folds
 }
 
 func TestHandleNexusProgress(t *testing.T) {
@@ -94,7 +88,7 @@ func TestHandleNexusProgress(t *testing.T) {
 		require.Equal(t, 2, store.pending)
 	})
 
-	t.Run("FoldsIntoAnUnstartedTask", func(t *testing.T) {
+	t.Run("NewerProgressWaitsUntilATaskCarriesIt", func(t *testing.T) {
 		ctx := &chasm.MockMutableContext{}
 		store := &progressStoreComponent{}
 		op := newOp(nexusoperationpb.OPERATION_STATUS_STARTED, store)
@@ -102,17 +96,11 @@ func TestHandleNexusProgress(t *testing.T) {
 		_, ok := op.TakePendingProgress(ctx)
 		require.True(t, ok)
 
-		// The task carrying counter 1 has not started, so newer progress rides it.
-		store.folds = true
+		// Whether it folds into a task that has not started is the parent's call; the operation
+		// keeps it until a task carries it.
 		require.NoError(t, op.HandleNexusCompletion(ctx, progress(2)))
-		require.Zero(t, pendingCounter(ctx, op), "folded progress asks for no task of its own")
-		require.Equal(t, int64(2), deliveredCounter(ctx, op))
-		require.Equal(t, 1, store.pending)
-
-		// Once that task starts, newer progress waits for the next one.
-		store.folds = false
-		require.NoError(t, op.HandleNexusCompletion(ctx, progress(3)))
-		require.Equal(t, int64(3), pendingCounter(ctx, op))
+		require.Equal(t, int64(2), pendingCounter(ctx, op))
+		require.Equal(t, int64(1), deliveredCounter(ctx, op))
 		require.Equal(t, 2, store.pending)
 	})
 

@@ -179,7 +179,11 @@ type NexusProgressState struct {
 	Pending []int64 `protobuf:"varint,1,rep,packed,name=pending,proto3" json:"pending,omitempty"`
 	// Operations whose latest progress rides a scheduled Workflow Task that has not started yet.
 	// Newer progress for one of them folds into that task, since the read it triggers sees it.
-	Scheduled     []int64 `protobuf:"varint,2,rep,packed,name=scheduled,proto3" json:"scheduled,omitempty"`
+	Scheduled []int64 `protobuf:"varint,2,rep,packed,name=scheduled,proto3" json:"scheduled,omitempty"`
+	// Operations whose progress folded into that task but is newer than what its scheduled event
+	// carries. Once the task starts, fails or times out they wait like pending ones, so one follow-up
+	// task carries the highest counter.
+	Folded        []int64 `protobuf:"varint,3,rep,packed,name=folded,proto3" json:"folded,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -228,6 +232,13 @@ func (x *NexusProgressState) GetScheduled() []int64 {
 	return nil
 }
 
+func (x *NexusProgressState) GetFolded() []int64 {
+	if x != nil {
+		return x.Folded
+	}
+	return nil
+}
+
 var File_temporal_server_chasm_lib_workflow_proto_v1_state_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc = "" +
@@ -239,10 +250,11 @@ const file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc = "" 
 	"\x1bNexusCancellationParentData\x12,\n" +
 	"\x12requested_event_id\x18\x01 \x01(\x03R\x10requestedEventId\"/\n" +
 	"\x12IncomingSignalData\x12\x19\n" +
-	"\bevent_id\x18\x01 \x01(\x03R\aeventId\"L\n" +
+	"\bevent_id\x18\x01 \x01(\x03R\aeventId\"d\n" +
 	"\x12NexusProgressState\x12\x18\n" +
 	"\apending\x18\x01 \x03(\x03R\apending\x12\x1c\n" +
-	"\tscheduled\x18\x02 \x03(\x03R\tscheduledBDZBgo.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpbb\x06proto3"
+	"\tscheduled\x18\x02 \x03(\x03R\tscheduled\x12\x16\n" +
+	"\x06folded\x18\x03 \x03(\x03R\x06foldedBDZBgo.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpbb\x06proto3"
 
 var (
 	file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDescOnce sync.Once

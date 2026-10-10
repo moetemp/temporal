@@ -167,8 +167,9 @@ func carriedNexusProgress(hist []*historypb.HistoryEvent) []*nexuspb.NexusOperat
 }
 
 // TestNexusOperationProgress checks how progress reaches a CHASM caller Workflow: on Workflow Task
-// scheduled events with no event of its own, folded into a scheduled task that has not started,
-// dropped after completion, and replayed. The HSM caller refuses progress.
+// scheduled events with no event of its own, folded into a scheduled task that has not started and
+// then carried by one follow-up task so the highest counter arrives, dropped after completion, and
+// replayed. The HSM caller refuses progress.
 func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
 	env := s.newTestEnv(chasmEnabled, testcore.WithDynamicConfig(chasmnexus.EnableProgress, true))
 	ctx := s.Context()
@@ -262,21 +263,24 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
 	s.Equal(http.StatusOK, progress(2), "a stale counter is accepted and dropped")
 	w = newWorker()
 	afterFold := waitIdle(func(s *NexusWorkflowTestSuite, hist []*historypb.HistoryEvent) {
-		s.Greater(len(hist), len(beforeBurst))
+		carried := carriedNexusProgress(hist[len(beforeBurst):])
+		s.NotEmpty(carried)
+		s.Equal(int64(3), carried[len(carried)-1].GetCounter(), "the Workflow sees the highest counter")
 	})
 	folded := afterFold[len(beforeBurst):]
 	onlyWorkflowTaskEvents(folded)
 	carried := carriedNexusProgress(folded)
-	s.Len(carried, 1, "one task carries the whole burst")
+	s.Len(carried, 2)
 	s.Equal(scheduledEventID, carried[0].GetScheduledEventId())
 	s.Equal(int64(1), carried[0].GetCounter(), "the task that was already scheduled carries what it had")
+	s.Equal(int64(3), carried[1].GetCounter(), "one follow-up task carries what folded into it")
 	var scheduledTasks int
 	for _, event := range folded {
 		if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
 			scheduledTasks++
 		}
 	}
-	s.Equal(1, scheduledTasks)
+	s.Equal(2, scheduledTasks, "the burst costs at most one extra task")
 
 	// After that task started, newer progress needs a task of its own.
 	s.Equal(http.StatusOK, progress(4))
@@ -312,7 +316,7 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
 		Execution: wfExec,
 	})
 	s.NoError(err)
-	s.Len(carriedNexusProgress(resp.GetHistory().GetEvents()), 2, "the progress is part of History")
+	s.Len(carriedNexusProgress(resp.GetHistory().GetEvents()), 3, "the progress is part of History")
 }
 
 // TestNexusOperationProgressSkipsHeartbeatTasks checks that progress arriving during a long local
