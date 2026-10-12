@@ -26,6 +26,14 @@ var NexusHandlerSourceContextMaxSize = dynamicconfig.NewNamespaceIntSetting(
 completion callback. The server carries this payload to the callback's handler untouched.`,
 )
 
+var NexusHandlerReceiverStateMaxSize = dynamicconfig.NewNamespaceIntSetting(
+	"callback.nexusHandler.receiverStateMaxSize",
+	8*1024,
+	`The maximum size, in bytes, of the receiver_state a NexusHandler callback's progress operation
+may return. The server stores it on the callback and sends it in the next progress delivery and in
+the completion. A larger state turns progress off for the callback.`,
+)
+
 var RequestTimeout = dynamicconfig.NewDestinationDurationSetting(
 	"callback.request.timeout",
 	time.Second*10,
@@ -68,6 +76,8 @@ type Config struct {
 	InspectSourceHeader dynamicconfig.BoolPropertyFn
 	// EnableProgress is the progress flag of the caller's namespace, for internal deliveries.
 	EnableProgress dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	// ReceiverStateMaxSize caps the receiver_state of a NexusHandler callback.
+	ReceiverStateMaxSize dynamicconfig.IntPropertyFnWithNamespaceFilter
 }
 
 func configProvider(dc *dynamicconfig.Collection) *Config {
@@ -82,8 +92,9 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 				backoff.NoInterval,
 			)
 		},
-		InspectSourceHeader: InspectSourceHeader.Get(dc),
-		EnableProgress:      NexusOperationEnableProgress.Get(dc),
+		InspectSourceHeader:  InspectSourceHeader.Get(dc),
+		EnableProgress:       NexusOperationEnableProgress.Get(dc),
+		ReceiverStateMaxSize: NexusHandlerReceiverStateMaxSize.Get(dc),
 	}
 }
 
