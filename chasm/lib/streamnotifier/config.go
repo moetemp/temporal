@@ -37,6 +37,16 @@ ended. If its run chain closed without closing the stream, the notifier closes i
 callbacks.`,
 )
 
+var OwnerCloseGrace = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.ownerCloseGrace",
+	time.Minute,
+	`How long the owner check leaves a stream alone after its owner's run completed, failed or was
+canceled. The Worker that ran the final task closes the stream with the Workflow's own result, and
+the notifier keeps the first close, so the check closes it only once this passed. The default
+matches how long Core retries its notifier close. A terminated or timed-out owner has no Worker
+close, so the check closes its stream at once.`,
+)
+
 var ClosedRetention = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.closedRetention",
 	7*24*time.Hour,
@@ -54,6 +64,7 @@ type Config struct {
 	IdleTimeout        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	ClosedRetention    dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCheckInterval dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	OwnerCloseGrace    dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	MaxIDLength        dynamicconfig.IntPropertyFn
 	// The close result becomes the operation's result, so it takes the payload blob limits.
 	BlobSizeLimitError dynamicconfig.IntPropertyFnWithNamespaceFilter
@@ -68,6 +79,7 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 		IdleTimeout:        IdleTimeout.Get(dc),
 		ClosedRetention:    ClosedRetention.Get(dc),
 		OwnerCheckInterval: OwnerCheckInterval.Get(dc),
+		OwnerCloseGrace:    OwnerCloseGrace.Get(dc),
 		MaxIDLength:        dynamicconfig.MaxIDLengthLimit.Get(dc),
 		BlobSizeLimitError: dynamicconfig.BlobSizeLimitError.Get(dc),
 		BlobSizeLimitWarn:  dynamicconfig.BlobSizeLimitWarn.Get(dc),

@@ -43,6 +43,8 @@ type notifierTest struct {
 	// ownerFirstRun is the first run of the owner's chain as an attach sees it; empty means the
 	// owner does not exist.
 	ownerFirstRun string
+	// ownerCloseTime is when the owner's run closed, as the owner check's describe answers.
+	ownerCloseTime *timestamppb.Timestamp
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
@@ -52,6 +54,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		IdleTimeout:        dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Hour),
 		ClosedRetention:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		OwnerCheckInterval: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(5 * time.Minute),
+		OwnerCloseGrace:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		MaxIDLength:        dynamicconfig.GetIntPropertyFn(1000),
 	}
 	ctrl := gomock.NewController(t)
@@ -258,6 +261,13 @@ func (nt *notifierTest) updateCallback(requestID string, fn func(*callback.Callb
 	require.NoError(nt.t, err)
 }
 
+// now is the engine's time, which the notifier reads.
+func (nt *notifierTest) now() time.Time {
+	var now time.Time
+	nt.read(func(n *StreamNotifier, ctx chasm.Context) { now = ctx.Now(n) })
+	return now
+}
+
 // runOwnerCheck runs the armed owner check, with History describing the owner as answered.
 func (nt *notifierTest) runOwnerCheck(status enumspb.WorkflowExecutionStatus, err error) {
 	nt.runOwnerCheckOf(status, nt.ref.GetRunId(), err)
@@ -297,6 +307,7 @@ func (nt *notifierTest) runOwnerCheckOf(
 				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
 					Status:     status,
 					FirstRunId: firstRunID,
+					CloseTime:  nt.ownerCloseTime,
 				},
 			}, nil
 		})
@@ -802,6 +813,45 @@ func TestStreamNotifier(t *testing.T) {
 					return
 				}
 				require.True(t, tc.check(failure), "%v", failure)
+			})
+		}
+	})
+
+	t.Run("AnOwnerThatAWorkerClosesGetsTheGraceBeforeTheCheckCloses", func(t *testing.T) {
+		// The Worker closes the stream after the final task, with the Workflow's own result, and
+		// the notifier keeps the first close. So the check leaves a just-closed run to it.
+		for _, status := range []enumspb.WorkflowExecutionStatus{
+			enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
+			enumspb.WORKFLOW_EXECUTION_STATUS_FAILED,
+			enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED,
+		} {
+			t.Run(status.String(), func(t *testing.T) {
+				nt := newNotifierTest(t, 10)
+				require.NoError(t, nt.attach("a"))
+				nt.ownerCloseTime = timestamppb.New(nt.now().Add(-time.Minute + time.Second))
+				nt.runOwnerCheck(status, nil)
+				require.False(t, nt.describe().GetClosed(), "inside the grace")
+				nt.read(func(n *StreamNotifier, _ chasm.Context) {
+					require.NotNil(t, n.GetOwnerCheckTime(), "the next check is armed")
+				})
+				nt.ownerCloseTime = timestamppb.New(nt.now().Add(-time.Minute))
+				nt.runOwnerCheck(status, nil)
+				require.True(t, nt.describe().GetClosed(), "once the grace passed")
+			})
+		}
+	})
+
+	t.Run("AnOwnerNoWorkerClosesClosesAtOnce", func(t *testing.T) {
+		for _, status := range []enumspb.WorkflowExecutionStatus{
+			enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED,
+			enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT,
+		} {
+			t.Run(status.String(), func(t *testing.T) {
+				nt := newNotifierTest(t, 10)
+				require.NoError(t, nt.attach("a"))
+				nt.ownerCloseTime = timestamppb.New(nt.now())
+				nt.runOwnerCheck(status, nil)
+				require.True(t, nt.describe().GetClosed())
 			})
 		}
 	})
