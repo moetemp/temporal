@@ -404,6 +404,7 @@ func (n *StreamNotifier) GetNexusCompletion(
 		completion.Error = opErr
 		return completion, nil
 	}
+	completion.Result = nilPayload()
 	if n.CloseResult != nil {
 		completion.Result = common.CloneProto(n.CloseResult)
 	}
@@ -486,4 +487,10 @@ func operationError(failure *failurepb.Failure) (*nexus.OperationError, error) {
 		return nil, err
 	}
 	return opErr, nil
+}
+
+// nilPayload is the result of a close that carries none. A typed caller decodes a result by its
+// encoding, so an empty payload without one would fail the caller's Workflow Task on every try.
+func nilPayload() *commonpb.Payload {
+	return &commonpb.Payload{Metadata: map[string][]byte{"encoding": []byte("binary/null")}}
 }
