@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -158,6 +159,7 @@ func (c *Callback) loadInvocationArgs(
 			runID:               ctx.ExecutionKey().RunID,
 			requestID:           c.RequestId,
 			attempt:             c.Attempt,
+			receiverState:       slices.Clone(c.ReceiverState),
 		}, nil
 	}
 

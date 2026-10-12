@@ -887,3 +887,39 @@ func TestExecuteInvocationTaskNexusHandler_RecordsHandlerLinks(t *testing.T) {
 		})
 	}
 }
+
+// A completion after an accepted progress carries the state the receiver returned with it, so a
+// follower that keeps no state of its own can read the rest of its source.
+func TestExecuteInvocationTaskNexusHandler_CarriesTheReceiverState(t *testing.T) {
+	nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
+	nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{
+		ReceiverState: []byte("cursor-1"),
+	}), nil)
+	nt.answer(syncSuccessResponse(), nil)
+	nt.report(1)
+	require.NoError(t, nt.runInFlight())
+
+	_, _, err := chasm.UpdateComponent(
+		nt.ctx,
+		nt.ref,
+		func(c *Callback, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			return struct{}{}, TransitionScheduled.Apply(c, ctx, EventScheduled{})
+		},
+		struct{}{},
+	)
+	require.NoError(t, err)
+	require.NoError(t, nt.handler.invocation.Execute(
+		nt.ctx,
+		nt.ref,
+		chasm.TaskAttributes{Destination: testNexusHandlerDestination},
+		&callbackspb.InvocationTask{},
+	))
+
+	require.Len(t, nt.dispatched, 2)
+	start := nt.dispatched[1].GetRequest().GetStartOperation()
+	require.Equal(t, "OnComplete", start.GetOperation())
+	var onComplete notificationservice.OnCompleteRequest
+	require.NoError(t, payload.Decode(start.GetPayload(), &onComplete))
+	require.Equal(t, []byte("cursor-1"), onComplete.GetReceiverState())
+	require.Equal(t, callbackspb.CALLBACK_STATUS_SUCCEEDED, nt.state().GetStatus())
+}
