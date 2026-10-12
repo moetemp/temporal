@@ -659,6 +659,50 @@ func TestStreamNotifier(t *testing.T) {
 		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["late"].GetStatus())
 	})
 
+	t.Run("AnEmptySuccessCarriesTheNilEncoding", func(t *testing.T) {
+		// A typed caller decodes the result by its encoding, so an empty one must say it is null.
+		for _, tc := range []struct {
+			name  string
+			close func(*notifierTest)
+		}{
+			{
+				name:  "completed owner",
+				close: func(nt *notifierTest) { nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED, nil) },
+			},
+			{
+				name: "close without a result",
+				close: func(nt *notifierTest) {
+					_, err := nt.handler.NotifyStream(nt.ctx, &streamnotifierpb.NotifyStreamRequest{
+						NamespaceId: "namespace-id",
+						BusinessId:  BusinessID(nt.ref),
+						FrontendRequest: &workflowservice.NotifyStreamRequest{
+							Namespace: "ns",
+							StreamRef: nt.ref,
+							Counter:   1,
+							Close:     true,
+						},
+					})
+					require.NoError(nt.t, err)
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				nt := newNotifierTest(t, 10)
+				require.NoError(t, nt.attach("a"))
+				tc.close(nt)
+				nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+					completion, err := n.GetNexusCompletion(ctx, "a")
+					require.NoError(t, err)
+					require.Nil(t, completion.Error)
+					payload, ok := completion.Result.(*commonpb.Payload)
+					require.True(t, ok, "%T", completion.Result)
+					require.Equal(t, "binary/null", string(payload.GetMetadata()["encoding"]))
+					require.Empty(t, payload.GetData())
+				})
+			})
+		}
+	})
+
 	t.Run("ACloseWithAFailureCompletesTheCallersAsFailed", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attach("a"))
