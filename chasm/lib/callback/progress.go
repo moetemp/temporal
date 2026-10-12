@@ -44,6 +44,29 @@ type ProgressSource interface {
 	) (nexusrpc.CompleteOperationOptions, error)
 }
 
+// HandlerTokenSource is implemented by a parent that has a handler token, such as a standalone
+// Nexus operation. Its NexusHandler callbacks send the token with each progress, so the receiver
+// knows what the progress is about without a describe call.
+type HandlerTokenSource interface {
+	HandlerToken(ctx chasm.Context) string
+}
+
+// TakesProgress reports whether a progress delivery to the callback can still be made. A
+// NexusHandler callback takes progress only when it names an operation for it.
+func (c *Callback) TakesProgress() bool {
+	if c.Status != callbackspb.CALLBACK_STATUS_STANDBY || c.ProgressDisabled {
+		return false
+	}
+	switch variant := c.GetCallback().GetVariant().(type) {
+	case *callbackspb.Callback_Nexus_:
+		return true
+	case *callbackspb.Callback_NexusHandler_:
+		return variant.NexusHandler.GetProgressOperation() != ""
+	default:
+		return false
+	}
+}
+
 // DeliverProgress hands the source's progress to the callback while the source runs. Progress is
 // dropped once the completion is scheduled, since the completion supersedes it and never waits for
 // it, after the receiver refused progress, and when the counter is not above one already seen. A
@@ -52,12 +75,7 @@ func (c *Callback) DeliverProgress(
 	ctx chasm.MutableContext,
 	progress *nexuspb.NexusOperationProgress,
 ) error {
-	if c.Status != callbackspb.CALLBACK_STATUS_STANDBY || c.ProgressDisabled {
-		return nil
-	}
-	// A worker-hosted handler takes progress only when it names an operation for it.
-	if handler := c.GetCallback().GetNexusHandler(); handler != nil &&
-		handler.GetProgressOperation() == "" {
+	if !c.TakesProgress() {
 		return nil
 	}
 	seen := max(c.GetPendingProgress().GetCounter(), c.DeliveredProgressCounter, c.ProgressInFlight)
@@ -100,10 +118,11 @@ type progressInvocation struct {
 	options  nexusrpc.CompleteOperationOptions
 
 	// Set for a NexusHandler callback instead of callback and options.
-	nexusHandler  *callbackspb.Callback_NexusHandler
-	requestID     string
-	receiverState []byte
-	sourceLinks   []*nexuspb.Link
+	nexusHandler   *callbackspb.Callback_NexusHandler
+	requestID      string
+	receiverState  []byte
+	sourceLinks    []*nexuspb.Link
+	operationToken string
 }
 
 // nolint:revive // context.Context is an input parameter for chasm.ReadComponent, not a function
@@ -120,8 +139,12 @@ func (c *Callback) loadProgressArgs(
 		invocation.nexusHandler = common.CloneProto(nexusHandler)
 		invocation.requestID = c.RequestId
 		invocation.receiverState = slices.Clone(c.ReceiverState)
+		parent := c.CompletionSource.Get(ctx)
+		if source, ok := parent.(HandlerTokenSource); ok {
+			invocation.operationToken = source.HandlerToken(ctx)
+		}
 		// The links point to this callback, as for the completion.
-		if parent, ok := c.CompletionSource.Get(ctx).(chasm.Component); ok {
+		if parent, ok := parent.(chasm.Component); ok {
 			selfLink, err := buildCallbackLink(ctx, parent, c.RequestId)
 			if err != nil {
 				return progressInvocation{}, err
@@ -449,9 +472,10 @@ func (h *progressTaskHandler) deliverNexusHandler(
 	invocation progressInvocation,
 ) (progressResult, nexusHandlerProgressReply, error) {
 	input, err := commonnexus.EncodeSystemPayload(&notificationservice.OnProgressRequest{
-		Progress:      invocation.progress,
-		SourceContext: invocation.nexusHandler.GetSourceContext(),
-		ReceiverState: invocation.receiverState,
+		Progress:       invocation.progress,
+		SourceContext:  invocation.nexusHandler.GetSourceContext(),
+		OperationToken: invocation.operationToken,
+		ReceiverState:  invocation.receiverState,
 	})
 	if err != nil {
 		return progressRefused, nexusHandlerProgressReply{}, err
