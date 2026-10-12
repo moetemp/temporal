@@ -678,7 +678,9 @@ func TestStreamNotifier(t *testing.T) {
 		}{
 			{
 				name:  "completed owner",
-				close: func(nt *notifierTest) { nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED, nil) },
+				close: func(nt *notifierTest) {
+					nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED, nil)
+				},
 			},
 			{
 				name: "close without a result",
