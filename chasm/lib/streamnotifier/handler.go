@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
+	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/resource"
 )
@@ -116,13 +117,14 @@ func (h *handler) NotifyStream(
 		r *workflowservice.NotifyStreamRequest,
 	) (struct{}, error) {
 		return struct{}{}, n.notify(mctx, notifyInput{
-			position:    r.GetPosition(),
-			counter:     r.GetCounter(),
-			metadata:    r.GetMetadata(),
-			close:       r.GetClose(),
-			closeResult: r.GetCloseResult(),
-			idleTimeout: h.config.IdleTimeout(ns),
-			retention:   h.config.ClosedRetention(ns),
+			position:     r.GetPosition(),
+			counter:      r.GetCounter(),
+			metadata:     r.GetMetadata(),
+			close:        r.GetClose(),
+			closeResult:  r.GetCloseResult(),
+			closeFailure: r.GetCloseFailure(),
+			idleTimeout:  h.config.IdleTimeout(ns),
+			retention:    h.config.ClosedRetention(ns),
 		})
 	}
 	if fe.GetClose() {
@@ -206,10 +208,11 @@ func (h *handler) DescribeStreamNotifier(
 				return nil, err
 			}
 			return &workflowservice.DescribeStreamNotifierResponse{
-				Counter:   n.GetCounter(),
-				Position:  n.GetPosition(),
-				Closed:    n.GetClosed(),
-				Callbacks: callbacks,
+				Counter:      n.GetCounter(),
+				Position:     n.GetPosition(),
+				Closed:       n.GetClosed(),
+				Callbacks:    callbacks,
+				CloseFailure: common.CloneProto(n.GetCloseFailure()),
 			}, nil
 		},
 		struct{}{},

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
@@ -25,6 +26,7 @@ import (
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/namespace"
+	commonnexus "go.temporal.io/server/common/nexus"
 	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -156,6 +158,45 @@ func (nt *notifierTest) notify(counter int64, closeStream bool) error {
 		},
 	})
 	return err
+}
+
+// closeWithFailure closes the stream with failure instead of a result.
+func (nt *notifierTest) closeWithFailure(failure *failurepb.Failure) error {
+	_, err := nt.handler.NotifyStream(nt.ctx, &streamnotifierpb.NotifyStreamRequest{
+		NamespaceId: "namespace-id",
+		BusinessId:  BusinessID(nt.ref),
+		FrontendRequest: &workflowservice.NotifyStreamRequest{
+			Namespace:    "ns",
+			StreamRef:    nt.ref,
+			Counter:      1,
+			Close:        true,
+			CloseFailure: failure,
+		},
+	})
+	return err
+}
+
+// completionOf is the state a callback completes in, and the Temporal failure it carries, or nil
+// for a success.
+func (nt *notifierTest) completionOf(requestID string) (nexus.OperationState, *failurepb.Failure) {
+	var state nexus.OperationState
+	var failure *failurepb.Failure
+	nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+		completion, err := n.GetNexusCompletion(ctx, requestID)
+		require.NoError(nt.t, err)
+		if completion.Error == nil {
+			state = nexus.OperationStateSucceeded
+			return
+		}
+		var opErr *nexus.OperationError
+		require.ErrorAs(nt.t, completion.Error, &opErr)
+		state = opErr.State
+		var cause *nexus.FailureError
+		require.ErrorAs(nt.t, opErr.Cause, &cause)
+		failure, err = commonnexus.NexusFailureToTemporalFailure(cause.Failure)
+		require.NoError(nt.t, err)
+	})
+	return state, failure
 }
 
 func (nt *notifierTest) describe() *workflowservice.DescribeStreamNotifierResponse {
@@ -460,6 +501,9 @@ func TestStreamNotifier(t *testing.T) {
 		require.NoError(t, nt.attach("a"))
 		nt.runOwnerCheckOf(enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, "second-chain", nil)
 		require.True(t, nt.describe().GetClosed())
+		state, failure := nt.completionOf("a")
+		require.Equal(t, nexus.OperationStateFailed, state)
+		require.Equal(t, ownerEndedFailure, failure.GetMessage())
 	})
 
 	t.Run("HoldsAtMostTheCallbackLimit", func(t *testing.T) {
@@ -615,15 +659,87 @@ func TestStreamNotifier(t *testing.T) {
 		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["late"].GetStatus())
 	})
 
-	t.Run("AnOwnerThatEndedWithoutClosingClosesTheStreamWithAFailure", func(t *testing.T) {
+	t.Run("ACloseWithAFailureCompletesTheCallersAsFailed", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		require.NoError(t, nt.closeWithFailure(&failurepb.Failure{
+			Message: "the agent gave up",
+			FailureInfo: &failurepb.Failure_ApplicationFailureInfo{
+				ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{Type: "AgentGaveUp"},
+			},
+		}))
+		require.NoError(t, nt.attach("late"))
+		for _, id := range []string{"a", "late"} {
+			state, failure := nt.completionOf(id)
+			require.Equal(t, nexus.OperationStateFailed, state, id)
+			require.Equal(t, "AgentGaveUp", failure.GetApplicationFailureInfo().GetType(), id)
+			require.Equal(t, "the agent gave up", failure.GetMessage(), id)
+		}
+		desc := nt.describe()
+		require.True(t, desc.GetClosed())
+		require.Equal(t, "AgentGaveUp", desc.GetCloseFailure().GetApplicationFailureInfo().GetType())
+	})
+
+	t.Run("ACloseWithACanceledFailureCompletesTheCallersAsCanceled", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		require.NoError(t, nt.closeWithFailure(&failurepb.Failure{
+			Message: "canceled",
+			FailureInfo: &failurepb.Failure_CanceledFailureInfo{
+				CanceledFailureInfo: &failurepb.CanceledFailureInfo{},
+			},
+		}))
+		state, failure := nt.completionOf("a")
+		require.Equal(t, nexus.OperationStateCanceled, state)
+		require.NotNil(t, failure.GetCanceledFailureInfo())
+	})
+
+	t.Run("AnEndedOwnerClosesTheStreamAsAWorkflowRunOperationCompletes", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
 			status enumspb.WorkflowExecutionStatus
 			err    error
+			state  nexus.OperationState
+			// check is nil for a success.
+			check func(*failurepb.Failure) bool
 		}{
-			{name: "completed", status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED},
-			{name: "terminated", status: enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED},
-			{name: "gone", err: serviceerror.NewNotFound("workflow not found")},
+			{
+				name:   "completed",
+				status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
+				state:  nexus.OperationStateSucceeded,
+			},
+			{
+				name:   "failed",
+				status: enumspb.WORKFLOW_EXECUTION_STATUS_FAILED,
+				state:  nexus.OperationStateFailed,
+				check: func(f *failurepb.Failure) bool {
+					return f.GetApplicationFailureInfo().GetType() == ownerFailedType
+				},
+			},
+			{
+				name:   "canceled",
+				status: enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED,
+				state:  nexus.OperationStateCanceled,
+				check:  func(f *failurepb.Failure) bool { return f.GetCanceledFailureInfo() != nil },
+			},
+			{
+				name:   "terminated",
+				status: enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED,
+				state:  nexus.OperationStateFailed,
+				check:  func(f *failurepb.Failure) bool { return f.GetTerminatedFailureInfo() != nil },
+			},
+			{
+				name:   "timed out",
+				status: enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT,
+				state:  nexus.OperationStateFailed,
+				check:  func(f *failurepb.Failure) bool { return f.GetTimeoutFailureInfo() != nil },
+			},
+			{
+				name:  "gone",
+				err:   serviceerror.NewNotFound("workflow not found"),
+				state: nexus.OperationStateFailed,
+				check: func(f *failurepb.Failure) bool { return f.GetMessage() == ownerEndedFailure },
+			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				nt := newNotifierTest(t, 10)
@@ -635,12 +751,13 @@ func TestStreamNotifier(t *testing.T) {
 					callbackspb.CALLBACK_STATUS_SCHEDULED,
 					nt.callbacks()["a"].GetStatus(),
 				)
-				nt.read(func(n *StreamNotifier, ctx chasm.Context) {
-					completion, err := n.GetNexusCompletion(ctx, "a")
-					require.NoError(t, err)
-					require.NotNil(t, completion.Error)
-					require.ErrorContains(t, completion.Error.Cause, ownerEndedFailure)
-				})
+				state, failure := nt.completionOf("a")
+				require.Equal(t, tc.state, state)
+				if tc.check == nil {
+					require.Nil(t, failure)
+					return
+				}
+				require.True(t, tc.check(failure), "%v", failure)
 			})
 		}
 	})

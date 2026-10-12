@@ -10,6 +10,7 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
@@ -18,6 +19,7 @@ import (
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common"
+	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -92,7 +94,7 @@ func (n *StreamNotifier) Terminate(
 	_ chasm.TerminateComponentRequest,
 ) (chasm.TerminateComponentResponse, error) {
 	if !n.Closed {
-		if err := n.close(ctx, nil, "the stream's notifier was terminated"); err != nil {
+		if err := n.close(ctx, nil, streamFailure("the stream's notifier was terminated")); err != nil {
 			return chasm.TerminateComponentResponse{}, err
 		}
 	}
@@ -291,8 +293,10 @@ type notifyInput struct {
 	metadata    map[string]string
 	close       bool
 	closeResult *commonpb.Payload
-	idleTimeout time.Duration
-	retention   time.Duration
+	// Set instead of closeResult when the stream closes with a failure.
+	closeFailure *failurepb.Failure
+	idleTimeout  time.Duration
+	retention    time.Duration
 }
 
 // notify keeps the highest counter and hands it to every callback as progress. A close completes
@@ -314,7 +318,7 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 		}
 	}
 	if in.close {
-		if err := n.close(ctx, in.closeResult, ""); err != nil {
+		if err := n.close(ctx, in.closeResult, in.closeFailure); err != nil {
 			return err
 		}
 		n.touch(ctx, in.retention)
@@ -328,7 +332,7 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 func (n *StreamNotifier) close(
 	ctx chasm.MutableContext,
 	result *commonpb.Payload,
-	failure string,
+	failure *failurepb.Failure,
 ) error {
 	n.Closed = true
 	n.CloseFailure = failure
@@ -386,17 +390,18 @@ func (n *StreamNotifier) GetNexusCompletion(
 		}
 		return completion, nil
 	}
-	failure := n.CloseFailure
+	failure := n.GetCloseFailure()
 	if _, idle := slices.BinarySearch(n.IdleFailedRequestIds, requestID); idle {
-		failure = "the stream was idle for too long, " +
-			"so its notifier failed the callers waiting on it"
+		failure = streamFailure("the stream was idle for too long, " +
+			"so its notifier failed the callers waiting on it")
 		completion.CloseTime = ctx.Now(n)
 	}
-	if failure != "" {
-		completion.Error = &nexus.OperationError{
-			State: nexus.OperationStateFailed,
-			Cause: &nexus.FailureError{Failure: nexus.Failure{Message: failure}},
+	if failure != nil {
+		opErr, err := operationError(failure)
+		if err != nil {
+			return nexusrpc.CompleteOperationOptions{}, err
 		}
+		completion.Error = opErr
 		return completion, nil
 	}
 	if n.CloseResult != nil {
@@ -448,4 +453,37 @@ func (n *StreamNotifier) describeCallbacks(
 		})
 	}
 	return infos, nil
+}
+
+// streamFailure is a failure of the notifier's own, such as an idle timeout. A retry gets the same
+// answer, so it is non-retryable.
+func streamFailure(message string) *failurepb.Failure {
+	return &failurepb.Failure{
+		Message: message,
+		FailureInfo: &failurepb.Failure_ApplicationFailureInfo{
+			ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{NonRetryable: true},
+		},
+	}
+}
+
+// operationError completes a callback with failure the way a Workflow-run operation completes with
+// its run's failure: canceled for a canceled failure, failed otherwise, with failure as the cause.
+func operationError(failure *failurepb.Failure) (*nexus.OperationError, error) {
+	cause, err := commonnexus.TemporalFailureToNexusFailure(failure)
+	if err != nil {
+		return nil, err
+	}
+	state, message := nexus.OperationStateFailed, "operation failed"
+	if failure.GetCanceledFailureInfo() != nil {
+		state, message = nexus.OperationStateCanceled, "operation canceled"
+	}
+	opErr := &nexus.OperationError{
+		Message: message,
+		State:   state,
+		Cause:   &nexus.FailureError{Failure: cause},
+	}
+	if err := nexusrpc.MarkAsWrapperError(nexusrpc.DefaultFailureConverter(), opErr); err != nil {
+		return nil, err
+	}
+	return opErr, nil
 }

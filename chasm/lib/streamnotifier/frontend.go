@@ -207,8 +207,17 @@ func (h *frontendHandler) NotifyStream(
 	if req.GetCloseResult() != nil && !req.GetClose() {
 		return nil, serviceerror.NewInvalidArgument("close_result is only allowed with close")
 	}
+	if req.GetCloseFailure() != nil && !req.GetClose() {
+		return nil, serviceerror.NewInvalidArgument("close_failure is only allowed with close")
+	}
+	if req.GetCloseResult() != nil && req.GetCloseFailure() != nil {
+		return nil, serviceerror.NewInvalidArgument(
+			"a close carries close_result or close_failure, not both",
+		)
+	}
+	// Only one of the two is set, so the sum is the size of the one the callers get.
 	if err := common.CheckEventBlobSizeLimit(
-		req.GetCloseResult().Size(),
+		req.GetCloseResult().Size()+req.GetCloseFailure().Size(),
 		h.config.BlobSizeLimitWarn(req.GetNamespace()),
 		h.config.BlobSizeLimitError(req.GetNamespace()),
 		req.GetNamespace(),
