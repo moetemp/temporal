@@ -304,6 +304,135 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierFailedCloseFailsTheCaller(cha
 	)
 }
 
+// TestStreamNotifierOwnerCheckLeavesAJustCompletedOwnerToItsWorker completes the owner Workflow,
+// lets several owner checks run, and only then closes the stream with a result, as the Worker's
+// close after the final task does when it lands late. The caller must get that result, not the
+// empty one an owner check would close with, since the notifier keeps the first close.
+func (s *NexusWorkflowTestSuite) TestStreamNotifierOwnerCheckLeavesAJustCompletedOwnerToItsWorker(
+	chasmEnabled bool,
+) {
+	env := s.newTestEnv(
+		chasmEnabled,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
+		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
+		testcore.WithDynamicConfig(streamnotifier.OwnerCheckInterval, 100*time.Millisecond),
+		testcore.WithDynamicConfig(
+			callback.AllowedAddresses,
+			[]any{map[string]any{"Pattern": "*", "AllowInsecure": true}},
+		),
+		testcore.WithDynamicConfig(callback.RetryPolicyInitialInterval, 10*time.Millisecond),
+		testcore.WithDynamicConfig(callback.RetryPolicyMaximumInterval, 50*time.Millisecond),
+	)
+	if !chasmEnabled {
+		env.OverrideDynamicConfig(dynamicconfig.EnableChasm, true)
+	}
+	ctx := s.Context()
+	taskQueue := testcore.RandomizeStr(s.T().Name())
+	frontend := env.FrontendClient()
+
+	ownerWF := func(ctx workflow.Context) error {
+		workflow.GetSignalChannel(ctx, "end").Receive(ctx, nil)
+		return nil
+	}
+	callerWF := func(ctx workflow.Context, endpoint string) (string, error) {
+		c := workflow.NewNexusClient(endpoint, "service")
+		var result string
+		err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).
+			Get(ctx, &result)
+		return result, err
+	}
+	w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
+	w.RegisterWorkflow(ownerWF)
+	w.RegisterWorkflow(callerWF)
+	s.NoError(w.Start())
+	defer w.Stop()
+
+	owner, err := env.SdkClient().
+		ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, ownerWF)
+	s.NoError(err)
+	stream := &streampb.StreamReference{
+		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+		WorkflowId: owner.GetID(),
+		RunId:      owner.GetRunID(),
+		Topic:      "tokens",
+	}
+	describe := func() *workflowservice.DescribeStreamNotifierResponse {
+		resp, err := frontend.DescribeStreamNotifier(
+			ctx,
+			&workflowservice.DescribeStreamNotifierRequest{
+				Namespace: env.Namespace().String(),
+				StreamRef: stream,
+			},
+		)
+		s.NoError(err)
+		return resp
+	}
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			_, err := frontend.AttachStreamCallback(
+				ctx,
+				&workflowservice.AttachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: options.RequestID,
+					Callback: &commonpb.Callback_Nexus{
+						Url:    options.CallbackURL,
+						Header: options.CallbackHeader,
+					},
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+			return &nexus.HandlerStartOperationResultAsync{
+				OperationToken: stream.GetWorkflowId(),
+			}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+	caller, err := env.SdkClient().ExecuteWorkflow(
+		ctx,
+		client.StartWorkflowOptions{TaskQueue: taskQueue},
+		callerWF,
+		endpointName,
+	)
+	s.NoError(err)
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		resp, err := frontend.DescribeStreamNotifier(
+			ctx,
+			&workflowservice.DescribeStreamNotifierRequest{
+				Namespace: env.Namespace().String(),
+				StreamRef: stream,
+			},
+		)
+		s.NoError(err)
+		s.Len(resp.GetCallbacks(), 1)
+	}, 10*time.Second, 50*time.Millisecond)
+
+	s.NoError(env.SdkClient().SignalWorkflow(ctx, owner.GetID(), owner.GetRunID(), "end", nil))
+	s.NoError(owner.Get(ctx, nil))
+	// Ten owner checks, all inside the grace that leaves the close to the Worker.
+	time.Sleep(time.Second)
+	s.False(describe().GetClosed(), "an owner check closed a just-completed owner's stream")
+
+	_, err = frontend.NotifyStream(ctx, &workflowservice.NotifyStreamRequest{
+		Namespace:   env.Namespace().String(),
+		StreamRef:   stream,
+		Counter:     1,
+		Close:       true,
+		CloseResult: testcore.MustToPayload(s.T(), "the real result"),
+	})
+	s.NoError(err)
+	var result string
+	s.NoError(caller.Get(ctx, &result))
+	s.Equal("the real result", result)
+}
+
 // TestStreamNotifierClosedFromWorkflow closes a stream from its owner Workflow through the
 // __temporal_system endpoint, which is how a Workflow closes a stream it owns durably, and checks
 // that the caller's stream-returning operation completes with the close result.
