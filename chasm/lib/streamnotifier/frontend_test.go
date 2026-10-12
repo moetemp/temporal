@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -70,6 +71,57 @@ func TestNotifyStreamCloseResultTakesTheBlobLimit(t *testing.T) {
 	require.ErrorAs(t, closeWith(200), &invalid, "a close result over the error limit is refused")
 	require.Zero(t, client.notified, "a refused notification never reaches History")
 	require.NoError(t, closeWith(70), "a close result over only the warning limit is accepted")
+	require.Equal(t, 1, client.notified)
+}
+
+func TestNotifyStreamCloseFailureIsChecked(t *testing.T) {
+	registry := namespace.NewMockRegistry(gomock.NewController(t))
+	registry.EXPECT().
+		GetNamespaceID(namespace.Name("ns")).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
+	client := &fakeNotifierClient{}
+	h := NewFrontendHandler(client, &Config{
+		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ChasmEnabled:       dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		BlobSizeLimitError: dynamicconfig.GetIntPropertyFnFilteredByNamespace(100),
+		BlobSizeLimitWarn:  dynamicconfig.GetIntPropertyFnFilteredByNamespace(50),
+		MaxIDLength:        dynamicconfig.GetIntPropertyFn(1000),
+	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
+	notify := func(closeStream bool, result *commonpb.Payload, failure *failurepb.Failure) error {
+		_, err := h.NotifyStream(context.Background(), &workflowservice.NotifyStreamRequest{
+			Namespace: "ns",
+			StreamRef: &streampb.StreamReference{
+				OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+				WorkflowId: "wf",
+				RunId:      "first-run",
+				Topic:      "tokens",
+			},
+			Counter:      1,
+			Close:        closeStream,
+			CloseResult:  result,
+			CloseFailure: failure,
+		})
+		return err
+	}
+	failure := &failurepb.Failure{Message: "boom"}
+
+	var invalid *serviceerror.InvalidArgument
+	require.ErrorAs(t, notify(false, nil, failure), &invalid, "a failure needs close")
+	require.ErrorAs(
+		t,
+		notify(true, &commonpb.Payload{Data: []byte("x")}, failure),
+		&invalid,
+		"a close is a result or a failure, never both",
+	)
+	require.ErrorAs(
+		t,
+		notify(true, nil, &failurepb.Failure{Message: string(make([]byte, 200))}),
+		&invalid,
+		"a close failure over the error limit is refused",
+	)
+	require.Zero(t, client.notified, "a refused notification never reaches History")
+	require.NoError(t, notify(true, nil, failure))
 	require.Equal(t, 1, client.notified)
 }
 

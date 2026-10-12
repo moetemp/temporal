@@ -6,6 +6,7 @@ import (
 
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -17,9 +18,13 @@ import (
 	"go.uber.org/fx"
 )
 
-// ownerEndedFailure is the failure the callers get when the owner Workflow ended without closing
-// the stream.
+// ownerEndedFailure is the failure message the callers get when the owner Workflow is gone, or its
+// ID is in another chain, without having closed the stream.
 const ownerEndedFailure = "the owner Workflow ended without closing the stream"
+
+// ownerFailedType is the failure type the callers get when the owner Workflow failed, since the
+// owner check reads no History and so has no failure of its own to hand them.
+const ownerFailedType = "StreamOwnerFailed"
 
 type expiryTaskHandler struct {
 	chasm.PureTaskHandlerBase
@@ -133,7 +138,7 @@ func (h *ownerCheckTaskHandler) Execute(
 	if err != nil {
 		return err
 	}
-	ended, err := h.ownerEnded(ctx, ns, stream.GetStreamRef())
+	ended, failure, err := h.ownerEnded(ctx, ns, stream.GetStreamRef())
 	if err != nil {
 		return err
 	}
@@ -146,7 +151,7 @@ func (h *ownerCheckTaskHandler) Execute(
 			}
 			n.OwnerCheckTime = nil
 			if ended {
-				if err := n.close(mctx, nil, ownerEndedFailure); err != nil {
+				if err := n.close(mctx, nil, failure); err != nil {
 					return struct{}{}, err
 				}
 				n.touch(mctx, h.config.ClosedRetention(ns.Name().String()))
@@ -160,14 +165,16 @@ func (h *ownerCheckTaskHandler) Execute(
 	return err
 }
 
-// ownerEnded reports whether the owner Workflow's run chain is closed. A Workflow that does not
-// exist (or whose retention passed) counts as ended, and so does a current run of another chain
-// that reused the Workflow ID.
+// ownerEnded reports whether the owner Workflow's run chain is closed, and the failure its stream
+// closes with, as a Workflow-run operation completes for the same close status: none for a
+// completed owner, so its callers get an empty result. A Workflow that does not exist (or whose
+// retention passed) counts as ended without closing the stream, and so does a current run of
+// another chain that reused the Workflow ID.
 func (h *ownerCheckTaskHandler) ownerEnded(
 	ctx context.Context,
 	ns *namespace.Namespace,
 	stream *streampb.StreamReference,
-) (bool, error) {
+) (bool, *failurepb.Failure, error) {
 	workflowID := stream.GetWorkflowId()
 	resp, err := h.historyClient.DescribeWorkflowExecution(
 		ctx,
@@ -180,18 +187,49 @@ func (h *ownerCheckTaskHandler) ownerEnded(
 		},
 	)
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
-		return true, nil
+		return true, streamFailure(ownerEndedFailure), nil
 	}
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	// The described run is the chain's current one, so a retry, a cron run or Continue-as-New has
 	// already moved past a closed earlier run.
 	if firstRunID := stream.GetRunId(); firstRunID != "" &&
 		resp.GetWorkflowExecutionInfo().GetFirstRunId() != firstRunID {
-		return true, nil
+		return true, streamFailure(ownerEndedFailure), nil
 	}
-	status := resp.GetWorkflowExecutionInfo().GetStatus()
-	return status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING &&
-		status != enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED, nil
+	switch resp.GetWorkflowExecutionInfo().GetStatus() {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED:
+		return false, nil, nil
+	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		return true, nil, nil
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		// The check reads no History, so it has the status but not the run's failure.
+		failure := streamFailure("the owner Workflow failed")
+		failure.GetApplicationFailureInfo().Type = ownerFailedType
+		return true, failure, nil
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		return true, &failurepb.Failure{
+			Message: "operation canceled",
+			FailureInfo: &failurepb.Failure_CanceledFailureInfo{
+				CanceledFailureInfo: &failurepb.CanceledFailureInfo{},
+			},
+		}, nil
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+		return true, &failurepb.Failure{
+			Message: "operation terminated",
+			FailureInfo: &failurepb.Failure_TerminatedFailureInfo{
+				TerminatedFailureInfo: &failurepb.TerminatedFailureInfo{},
+			},
+		}, nil
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return true, &failurepb.Failure{
+			Message: "operation exceeded internal timeout",
+			FailureInfo: &failurepb.Failure_TimeoutFailureInfo{
+				TimeoutFailureInfo: &failurepb.TimeoutFailureInfo{},
+			},
+		}, nil
+	default:
+		return true, streamFailure(ownerEndedFailure), nil
+	}
 }
