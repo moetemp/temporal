@@ -52,6 +52,20 @@ func TestFromAPICallback(t *testing.T) {
 			},
 			persistable: true,
 		},
+		"nexus handler with progress": {
+			callback: &commonpb.Callback{
+				Variant: &commonpb.Callback_NexusHandler_{
+					NexusHandler: &commonpb.Callback_NexusHandler{
+						TaskQueueName:     "completions-task-queue",
+						Service:           "NotificationService",
+						Operation:         "OnComplete",
+						ProgressOperation: "OnProgress",
+						SourceContext:     &commonpb.Payload{Data: []byte("...")},
+					},
+				},
+			},
+			persistable: true,
+		},
 		"internal": {
 			callback: &commonpb.Callback{
 				Variant: &commonpb.Callback_Internal_{Internal: &commonpb.Callback_Internal{}},

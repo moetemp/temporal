@@ -54,6 +54,9 @@ message CallbackState {
   // this callback's progress or completion and its parent may drop it. Dropping it drops its
   // pending completion too, which a closed caller wouldn't take.
   bool caller_operation_closed = 15;
+  // Opaque state that a NexusHandler receiver returned with its last accepted progress, such as a
+  // read cursor. Sent back in the next progress delivery and in the completion.
+  bytes receiver_state = 16;
 }
 
 // Status of a callback.
@@ -92,6 +95,8 @@ message Callback {
     string operation = 3;
     // Arbitrary user-supplied data from the source operation's callsite.
     temporal.api.common.v1.Payload source_context = 4;
+    // Target operation for progress. Empty means the callback takes the completion only.
+    string progress_operation = 5;
   }
 
   reserved 1; // For a generic callback mechanism to be added later.
