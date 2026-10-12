@@ -10,6 +10,7 @@ import (
 	commandpb "go.temporal.io/api/command/v1"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
 	streampb "go.temporal.io/api/stream/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
@@ -182,6 +183,125 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 		s.True(desc.GetClosed())
 		s.Equal(enumspb.CALLBACK_STATE_SUCCEEDED, desc.GetCallbacks()[0].GetState())
 	}, 10*time.Second, 50*time.Millisecond)
+}
+
+// TestStreamNotifierFailedCloseFailsTheCaller closes a stream with a failure and checks that the
+// caller's stream-returning operation fails with it as the cause, as a Workflow-run operation fails
+// with its run's failure.
+func (s *NexusWorkflowTestSuite) TestStreamNotifierFailedCloseFailsTheCaller(chasmEnabled bool) {
+	env := s.newTestEnv(
+		chasmEnabled,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
+		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
+		testcore.WithDynamicConfig(
+			callback.AllowedAddresses,
+			[]any{map[string]any{"Pattern": "*", "AllowInsecure": true}},
+		),
+		testcore.WithDynamicConfig(callback.RetryPolicyInitialInterval, 10*time.Millisecond),
+		testcore.WithDynamicConfig(callback.RetryPolicyMaximumInterval, 50*time.Millisecond),
+	)
+	if !chasmEnabled {
+		env.OverrideDynamicConfig(dynamicconfig.EnableChasm, true)
+	}
+	ctx := s.Context()
+	taskQueue := testcore.RandomizeStr(s.T().Name())
+	stream := &streampb.StreamReference{
+		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+		WorkflowId: "producer-" + uuid.NewString(),
+		RunId:      "first-run",
+		Topic:      "tokens",
+	}
+	frontend := env.FrontendClient()
+	describe := func() *workflowservice.DescribeStreamNotifierResponse {
+		resp, err := frontend.DescribeStreamNotifier(
+			ctx,
+			&workflowservice.DescribeStreamNotifierRequest{
+				Namespace: env.Namespace().String(),
+				StreamRef: stream,
+			},
+		)
+		s.NoError(err)
+		return resp
+	}
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			_, err := frontend.AttachStreamCallback(
+				ctx,
+				&workflowservice.AttachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: options.RequestID,
+					Callback: &commonpb.Callback_Nexus{
+						Url:    options.CallbackURL,
+						Header: options.CallbackHeader,
+					},
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+			return &nexus.HandlerStartOperationResultAsync{
+				OperationToken: stream.GetWorkflowId(),
+			}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+	callerWF := func(ctx workflow.Context) (string, error) {
+		c := workflow.NewNexusClient(endpointName, "service")
+		var result string
+		err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).
+			Get(ctx, &result)
+		return result, err
+	}
+	w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
+	w.RegisterWorkflow(callerWF)
+	s.NoError(w.Start())
+	defer w.Stop()
+	run, err := env.SdkClient().
+		ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
+	s.NoError(err)
+	wfExec := &commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()}
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		s.RequireHistoryEvent(
+			env.GetHistory(env.Namespace().String(), wfExec),
+			enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED,
+		)
+		s.Len(describe().GetCallbacks(), 1)
+	}, 10*time.Second, 50*time.Millisecond)
+
+	_, err = frontend.NotifyStream(ctx, &workflowservice.NotifyStreamRequest{
+		Namespace: env.Namespace().String(),
+		StreamRef: stream,
+		Counter:   1,
+		Close:     true,
+		CloseFailure: &failurepb.Failure{
+			Message: "the agent gave up",
+			FailureInfo: &failurepb.Failure_ApplicationFailureInfo{
+				ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{
+					Type:         "AgentGaveUp",
+					NonRetryable: true,
+				},
+			},
+		},
+	})
+	s.NoError(err)
+
+	s.Error(run.Get(ctx, nil), "a stream closed with a failure fails the caller's operation")
+	hist := env.GetHistory(env.Namespace().String(), wfExec)
+	failed := s.RequireHistoryEvent(hist, enumspb.EVENT_TYPE_NEXUS_OPERATION_FAILED)
+	cause := failed.GetNexusOperationFailedEventAttributes().GetFailure().GetCause()
+	s.Equal("AgentGaveUp", cause.GetApplicationFailureInfo().GetType())
+	s.Equal("the agent gave up", cause.GetMessage())
+	s.Equal(
+		"AgentGaveUp",
+		describe().GetCloseFailure().GetApplicationFailureInfo().GetType(),
+		"a description says why the stream closed",
+	)
 }
 
 // TestStreamNotifierClosedFromWorkflow closes a stream from its owner Workflow through the
