@@ -16,8 +16,13 @@ callbacks attached to it.`,
 
 var MaxCallbacks = dynamicconfig.NewNamespaceIntSetting(
 	"streamnotifier.maxCallbacks",
-	100,
-	`The maximum number of callbacks one stream notifier holds. An attach beyond it is refused.`,
+	2000,
+	`The maximum number of callbacks one stream notifier holds. A full notifier makes room for an
+attach by dropping the oldest callback that already completed, and refuses the attach if none did.
+The default matches callback.maxPerExecution. A callback that carries a Temporal callback token
+takes about 1.2 KB of the notifier's state, so 2,000 callbacks stay well under the mutable state
+size limit. Callers whose callback headers are near frontend.callbackHeaderMaxLength need a lower
+value.`,
 )
 
 var IdleTimeout = dynamicconfig.NewNamespaceDurationSetting(

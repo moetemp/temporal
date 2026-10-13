@@ -907,3 +907,14 @@ func TestClosedRetentionCoversTheStoreRetention(t *testing.T) {
 	require.Equal(t, 7*24*time.Hour, configProvider(dc).ClosedRetention("ns"),
 		"a closed stream answers late attaches as long as the store keeps its records")
 }
+
+func TestTheDefaultHoldsTwoThousandWaitingCallers(t *testing.T) {
+	maxCallbacks := configProvider(dynamicconfig.NewNoopCollection()).MaxCallbacks("ns")
+	nt := newNotifierTest(t, maxCallbacks)
+	for i := range 2000 {
+		require.NoError(t, nt.attach(fmt.Sprintf("caller-%d", i)), "caller-%d attaches", i)
+	}
+	var failed *serviceerror.FailedPrecondition
+	require.ErrorAs(t, nt.attach("caller-2000"), &failed, "the caller after the limit is refused")
+	require.Len(t, nt.callbacks(), 2000)
+}
