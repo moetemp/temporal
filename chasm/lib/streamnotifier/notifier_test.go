@@ -3,6 +3,7 @@ package streamnotifier
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	config := &Config{
 		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
 		MaxCallbacks:       dynamicconfig.GetIntPropertyFnFilteredByNamespace(maxCallbacks),
+		MaxCallbackBytes:   MaxCallbackBytes.Get(dynamicconfig.NewNoopCollection()),
 		IdleTimeout:        dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Hour),
 		ClosedRetention:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		OwnerCheckInterval: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(5 * time.Minute),
@@ -130,6 +132,10 @@ func (nt *notifierTest) attachStarted(requestID, token string, start time.Time) 
 }
 
 func (nt *notifierTest) attach(requestID string) error {
+	return nt.attachWithToken(requestID, "secret-"+requestID)
+}
+
+func (nt *notifierTest) attachWithToken(requestID, token string) error {
 	_, err := nt.handler.AttachStreamCallback(nt.ctx, &streamnotifierpb.AttachStreamCallbackRequest{
 		NamespaceId: "namespace-id",
 		BusinessId:  BusinessID(nt.ref),
@@ -139,7 +145,7 @@ func (nt *notifierTest) attach(requestID string) error {
 			RequestId: requestID,
 			Callback: &commonpb.Callback_Nexus{
 				Url:    "http://caller/" + requestID,
-				Header: map[string]string{"temporal-callback-token": "secret-" + requestID},
+				Header: map[string]string{"temporal-callback-token": token},
 			},
 		},
 	})
@@ -917,4 +923,34 @@ func TestTheDefaultHoldsTwoThousandWaitingCallers(t *testing.T) {
 	var failed *serviceerror.FailedPrecondition
 	require.ErrorAs(t, nt.attach("caller-2000"), &failed, "the caller after the limit is refused")
 	require.Len(t, nt.callbacks(), 2000)
+}
+
+func TestLargeCallbacksHitTheByteLimitBeforeTheCountLimit(t *testing.T) {
+	nt := newNotifierTest(t, 2000)
+	// A header near frontend.callbackHeaderMaxLength.
+	large := strings.Repeat("t", 8*1024-64)
+	attached := 0
+	var err error
+	for attached < 2000 {
+		if err = nt.attachWithToken(fmt.Sprintf("caller-%d", attached), large); err != nil {
+			break
+		}
+		attached++
+	}
+	var failed *serviceerror.FailedPrecondition
+	require.ErrorAs(t, err, &failed, "an attach past the byte limit is refused")
+	maxBytes := MaxCallbackBytes.Get(dynamicconfig.NewNoopCollection())("ns")
+	require.LessOrEqual(t, attached, maxBytes/(8*1024-64), "each callback counts its header")
+	require.Greater(t, attached, maxBytes/(9*1024), "the callbacks fill the byte limit")
+	require.Len(t, nt.callbacks(), attached)
+
+	// The notifier makes room from callbacks that are done, as it does for the count limit.
+	require.NoError(t, nt.notify(1, true))
+	nt.updateCallback(
+		"caller-0",
+		func(cb *callback.Callback) { cb.Status = callbackspb.CALLBACK_STATUS_SUCCEEDED },
+	)
+	require.NoError(t, nt.attachWithToken("late", large))
+	require.NotContains(t, nt.callbacks(), "caller-0")
+	require.Contains(t, nt.callbacks(), "late")
 }

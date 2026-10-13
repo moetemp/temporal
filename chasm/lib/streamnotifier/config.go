@@ -17,12 +17,24 @@ callbacks attached to it.`,
 var MaxCallbacks = dynamicconfig.NewNamespaceIntSetting(
 	"streamnotifier.maxCallbacks",
 	2000,
-	`The maximum number of callbacks one stream notifier holds. A full notifier makes room for an
-attach by dropping the oldest callback that already completed, and refuses the attach if none did.
-The default matches callback.maxPerExecution. A callback that carries a Temporal callback token
-takes about 1.2 KB of the notifier's state, so 2,000 callbacks stay well under the mutable state
-size limit. Callers whose callback headers are near frontend.callbackHeaderMaxLength need a lower
-value.`,
+	`The maximum number of callbacks one stream notifier holds. A notifier is full when it holds
+this many callbacks or when an attach would take its callbacks past
+streamnotifier.maxCallbackBytes. A full notifier makes room for an attach by dropping the oldest
+callbacks that already completed, and refuses the attach if that is not enough. The default matches
+callback.maxPerExecution. A callback that carries a Temporal callback token takes about 1.2 KB, so
+2,000 of them stay under the byte limit.`,
+)
+
+var MaxCallbackBytes = dynamicconfig.NewNamespaceIntSetting(
+	"streamnotifier.maxCallbackBytes",
+	4*1024*1024,
+	`The maximum summed size, in bytes, of the callbacks one stream notifier holds. It works next to
+streamnotifier.maxCallbacks: an attach that would take the callbacks past it is refused the same
+way, after the notifier drops the oldest callbacks that already completed. Callers with callback
+headers near frontend.callbackHeaderMaxLength reach this limit before the callback count limit. The
+size of a callback grows after its attach, for example with the progress it delivers, so keep this
+well under limit.mutableStateSize.error, which ends the notifier and fails every caller when the
+notifier passes it.`,
 )
 
 var IdleTimeout = dynamicconfig.NewNamespaceDurationSetting(
@@ -66,6 +78,7 @@ type Config struct {
 	Enabled            dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	ChasmEnabled       dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	MaxCallbacks       dynamicconfig.IntPropertyFnWithNamespaceFilter
+	MaxCallbackBytes   dynamicconfig.IntPropertyFnWithNamespaceFilter
 	IdleTimeout        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	ClosedRetention    dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCheckInterval dynamicconfig.DurationPropertyFnWithNamespaceFilter
@@ -81,6 +94,7 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 		Enabled:            Enabled.Get(dc),
 		ChasmEnabled:       dynamicconfig.EnableChasm.Get(dc),
 		MaxCallbacks:       MaxCallbacks.Get(dc),
+		MaxCallbackBytes:   MaxCallbackBytes.Get(dc),
 		IdleTimeout:        IdleTimeout.Get(dc),
 		ClosedRetention:    ClosedRetention.Get(dc),
 		OwnerCheckInterval: OwnerCheckInterval.Get(dc),

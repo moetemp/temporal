@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/server/common"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -121,6 +122,7 @@ type attachInput struct {
 	operationToken     string
 	startTime          *timestamppb.Timestamp
 	maxCallbacks       int
+	maxCallbackBytes   int
 	idleTimeout        time.Duration
 	ownerCheckInterval time.Duration
 }
@@ -138,12 +140,6 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 		return nil
 	}
 	n.dropClosedCallers(ctx)
-	if len(n.Callbacks) >= in.maxCallbacks && !n.evictOne(ctx) {
-		return serviceerror.NewFailedPreconditionf(
-			"the stream notifier holds the maximum of %d callbacks",
-			in.maxCallbacks,
-		)
-	}
 	cb := callback.NewCallback(in.requestID, timestamppb.New(ctx.Now(n)), &callbackspb.Callback{
 		Variant: &callbackspb.Callback_Nexus_{
 			Nexus: &callbackspb.Callback_Nexus{
@@ -152,18 +148,44 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 			},
 		},
 	})
+	var start *streamnotifierpb.CallerStart
+	if in.operationToken != "" || in.startTime != nil {
+		start = &streamnotifierpb.CallerStart{
+			OperationToken: in.operationToken,
+			StartTime:      in.startTime,
+		}
+	}
+	size := callbackBytes(cb, start)
+	if !n.Closed && n.Counter > 0 {
+		// The progress delivered below is kept on the callback.
+		size += proto.Size(n.progress())
+	}
+	used := n.heldBytes(ctx)
+	for len(n.Callbacks) >= in.maxCallbacks || used+size > in.maxCallbackBytes {
+		freed, ok := n.evictOne(ctx)
+		if !ok && len(n.Callbacks) >= in.maxCallbacks {
+			return serviceerror.NewFailedPreconditionf(
+				"the stream notifier holds the maximum of %d callbacks",
+				in.maxCallbacks,
+			)
+		}
+		if !ok {
+			return serviceerror.NewFailedPreconditionf(
+				"the stream notifier's callbacks would pass the maximum of %d bytes",
+				in.maxCallbackBytes,
+			)
+		}
+		used -= freed
+	}
 	if n.Callbacks == nil {
 		n.Callbacks = make(chasm.Map[string, *callback.Callback])
 	}
 	n.Callbacks[in.requestID] = chasm.NewComponentField(ctx, cb)
-	if in.operationToken != "" || in.startTime != nil {
+	if start != nil {
 		if n.CallerStarts == nil {
 			n.CallerStarts = map[string]*streamnotifierpb.CallerStart{}
 		}
-		n.CallerStarts[in.requestID] = &streamnotifierpb.CallerStart{
-			OperationToken: in.operationToken,
-			StartTime:      in.startTime,
-		}
+		n.CallerStarts[in.requestID] = start
 	}
 	if n.Closed {
 		return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
@@ -189,10 +211,11 @@ func (n *StreamNotifier) dropClosedCallers(ctx chasm.MutableContext) {
 	}
 }
 
-// evictOne drops the oldest callback that is done and reports whether it dropped one. A callback
-// whose caller still waits for its completion is never dropped, even one that takes no progress,
-// such as an HSM caller's; callbacks whose caller closed are already gone (dropClosedCallers).
-func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) bool {
+// evictOne drops the oldest callback that is done and returns its size, or false if no callback
+// is done. A callback whose caller still waits for its completion is never dropped, even one that
+// takes no progress, such as an HSM caller's; callbacks whose caller closed are already gone
+// (dropClosedCallers).
+func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) (int, bool) {
 	var done *callback.Callback
 	for _, field := range n.Callbacks {
 		cb := field.Get(ctx)
@@ -206,10 +229,26 @@ func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) bool {
 		}
 	}
 	if done == nil {
-		return false
+		return 0, false
 	}
+	freed := callbackBytes(done, n.CallerStarts[done.GetRequestId()])
 	n.detach(done.GetRequestId())
-	return true
+	return freed, true
+}
+
+// heldBytes is the size of the callbacks the notifier holds, as callbackBytes counts each.
+func (n *StreamNotifier) heldBytes(ctx chasm.Context) int {
+	size := 0
+	for requestID, field := range n.Callbacks {
+		size += callbackBytes(field.Get(ctx), n.CallerStarts[requestID])
+	}
+	return size
+}
+
+// callbackBytes is the persisted size of a callback and of the start its caller saw, which is what
+// the notifier's state holds for it.
+func callbackBytes(cb *callback.Callback, start *streamnotifierpb.CallerStart) int {
+	return proto.Size(cb.CallbackState) + proto.Size(start)
 }
 
 // hasWaitingCallbacks reports whether a callback still waits for the stream's close.
