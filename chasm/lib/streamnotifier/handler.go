@@ -232,27 +232,42 @@ func (h *handler) checkFirstRun(
 	namespaceID, namespaceName string,
 	ref *streampb.StreamReference,
 ) error {
-	resp, err := h.historyClient.DescribeWorkflowExecution(
-		ctx,
-		&historyservice.DescribeWorkflowExecutionRequest{
-			NamespaceId: namespaceID,
-			Request: &workflowservice.DescribeWorkflowExecutionRequest{
-				Namespace: namespaceName,
-				Execution: &commonpb.WorkflowExecution{WorkflowId: ref.GetWorkflowId()},
+	describe := func(runID string) (*historyservice.DescribeWorkflowExecutionResponse, error) {
+		return h.historyClient.DescribeWorkflowExecution(
+			ctx,
+			&historyservice.DescribeWorkflowExecutionRequest{
+				NamespaceId: namespaceID,
+				Request: &workflowservice.DescribeWorkflowExecutionRequest{
+					Namespace: namespaceName,
+					Execution: &commonpb.WorkflowExecution{
+						WorkflowId: ref.GetWorkflowId(),
+						RunId:      runID,
+					},
+				},
 			},
-		},
-	)
+		)
+	}
+	resp, err := describe("")
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if first := resp.GetWorkflowExecutionInfo().GetFirstRunId(); first != ref.GetRunId() {
-		return serviceerror.NewInvalidArgumentf(
-			"stream_ref.run_id %q is not the first run of the owner's run chain",
-			ref.GetRunId(),
-		)
+	if resp.GetWorkflowExecutionInfo().GetFirstRunId() == ref.GetRunId() {
+		return nil
 	}
-	return nil
+	// A later chain may hold the Workflow ID now. An earlier chain keeps its own notifier, so the
+	// first run of any chain is taken.
+	resp, err = describe(ref.GetRunId())
+	if err == nil && resp.GetWorkflowExecutionInfo().GetFirstRunId() == ref.GetRunId() {
+		return nil
+	}
+	if err != nil && common.IsRetryableRPCError(err) {
+		return err
+	}
+	return serviceerror.NewInvalidArgumentf(
+		"stream_ref.run_id %q is not the first run of the owner's run chain",
+		ref.GetRunId(),
+	)
 }
