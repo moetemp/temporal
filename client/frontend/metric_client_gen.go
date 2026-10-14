@@ -471,6 +471,20 @@ func (c *metricClient) ExecuteMultiOperation(
 	return c.client.ExecuteMultiOperation(ctx, request, opts...)
 }
 
+func (c *metricClient) ExecuteSyncNexusOperation(
+	ctx context.Context,
+	request *workflowservice.ExecuteSyncNexusOperationRequest,
+	opts ...grpc.CallOption,
+) (_ *workflowservice.ExecuteSyncNexusOperationResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "FrontendClientExecuteSyncNexusOperation")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.ExecuteSyncNexusOperation(ctx, request, opts...)
+}
+
 func (c *metricClient) FetchWorkerConfig(
 	ctx context.Context,
 	request *workflowservice.FetchWorkerConfigRequest,

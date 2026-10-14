@@ -213,6 +213,8 @@ type Config struct {
 	MaxConcurrentAdminBatchOperation             dynamicconfig.IntPropertyFn
 	EnableBatchOperationsForStandaloneActivities dynamicconfig.BoolPropertyFnWithNamespaceFilter
 
+	EnableExecuteSyncNexusOperation dynamicconfig.BoolPropertyFnWithNamespaceFilter
+
 	EnableUpdateWorkflowExecution                              dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	EnableUpdateWorkflowExecutionAsyncAccepted                 dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	EnableWorkflowUpdateCallbacks                              dynamicconfig.BoolPropertyFnWithNamespaceFilter
@@ -415,6 +417,8 @@ func NewConfig(
 		MaxExecutionCountBatchOperation:              dynamicconfig.FrontendMaxExecutionCountBatchOperationPerNamespace.Get(dc),
 		MaxConcurrentAdminBatchOperation:             dynamicconfig.FrontendMaxConcurrentAdminBatchOperation.Get(dc),
 		EnableBatchOperationsForStandaloneActivities: dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities.Get(dc),
+
+		EnableExecuteSyncNexusOperation: dynamicconfig.FrontendEnableExecuteSyncNexusOperation.Get(dc),
 
 		EnableUpdateWorkflowExecution:                              dynamicconfig.FrontendEnableUpdateWorkflowExecution.Get(dc),
 		EnableUpdateWorkflowExecutionAsyncAccepted:                 dynamicconfig.FrontendEnableUpdateWorkflowExecutionAsyncAccepted.Get(dc),

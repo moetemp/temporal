@@ -66,6 +66,7 @@ import (
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/namespace/nsreplication"
+	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/payload"
 	"go.temporal.io/server/common/payloads"
 	"go.temporal.io/server/common/persistence"
@@ -169,6 +170,9 @@ type (
 		httpEnabled                     bool
 		registry                        *chasm.Registry
 		workerDeploymentReadRateLimiter quotas.RequestRateLimiter
+		endpointRegistry                commonnexus.EndpointRegistry
+		namespaceRateLimiter            interceptor.NamespaceRateLimitInterceptor
+		nexusOperationConfig            *chasmnexus.Config
 	}
 )
 
@@ -350,6 +354,9 @@ func NewWorkflowHandler(
 	registry *chasm.Registry,
 	workerDeploymentReadRateLimiter quotas.RequestRateLimiter,
 	validator *workflow.RequestValidator,
+	endpointRegistry commonnexus.EndpointRegistry,
+	namespaceRateLimiter interceptor.NamespaceRateLimitInterceptor,
+	nexusOperationConfig *chasmnexus.Config,
 ) *WorkflowHandler {
 	handler := &WorkflowHandler{
 		ActivityHandler:       activityHandler,
@@ -406,6 +413,9 @@ func NewWorkflowHandler(
 		registry:                        registry,
 		workerDeploymentReadRateLimiter: workerDeploymentReadRateLimiter,
 		validator:                       validator,
+		endpointRegistry:                endpointRegistry,
+		namespaceRateLimiter:            namespaceRateLimiter,
+		nexusOperationConfig:            nexusOperationConfig,
 	}
 
 	return handler

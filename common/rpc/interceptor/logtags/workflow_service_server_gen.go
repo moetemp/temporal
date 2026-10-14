@@ -163,6 +163,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 		return nil
 	case *workflowservice.ExecuteMultiOperationResponse:
 		return nil
+	case *workflowservice.ExecuteSyncNexusOperationRequest:
+		return nil
+	case *workflowservice.ExecuteSyncNexusOperationResponse:
+		return nil
 	case *workflowservice.FetchWorkerConfigRequest:
 		return nil
 	case *workflowservice.FetchWorkerConfigResponse:

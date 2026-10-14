@@ -506,6 +506,21 @@ func (c *retryableClient) ExecuteMultiOperation(
 	return resp, err
 }
 
+func (c *retryableClient) ExecuteSyncNexusOperation(
+	ctx context.Context,
+	request *workflowservice.ExecuteSyncNexusOperationRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.ExecuteSyncNexusOperationResponse, error) {
+	var resp *workflowservice.ExecuteSyncNexusOperationResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.ExecuteSyncNexusOperation(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) FetchWorkerConfig(
 	ctx context.Context,
 	request *workflowservice.FetchWorkerConfigRequest,

@@ -63,6 +63,9 @@ var (
 		// Dispatching a Nexus task is a potentially long running RPC, it's classified in the same bucket as QueryWorkflow.
 		DispatchNexusTaskByNamespaceAndTaskQueueAPIName: 1,
 		DispatchNexusTaskByEndpointAPIName:              1,
+
+		// A sync Nexus call waits for its Nexus task to finish, as a dispatch does.
+		"/temporal.api.workflowservice.v1.WorkflowService/ExecuteSyncNexusOperation": 1,
 	}
 
 	// PollTaskAPISet is the set of API methods for which NamespaceRateLimitInterceptor will
@@ -96,6 +99,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/StartBatchOperation":              1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartActivityExecution":           1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartNexusOperationExecution":     1,
+		"/temporal.api.workflowservice.v1.WorkflowService/ExecuteSyncNexusOperation":        1,
 		"/temporal.api.workflowservice.v1.WorkflowService/AttachStreamCallback":             1,
 		DispatchNexusTaskByNamespaceAndTaskQueueAPIName:                                     1,
 		DispatchNexusTaskByEndpointAPIName:                                                  1,

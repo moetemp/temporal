@@ -343,6 +343,42 @@ func (v *validator) normalizeIDPolicies(req *workflowservice.StartNexusOperation
 	}
 }
 
+// ValidateAndNormalizeSyncRequest checks an ExecuteSyncNexusOperation request against the limits
+// of standalone operations. It sets a missing request ID and lowercases the Nexus headers in place.
+func ValidateAndNormalizeSyncRequest(
+	config *Config,
+	logger log.Logger,
+	req *workflowservice.ExecuteSyncNexusOperationRequest,
+) error {
+	v := &validator{config: config, logger: logger}
+	if err := v.normalizeRequestID(&req.RequestId); err != nil {
+		return err
+	}
+	if err := v.validateIDLength("identity", req.GetIdentity()); err != nil {
+		return err
+	}
+	// The target and input checks take a start request, and these fields are the same.
+	start := &workflowservice.StartNexusOperationExecutionRequest{
+		Namespace: req.GetNamespace(),
+		Endpoint:  req.GetEndpoint(),
+		Service:   req.GetService(),
+		Operation: req.GetOperation(),
+		Input:     req.GetInput(),
+	}
+	if err := v.validateTarget(start); err != nil {
+		return err
+	}
+	if err := v.validateInput(start); err != nil {
+		return err
+	}
+	loweredHeaders, err := v.validateAndLowercaseHeaders(req.GetNamespace(), req.GetNexusHeader())
+	if err != nil {
+		return err
+	}
+	req.NexusHeader = loweredHeaders
+	return nil
+}
+
 // validateOnConflictOptions validates the on_conflict_options of a start request:
 //   - attach_completion_callbacks requires attach_request_id, since it is embedded into the keys we use
 //     to persist them on the Operation's Callbacks map.
