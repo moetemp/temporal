@@ -91,6 +91,7 @@ func (s *quotasSuite) TestExecutionAPIPrioritiesOrdered() {
 func (s *quotasSuite) TestNotifyStreamYieldsToStarts() {
 	const svc = "/temporal.api.workflowservice.v1.WorkflowService/"
 	s.Greater(APIToPriority[svc+"NotifyStream"], APIToPriority[svc+"StartWorkflowExecution"])
+	s.Equal(APIToPriority[svc+"NotifyStream"], APIToPriority[svc+"NotifyStreams"])
 	s.Equal(APIToPriority[svc+"StartWorkflowExecution"], APIToPriority[svc+"AttachStreamCallback"])
 }
 
