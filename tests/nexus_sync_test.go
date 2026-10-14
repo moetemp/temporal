@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
@@ -19,6 +20,8 @@ import (
 	"go.temporal.io/server/common/authorization"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
+	cnexus "go.temporal.io/server/common/nexus"
+	"go.temporal.io/server/common/nexus/nexusrpc"
 	"go.temporal.io/server/common/testing/parallelsuite"
 	"go.temporal.io/server/tests/testcore"
 )
@@ -77,6 +80,14 @@ func (s *NexusSyncSuite) createEndpoint(
 	targetNamespace namespace.Name,
 	taskQueue string,
 ) string {
+	return s.createEndpointEntry(env, targetNamespace, taskQueue).GetSpec().GetName()
+}
+
+func (s *NexusSyncSuite) createEndpointEntry(
+	env *testcore.TestEnv,
+	targetNamespace namespace.Name,
+	taskQueue string,
+) *nexuspb.Endpoint {
 	name := testcore.RandomizedNexusEndpoint(s.T().Name())
 	resp, err := env.OperatorClient().
 		CreateNexusEndpoint(s.Context(), &operatorservice.CreateNexusEndpointRequest{
@@ -100,7 +111,7 @@ func (s *NexusSyncSuite) createEndpoint(
 				Version: resp.Endpoint.Version,
 			})
 	})
-	return name
+	return resp.GetEndpoint()
 }
 
 // answerOneTask polls one Nexus task in the target namespace and answers it. The task goes to
@@ -220,6 +231,8 @@ func (s *NexusSyncSuite) TestSyncResult() {
 	s.Equal(req.GetRequestId(), start.GetRequestId())
 	s.Empty(start.GetCallback())
 	s.JSONEq(`{"stream":"s1"}`, string(start.GetPayload().GetData()))
+	callerNamespace := task.GetRequest().GetHeader()[cnexus.CallerNamespaceHeaderName]
+	s.Equal(env.Namespace().String(), callerNamespace)
 }
 
 func (s *NexusSyncSuite) TestHandlerError() {
@@ -310,6 +323,55 @@ func (s *NexusSyncSuite) TestAsyncAnswerRefused() {
 	s.NoError(s.Rcv(done))
 	var precondition *serviceerror.FailedPrecondition
 	s.ErrorAs(err, &precondition)
+}
+
+func (s *NexusSyncSuite) TestCallerNamespaceHeaderFromClientRefused() {
+	env := s.newEnv()
+	endpoint := s.createEndpoint(env, env.Namespace(), testcore.RandomizeStr("sync-tq"))
+	req := syncNexusRequest(env.Namespace(), endpoint)
+	req.NexusHeader = map[string]string{"Temporal-Caller-Namespace": "someone-else"}
+
+	_, err := env.FrontendClient().ExecuteSyncNexusOperation(s.Context(), req)
+	var invalid *serviceerror.InvalidArgument
+	s.ErrorAs(err, &invalid)
+}
+
+func (s *NexusSyncSuite) TestHTTPRouteRemovesCallerNamespaceHeader() {
+	env := s.newEnv()
+	taskQueue := testcore.RandomizeStr("sync-tq")
+	endpoint := s.createEndpointEntry(env, env.Namespace(), taskQueue)
+
+	seen := make(chan *workflowservice.PollNexusTaskQueueResponse, 1)
+	answer := syncStartAnswer(&nexuspb.StartOperationResponse{
+		Variant: &nexuspb.StartOperationResponse_SyncSuccess{
+			SyncSuccess: &nexuspb.StartOperationResponse_Sync{
+				Payload: &commonpb.Payload{
+					Metadata: map[string][]byte{"encoding": []byte("json/plain")},
+					Data:     []byte(`"ok"`),
+				},
+			},
+		},
+	})
+	done := s.answerOneTask(env, env.Namespace(), taskQueue, answer, seen)
+
+	client, err := nexusrpc.NewHTTPClient(nexusrpc.HTTPClientOptions{
+		BaseURL: "http://" + env.HttpAPIAddress() + "/" +
+			cnexus.RouteDispatchNexusTaskByEndpoint.Path(endpoint.GetId()),
+		Service: "temporal.sdk.streams.v1.TemporalStreams",
+	})
+	s.NoError(err)
+	_, err = client.StartOperation(s.Context(), "read", "input", nexus.StartOperationOptions{
+		Header: nexus.Header{
+			"x-trace-id":                     "trace-1",
+			cnexus.CallerNamespaceHeaderName: "forged-namespace",
+		},
+	})
+	s.NoError(err)
+	s.NoError(s.Rcv(done))
+
+	task := s.Rcv(seen)
+	s.Equal("trace-1", task.GetRequest().GetHeader()["x-trace-id"])
+	s.NotContains(task.GetRequest().GetHeader(), cnexus.CallerNamespaceHeaderName)
 }
 
 func (s *NexusSyncSuite) TestUnknownEndpoint() {

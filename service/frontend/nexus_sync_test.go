@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/namespace"
+	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexustest"
 	"go.temporal.io/server/common/rpc/interceptor"
 	"go.temporal.io/server/service/frontend/configs"
@@ -221,7 +222,10 @@ func TestExecuteSyncNexusOperation_SyncResult(t *testing.T) {
 			require.Equal(t, syncTestTargetID, req.GetNamespaceId())
 			require.Equal(t, syncTestTaskQueue, req.GetTaskQueue().GetName())
 			require.Equal(t, syncTestEndpoint, req.GetRequest().GetEndpoint())
-			require.Equal(t, map[string]string{"x-trace": "abc"}, req.GetRequest().GetHeader())
+			require.Equal(t, map[string]string{
+				"x-trace":                             "abc",
+				commonnexus.CallerNamespaceHeaderName: syncTestCallerNamespace,
+			}, req.GetRequest().GetHeader())
 			require.True(t, req.GetRequest().GetCapabilities().GetTemporalFailureResponses())
 			start := req.GetRequest().GetStartOperation()
 			require.Equal(t, "temporal.sdk.streams.v1.TemporalStreams", start.GetService())
@@ -425,6 +429,18 @@ func TestExecuteSyncNexusOperation_RefusedBeforeDispatch(t *testing.T) {
 			targetActive: true,
 			mutate: func(req *workflowservice.ExecuteSyncNexusOperationRequest) {
 				req.Service = ""
+			},
+			check: func(t *testing.T, err error) {
+				var invalid *serviceerror.InvalidArgument
+				require.ErrorAs(t, err, &invalid)
+			},
+		},
+		{
+			name:         "caller namespace header from the client",
+			enabled:      true,
+			targetActive: true,
+			mutate: func(req *workflowservice.ExecuteSyncNexusOperationRequest) {
+				req.NexusHeader = map[string]string{"Temporal-Caller-Namespace": "someone-else"}
 			},
 			check: func(t *testing.T, err error) {
 				var invalid *serviceerror.InvalidArgument

@@ -2,6 +2,7 @@ package frontend
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
@@ -28,6 +29,8 @@ var (
 			"Use StartNexusOperationExecution for asynchronous operations")
 	errSyncNexusOperationNoAnswer = serviceerror.NewDeadlineExceeded(
 		"no worker answered the Nexus task before the deadline")
+	errCallerNamespaceHeaderSet = serviceerror.NewInvalidArgumentf(
+		"nexus_header must not set %q. The server sets it", commonnexus.CallerNamespaceHeaderName)
 )
 
 // ExecuteSyncNexusOperation runs one synchronous Nexus operation for a caller in the request
@@ -58,6 +61,10 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 	err = chasmnexus.ValidateAndNormalizeSyncRequest(wh.nexusOperationConfig, wh.logger, request)
 	if err != nil {
 		return nil, err
+	}
+	// The validator lowercased the keys, so one lookup finds any spelling.
+	if _, ok := request.GetNexusHeader()[commonnexus.CallerNamespaceHeaderName]; ok {
+		return nil, errCallerNamespaceHeaderSet
 	}
 
 	// The registry is the allowlist seam. It answers NotFound for an endpoint that the caller
@@ -108,6 +115,10 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 	)
 	defer cancel()
 
+	header := make(map[string]string, len(request.GetNexusHeader())+1)
+	maps.Copy(header, request.GetNexusHeader())
+	header[commonnexus.CallerNamespaceHeaderName] = callerNamespace.Name().String()
+
 	resp, err := wh.matchingClient.DispatchNexusTask(ctx, &matchingservice.DispatchNexusTaskRequest{
 		NamespaceId: targetNamespace.ID().String(),
 		TaskQueue: &taskqueuepb.TaskQueue{
@@ -115,7 +126,7 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 			Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
 		},
 		Request: &nexuspb.Request{
-			Header:        request.GetNexusHeader(),
+			Header:        header,
 			ScheduledTime: timestamppb.New(time.Now().UTC()),
 			Endpoint:      request.GetEndpoint(),
 			Variant: &nexuspb.Request_StartOperation{

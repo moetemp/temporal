@@ -274,6 +274,10 @@ func (c *operationContext) interceptRequest(
 		sanitizedHeaders := make(map[string]string, len(request.Request.Header))
 		headersBlacklist := c.headersBlacklist()
 		for name, value := range request.Request.Header {
+			// Only ExecuteSyncNexusOperation sets the caller namespace, so a value here is forged.
+			if strings.EqualFold(name, commonnexus.CallerNamespaceHeaderName) {
+				continue
+			}
 			if !headersBlacklist.MatchString(name) {
 				sanitizedHeaders[name] = value
 			}
