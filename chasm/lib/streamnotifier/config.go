@@ -10,8 +10,8 @@ var Enabled = dynamicconfig.NewNamespaceBoolSetting(
 	"streamnotifier.enabled",
 	false,
 	`Experimental. Serves the stream notifier RPCs (AttachStreamCallback, DetachStreamCallback,
-NotifyStream, DescribeStreamNotifier), which hand a stream's progress and its close to the Nexus
-callbacks attached to it.`,
+NotifyStream, NotifyStreams, DescribeStreamNotifier, PollStreamNotifier), which hand a stream's
+progress and its close to the Nexus callbacks attached to it.`,
 )
 
 var MaxCallbacks = dynamicconfig.NewNamespaceIntSetting(
@@ -50,9 +50,9 @@ var IdleTimeoutNoCallbacks = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.idleTimeoutNoCallbacks",
 	time.Hour,
 	`How long an open stream notifier with no callbacks waiting waits for an attach or a
-notification before it ends. A notification or a poll starts a notifier when the stream has none,
-so a sleeping reader has a notifier to wake it. A notification that names the wrong first run
-starts one that nobody attaches to, and this ends it soon.`,
+notification before it ends. A poll starts a notifier when the stream has none, so a sleeping
+client has a notifier to wake it. A poll that names the wrong first run starts one that nobody
+notifies, and this ends it soon.`,
 )
 
 var PollMaxWait = dynamicconfig.NewNamespaceDurationSetting(
@@ -100,6 +100,23 @@ matches how long Core retries its notifier close. A terminated or timed-out owne
 close, so the check closes its stream at once.`,
 )
 
+var OwnerStartGrace = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.ownerStartGrace",
+	time.Minute,
+	`How long the owner check of a new stream notifier leaves alone an owner Workflow that does not
+exist. A reader may subscribe before the owner starts, for example when one request starts the
+Workflow and another reads its stream. Once this passed from the notifier's start, an owner that
+does not exist closes the stream with a failure. Readers of the store give the owner the same
+grace. A wrong Workflow ID waits this long before its callers fail.`,
+)
+
+var MaxNotifyBatch = dynamicconfig.NewNamespaceIntSetting(
+	"streamnotifier.maxNotifyBatch",
+	1000,
+	`The most entries one NotifyStreams request may carry. The frontend applies the entries in
+parallel, each on the notifier of its stream.`,
+)
+
 var ClosedRetention = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.closedRetention",
 	7*24*time.Hour,
@@ -123,6 +140,8 @@ type Config struct {
 	ClosedRetention        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCheckInterval     dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCloseGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	OwnerStartGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	MaxNotifyBatch         dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxIDLength            dynamicconfig.IntPropertyFn
 	// The close result becomes the operation's result, so it takes the payload blob limits.
 	BlobSizeLimitError dynamicconfig.IntPropertyFnWithNamespaceFilter
@@ -143,6 +162,8 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 		ClosedRetention:        ClosedRetention.Get(dc),
 		OwnerCheckInterval:     OwnerCheckInterval.Get(dc),
 		OwnerCloseGrace:        OwnerCloseGrace.Get(dc),
+		OwnerStartGrace:        OwnerStartGrace.Get(dc),
+		MaxNotifyBatch:         MaxNotifyBatch.Get(dc),
 		MaxIDLength:            dynamicconfig.MaxIDLengthLimit.Get(dc),
 		BlobSizeLimitError:     dynamicconfig.BlobSizeLimitError.Get(dc),
 		BlobSizeLimitWarn:      dynamicconfig.BlobSizeLimitWarn.Get(dc),
