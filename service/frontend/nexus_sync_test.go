@@ -420,6 +420,21 @@ func TestExecuteSyncNexusOperation_RefusedBeforeDispatch(t *testing.T) {
 			},
 		},
 		{
+			name:         "input above the blob size limit",
+			enabled:      true,
+			targetActive: true,
+			mutate: func(req *workflowservice.ExecuteSyncNexusOperationRequest) {
+				limitFn := dynamicconfig.BlobSizeLimitError.Get(dynamicconfig.NewNoopCollection())
+				limit := limitFn(syncTestCallerNamespace)
+				req.Input = &commonpb.Payload{Data: make([]byte, limit+1)}
+			},
+			check: func(t *testing.T, err error) {
+				var invalid *serviceerror.InvalidArgument
+				require.ErrorAs(t, err, &invalid)
+				require.Contains(t, invalid.Error(), "input exceeds size limit")
+			},
+		},
+		{
 			name:         "missing service",
 			enabled:      true,
 			targetActive: true,
