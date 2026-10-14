@@ -2,17 +2,22 @@ package frontend
 
 import (
 	"context"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	tokenspb "go.temporal.io/server/api/token/v1"
+	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"go.temporal.io/server/nexusworkflowref"
 	"go.temporal.io/server/service/history/hsm/nexusoperations"
@@ -227,4 +232,101 @@ func TestCompleteChasmOperation_CanceledBareFailure(t *testing.T) {
 	require.NoError(t, h.completeChasmOperation(context.Background(), log.NewNoopLogger(), chasmCompletionToken(t), nil, req, nil))
 	require.NotNil(t, captured.GetFailure().GetCanceledFailureInfo(),
 		"bare canceled failures must carry CanceledFailureInfo")
+}
+
+// TestDeliverProgress_HistoryErrors checks how History's answer to a progress delivery maps to the
+// handler. Any 4xx turns progress off for the callback, so only a refusal that will not change on
+// a retry answers one; transient errors, such as NamespaceNotActive during a failover, stay 503.
+func TestDeliverProgress_HistoryErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantType nexus.HandlerErrorType
+	}{
+		{
+			name:     "namespace not active",
+			err:      serviceerror.NewNamespaceNotActive("ns", "active", "standby"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "unavailable",
+			err:      serviceerror.NewUnavailable("busy"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name: "resource exhausted",
+			err: serviceerror.NewResourceExhausted(
+				enumspb.RESOURCE_EXHAUSTED_CAUSE_RPS_LIMIT, "slow down"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "deadline exceeded",
+			err:      serviceerror.NewDeadlineExceeded("late"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "internal",
+			err:      serviceerror.NewInternal("boom"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "unimplemented during an upgrade",
+			err:      serviceerror.NewUnimplemented("unhandled Nexus operation outcome"),
+			wantType: nexus.HandlerErrorTypeUnavailable,
+		},
+		{
+			name:     "invalid argument",
+			err:      serviceerror.NewInvalidArgument("odd"),
+			wantType: nexus.HandlerErrorTypeBadRequest,
+		},
+		{
+			name:     "failed precondition",
+			err:      serviceerror.NewFailedPrecondition("no"),
+			wantType: nexus.HandlerErrorTypeBadRequest,
+		},
+		{
+			name:     "closed operation",
+			err:      serviceerror.NewNotFound("operation not found"),
+			wantType: nexus.HandlerErrorTypeNotFound,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			client := historyservicemock.NewMockHistoryServiceClient(ctrl)
+			client.EXPECT().
+				CompleteNexusOperationChasm(gomock.Any(), gomock.Any()).
+				Return(nil, tc.err)
+			enabled := dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true)
+			h := &nexusCompletionHandler{
+				HistoryClient: client,
+				Config: &Config{
+					EnableNexusOperationProgress: enabled,
+				},
+			}
+			ns := namespace.NewLocalNamespaceForTest(
+				&persistencespb.NamespaceInfo{Name: "ns"},
+				nil,
+				"active",
+			)
+			req := &nexusrpc.CompletionRequest{
+				State:          nexus.OperationStateRunning,
+				OperationToken: "operation-token",
+				Result: nexus.NewLazyValue(nil, &nexus.Reader{
+					ReadCloser: io.NopCloser(strings.NewReader(`{"position": "p", "counter": 1}`)),
+				}),
+			}
+			err := h.deliverProgress(
+				context.Background(),
+				log.NewNoopLogger(),
+				ns,
+				chasmCompletionToken(t),
+				req,
+			)
+			var handlerErr *nexus.HandlerError
+			require.ErrorAs(t, err, &handlerErr)
+			require.Equal(t, tc.wantType, handlerErr.Type)
+		})
+	}
 }

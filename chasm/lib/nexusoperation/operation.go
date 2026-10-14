@@ -298,6 +298,12 @@ func (o *Operation) HandleNexusCompletion(
 		return serviceerror.NewNotFound("operation not found")
 	}
 
+	// Progress never stands in for the start, and nothing folds it onto a Workflow Task yet, so it
+	// is accepted and dropped here.
+	if completion.GetProgress() != nil {
+		return nil
+	}
+
 	links := completion.GetLinks()
 
 	// For completion-before-start, apply the started transition first.

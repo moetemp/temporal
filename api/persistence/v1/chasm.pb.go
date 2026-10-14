@@ -13,6 +13,7 @@ import (
 
 	v1 "go.temporal.io/api/common/v1"
 	v12 "go.temporal.io/api/failure/v1"
+	v13 "go.temporal.io/api/nexus/v1"
 	v11 "go.temporal.io/api/sdk/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -745,6 +746,7 @@ type ChasmNexusCompletion struct {
 	//
 	//	*ChasmNexusCompletion_Success
 	//	*ChasmNexusCompletion_Failure
+	//	*ChasmNexusCompletion_Progress
 	Outcome isChasmNexusCompletion_Outcome `protobuf_oneof:"outcome"`
 	// Time when the operation was closed.
 	CloseTime *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
@@ -816,6 +818,15 @@ func (x *ChasmNexusCompletion) GetFailure() *v12.Failure {
 	return nil
 }
 
+func (x *ChasmNexusCompletion) GetProgress() *v13.NexusOperationProgress {
+	if x != nil {
+		if x, ok := x.Outcome.(*ChasmNexusCompletion_Progress); ok {
+			return x.Progress
+		}
+	}
+	return nil
+}
+
 func (x *ChasmNexusCompletion) GetCloseTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CloseTime
@@ -865,9 +876,16 @@ type ChasmNexusCompletion_Failure struct {
 	Failure *v12.Failure `protobuf:"bytes,2,opt,name=failure,proto3,oneof"`
 }
 
+type ChasmNexusCompletion_Progress struct {
+	// Non-terminal progress for a running operation. The operation stays open.
+	Progress *v13.NexusOperationProgress `protobuf:"bytes,8,opt,name=progress,proto3,oneof"`
+}
+
 func (*ChasmNexusCompletion_Success) isChasmNexusCompletion_Outcome() {}
 
 func (*ChasmNexusCompletion_Failure) isChasmNexusCompletion_Outcome() {}
+
+func (*ChasmNexusCompletion_Progress) isChasmNexusCompletion_Outcome() {}
 
 type ChasmComponentAttributes_Task struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1026,7 +1044,7 @@ var File_temporal_server_api_persistence_v1_chasm_proto protoreflect.FileDescrip
 
 const file_temporal_server_api_persistence_v1_chasm_proto_rawDesc = "" +
 	"\n" +
-	".temporal/server/api/persistence/v1/chasm.proto\x12\"temporal.server.api.persistence.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a'temporal/api/sdk/v1/user_metadata.proto\x1a,temporal/server/api/persistence/v1/hsm.proto\"\x94\x01\n" +
+	".temporal/server/api/persistence/v1/chasm.proto\x12\"temporal.server.api.persistence.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a#temporal/api/nexus/v1/message.proto\x1a'temporal/api/sdk/v1/user_metadata.proto\x1a,temporal/server/api/persistence/v1/hsm.proto\"\x94\x01\n" +
 	"\tChasmNode\x12Q\n" +
 	"\bmetadata\x18\x01 \x01(\v25.temporal.server.api.persistence.v1.ChasmNodeMetadataR\bmetadata\x124\n" +
 	"\x04data\x18\x02 \x01(\v2 .temporal.api.common.v1.DataBlobR\x04data\"\xd9\x05\n" +
@@ -1090,10 +1108,11 @@ const file_temporal_server_api_persistence_v1_chasm_proto_rawDesc = "" +
 	"\farchetype_id\x18\x04 \x01(\rR\varchetypeId\x12}\n" +
 	"\x1eexecution_versioned_transition\x18\x05 \x01(\v27.temporal.server.api.persistence.v1.VersionedTransitionR\x1cexecutionVersionedTransition\x12%\n" +
 	"\x0ecomponent_path\x18\x06 \x03(\tR\rcomponentPath\x12\x8c\x01\n" +
-	"&component_initial_versioned_transition\x18\a \x01(\v27.temporal.server.api.persistence.v1.VersionedTransitionR#componentInitialVersionedTransition\"\x8e\x03\n" +
+	"&component_initial_versioned_transition\x18\a \x01(\v27.temporal.server.api.persistence.v1.VersionedTransitionR#componentInitialVersionedTransition\"\xdb\x03\n" +
 	"\x14ChasmNexusCompletion\x12;\n" +
 	"\asuccess\x18\x01 \x01(\v2\x1f.temporal.api.common.v1.PayloadH\x00R\asuccess\x12<\n" +
-	"\afailure\x18\x02 \x01(\v2 .temporal.api.failure.v1.FailureH\x00R\afailure\x129\n" +
+	"\afailure\x18\x02 \x01(\v2 .temporal.api.failure.v1.FailureH\x00R\afailure\x12K\n" +
+	"\bprogress\x18\b \x01(\v2-.temporal.api.nexus.v1.NexusOperationProgressH\x00R\bprogress\x129\n" +
 	"\n" +
 	"close_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcloseTime\x12\x1d\n" +
 	"\n" +
@@ -1131,15 +1150,16 @@ var file_temporal_server_api_persistence_v1_chasm_proto_goTypes = []any{
 	(*ChasmNexusCompletion)(nil),                     // 10: temporal.server.api.persistence.v1.ChasmNexusCompletion
 	(*ChasmComponentAttributes_Task)(nil),            // 11: temporal.server.api.persistence.v1.ChasmComponentAttributes.Task
 	(*ChasmComponentAttributes_RequestMetadata)(nil), // 12: temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestMetadata
-	nil,                           // 13: temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestsEntry
-	nil,                           // 14: temporal.server.api.persistence.v1.ChasmLocalState.NodesEntry
-	(*v1.DataBlob)(nil),           // 15: temporal.api.common.v1.DataBlob
-	(*VersionedTransition)(nil),   // 16: temporal.server.api.persistence.v1.VersionedTransition
-	(*v11.UserMetadata)(nil),      // 17: temporal.api.sdk.v1.UserMetadata
-	(*v1.Payload)(nil),            // 18: temporal.api.common.v1.Payload
-	(*v12.Failure)(nil),           // 19: temporal.api.failure.v1.Failure
-	(*timestamppb.Timestamp)(nil), // 20: google.protobuf.Timestamp
-	(*v1.Link)(nil),               // 21: temporal.api.common.v1.Link
+	nil,                                // 13: temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestsEntry
+	nil,                                // 14: temporal.server.api.persistence.v1.ChasmLocalState.NodesEntry
+	(*v1.DataBlob)(nil),                // 15: temporal.api.common.v1.DataBlob
+	(*VersionedTransition)(nil),        // 16: temporal.server.api.persistence.v1.VersionedTransition
+	(*v11.UserMetadata)(nil),           // 17: temporal.api.sdk.v1.UserMetadata
+	(*v1.Payload)(nil),                 // 18: temporal.api.common.v1.Payload
+	(*v12.Failure)(nil),                // 19: temporal.api.failure.v1.Failure
+	(*v13.NexusOperationProgress)(nil), // 20: temporal.api.nexus.v1.NexusOperationProgress
+	(*timestamppb.Timestamp)(nil),      // 21: google.protobuf.Timestamp
+	(*v1.Link)(nil),                    // 22: temporal.api.common.v1.Link
 }
 var file_temporal_server_api_persistence_v1_chasm_proto_depIdxs = []int32{
 	1,  // 0: temporal.server.api.persistence.v1.ChasmNode.metadata:type_name -> temporal.server.api.persistence.v1.ChasmNodeMetadata
@@ -1163,20 +1183,21 @@ var file_temporal_server_api_persistence_v1_chasm_proto_depIdxs = []int32{
 	16, // 18: temporal.server.api.persistence.v1.ChasmComponentRef.component_initial_versioned_transition:type_name -> temporal.server.api.persistence.v1.VersionedTransition
 	18, // 19: temporal.server.api.persistence.v1.ChasmNexusCompletion.success:type_name -> temporal.api.common.v1.Payload
 	19, // 20: temporal.server.api.persistence.v1.ChasmNexusCompletion.failure:type_name -> temporal.api.failure.v1.Failure
-	20, // 21: temporal.server.api.persistence.v1.ChasmNexusCompletion.close_time:type_name -> google.protobuf.Timestamp
-	21, // 22: temporal.server.api.persistence.v1.ChasmNexusCompletion.links:type_name -> temporal.api.common.v1.Link
-	20, // 23: temporal.server.api.persistence.v1.ChasmNexusCompletion.start_time:type_name -> google.protobuf.Timestamp
-	20, // 24: temporal.server.api.persistence.v1.ChasmComponentAttributes.Task.scheduled_time:type_name -> google.protobuf.Timestamp
-	15, // 25: temporal.server.api.persistence.v1.ChasmComponentAttributes.Task.data:type_name -> temporal.api.common.v1.DataBlob
-	16, // 26: temporal.server.api.persistence.v1.ChasmComponentAttributes.Task.versioned_transition:type_name -> temporal.server.api.persistence.v1.VersionedTransition
-	21, // 27: temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestMetadata.links:type_name -> temporal.api.common.v1.Link
-	12, // 28: temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestsEntry.value:type_name -> temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestMetadata
-	3,  // 29: temporal.server.api.persistence.v1.ChasmLocalState.NodesEntry.value:type_name -> temporal.server.api.persistence.v1.ChasmNodeLocalState
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	20, // 21: temporal.server.api.persistence.v1.ChasmNexusCompletion.progress:type_name -> temporal.api.nexus.v1.NexusOperationProgress
+	21, // 22: temporal.server.api.persistence.v1.ChasmNexusCompletion.close_time:type_name -> google.protobuf.Timestamp
+	22, // 23: temporal.server.api.persistence.v1.ChasmNexusCompletion.links:type_name -> temporal.api.common.v1.Link
+	21, // 24: temporal.server.api.persistence.v1.ChasmNexusCompletion.start_time:type_name -> google.protobuf.Timestamp
+	21, // 25: temporal.server.api.persistence.v1.ChasmComponentAttributes.Task.scheduled_time:type_name -> google.protobuf.Timestamp
+	15, // 26: temporal.server.api.persistence.v1.ChasmComponentAttributes.Task.data:type_name -> temporal.api.common.v1.DataBlob
+	16, // 27: temporal.server.api.persistence.v1.ChasmComponentAttributes.Task.versioned_transition:type_name -> temporal.server.api.persistence.v1.VersionedTransition
+	22, // 28: temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestMetadata.links:type_name -> temporal.api.common.v1.Link
+	12, // 29: temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestsEntry.value:type_name -> temporal.server.api.persistence.v1.ChasmComponentAttributes.RequestMetadata
+	3,  // 30: temporal.server.api.persistence.v1.ChasmLocalState.NodesEntry.value:type_name -> temporal.server.api.persistence.v1.ChasmNodeLocalState
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_api_persistence_v1_chasm_proto_init() }
@@ -1194,6 +1215,7 @@ func file_temporal_server_api_persistence_v1_chasm_proto_init() {
 	file_temporal_server_api_persistence_v1_chasm_proto_msgTypes[10].OneofWrappers = []any{
 		(*ChasmNexusCompletion_Success)(nil),
 		(*ChasmNexusCompletion_Failure)(nil),
+		(*ChasmNexusCompletion_Progress)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
