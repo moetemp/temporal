@@ -863,6 +863,20 @@ func (c *metricClient) NotifyStream(
 	return c.client.NotifyStream(ctx, request, opts...)
 }
 
+func (c *metricClient) NotifyStreams(
+	ctx context.Context,
+	request *workflowservice.NotifyStreamsRequest,
+	opts ...grpc.CallOption,
+) (_ *workflowservice.NotifyStreamsResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "FrontendClientNotifyStreams")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.NotifyStreams(ctx, request, opts...)
+}
+
 func (c *metricClient) PatchSchedule(
 	ctx context.Context,
 	request *workflowservice.PatchScheduleRequest,
