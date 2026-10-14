@@ -22,6 +22,7 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/api/serviceerror"
+	streampb "go.temporal.io/api/stream/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	updatepb "go.temporal.io/api/update/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
@@ -2317,6 +2318,104 @@ func (s *mutableStateSuite) TestTransientWorkflowTaskSchedule_CurrentVersionChan
 
 	s.Equal(int32(1), s.mutableState.GetExecutionInfo().WorkflowTaskAttempt)
 	s.Equal(0, s.mutableState.hBuilder.NumBufferedEvents())
+}
+
+// TestStreamWakesAcrossFailoverConversion checks that a transient Workflow Task a failover converts
+// doesn't carry stream wakes, and that the wakes wait for a later task instead of being dropped.
+func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
+	version := int64(2000)
+	// prepare leaves a failed first task, so the next task is a transient retry.
+	prepare := func() {
+		workflowID := "some random workflow ID"
+		runID := uuid.NewString()
+		s.mutableState = TestGlobalMutableState(
+			s.mockShard, s.mockEventsCache, s.logger, version, workflowID, runID)
+		_, _ = s.prepareTransientWorkflowTaskCompletionFirstBatchApplied(version, workflowID, runID)
+		s.NoError(s.mutableState.ApplyWorkflowTaskFailedEvent())
+		versionHistory, err := versionhistory.GetCurrentVersionHistory(
+			s.mutableState.GetExecutionInfo().GetVersionHistories())
+		s.NoError(err)
+		s.NoError(
+			versionhistory.AddOrUpdateVersionHistoryItem(
+				versionHistory,
+				&historyspb.VersionHistoryItem{
+					EventId: s.mutableState.GetNextEventID() - 1,
+					Version: version,
+				},
+			),
+		)
+
+		registry := chasm.NewRegistry(s.logger)
+		s.NoError(registry.Register(&chasm.CoreLibrary{}))
+		s.NoError(registry.Register(chasmworkflow.NewLibrary(chasmworkflow.NewRegistry())))
+		tree := chasm.NewEmptyTree(
+			registry,
+			s.mutableState,
+			chasm.DefaultPathEncoder,
+			s.logger,
+			metrics.NoopMetricsHandler,
+		)
+		s.mutableState.chasmTree = tree
+		ctx := chasm.NewMutableContext(context.Background(), tree)
+		wf := chasmworkflow.NewWorkflow(ctx, chasm.NewMSPointer(s.mutableState))
+		s.NoError(tree.SetRootComponent(wf))
+		s.NoError(wf.RecordStreamWake(
+			ctx,
+			&streampb.StreamWake{SubscriptionId: "reader", Counter: 1},
+			32,
+		))
+		s.NotEmpty(s.mutableState.pendingCarriers())
+	}
+	scheduledWakes := func() []*streampb.StreamWake {
+		mutation, err := s.mutableState.hBuilder.Finish(true)
+		s.NoError(err)
+		var carried []*streampb.StreamWake
+		for _, batch := range mutation.DBEventsBatches {
+			for _, event := range batch {
+				attrs := event.GetWorkflowTaskScheduledEventAttributes()
+				carried = append(carried, attrs.GetStreamWakes()...)
+			}
+		}
+		return carried
+	}
+
+	s.Run("ScheduledByAWakeAfterTheVersionChanged", func() {
+		prepare()
+		s.NoError(s.mutableState.UpdateCurrentVersion(version+1, true))
+		s.NoError(s.mutableState.scheduleWorkflowTaskForCarriedState())
+		s.True(s.mutableState.HasPendingWorkflowTask())
+		s.Empty(scheduledWakes(), "the converted task doesn't carry the wake")
+		s.NotEmpty(s.mutableState.pendingCarriers(), "the wake waits for a later task")
+	})
+
+	s.Run("StartedAfterTheVersionChanged", func() {
+		prepare()
+		wt, err := s.mutableState.AddWorkflowTaskScheduledEventAsHeartbeat(
+			true, timestamp.TimeNowPtrUtc(), enumsspb.WORKFLOW_TASK_TYPE_NORMAL)
+		s.NoError(err)
+		s.NoError(s.mutableState.UpdateCurrentVersion(version+1, true))
+		f, err := tqid.NewTaskQueueFamily("", "tq")
+		s.NoError(err)
+		_, started, err := s.mutableState.AddWorkflowTaskStartedEvent(
+			wt.ScheduledEventID,
+			uuid.NewString(),
+			&taskqueuepb.TaskQueue{
+				Name: f.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).NormalPartition(5).RpcName(),
+			},
+			"random identity",
+			nil,
+			nil,
+			nil,
+			false,
+			nil,
+			0,
+		)
+		s.NoError(err)
+		s.NotNil(started)
+		s.Equal(int32(1), started.Attempt, "the transient task was converted")
+		s.Empty(scheduledWakes(), "the converted task doesn't carry the wake")
+		s.NotEmpty(s.mutableState.pendingCarriers())
+	})
 }
 
 func (s *mutableStateSuite) TestTransientWorkflowTaskStart_CurrentVersionChanged() {

@@ -3125,6 +3125,18 @@ func (mr *MockMutableStateMockRecorder) HasStartedWorkflowTask() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasStartedWorkflowTask", reflect.TypeOf((*MockMutableState)(nil).HasStartedWorkflowTask))
 }
 
+// HoldCarriedState mocks base method.
+func (m *MockMutableState) HoldCarriedState() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "HoldCarriedState")
+}
+
+// HoldCarriedState indicates an expected call of HoldCarriedState.
+func (mr *MockMutableStateMockRecorder) HoldCarriedState() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HoldCarriedState", reflect.TypeOf((*MockMutableState)(nil).HoldCarriedState))
+}
+
 // InitTransitionHistory mocks base method.
 func (m *MockMutableState) InitTransitionHistory() {
 	m.ctrl.T.Helper()

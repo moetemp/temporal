@@ -290,6 +290,13 @@ func (wt *WorkflowTags) extractFromHistoryServiceServerMessage(message any) []ta
 		}
 	case *historyservice.RecordChildExecutionCompletedResponse:
 		return nil
+	case *historyservice.RecordStreamWakeRequest:
+		return []tag.Tag{
+			tag.WorkflowID(r.GetExecution().GetWorkflowId()),
+			tag.WorkflowRunID(r.GetExecution().GetRunId()),
+		}
+	case *historyservice.RecordStreamWakeResponse:
+		return nil
 	case *historyservice.RecordWorkflowTaskStartedRequest:
 		return []tag.Tag{
 			tag.WorkflowID(r.GetWorkflowExecution().GetWorkflowId()),

@@ -2676,6 +2676,20 @@ current in-memory batch and starts a new one. A single oversized event may cause
 exceed this size. A value of 0 disables the check. This value should stay below
 system.transactionSizeLimit, since each batch is persisted within a single transaction.`,
 	)
+	MaximumStreamWakeSources = NewNamespaceIntSetting(
+		"history.maximumStreamWakeSources",
+		32,
+		`The maximum number of stream readers in one Workflow run that take wakes. A wake for one
+more reader is refused with FailedPrecondition, which turns progress off for its callback, so
+the reader's attach fails and user code sees the limit.`,
+	)
+	StreamWakeMinInterval = NewNamespaceDurationSetting(
+		"streamwake.minInterval",
+		time.Second,
+		`The shortest time between a Workflow Task that carried stream wakes and the next task that
+stream wakes schedule on their own. Wakes that arrive sooner wait, and a task scheduled for any
+other reason takes them at once. It bounds the tasks a busy stream adds to a reader's History.`,
+	)
 	MaximumSignalsPerExecution = NewNamespaceIntSetting(
 		"history.maximumSignalsPerExecution",
 		10000,

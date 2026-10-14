@@ -963,6 +963,26 @@ func (mr *MockHistoryServiceClientMockRecorder) RecordChildExecutionCompleted(ct
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordChildExecutionCompleted", reflect.TypeOf((*MockHistoryServiceClient)(nil).RecordChildExecutionCompleted), varargs...)
 }
 
+// RecordStreamWake mocks base method.
+func (m *MockHistoryServiceClient) RecordStreamWake(ctx context.Context, in *historyservice.RecordStreamWakeRequest, opts ...grpc.CallOption) (*historyservice.RecordStreamWakeResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "RecordStreamWake", varargs...)
+	ret0, _ := ret[0].(*historyservice.RecordStreamWakeResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RecordStreamWake indicates an expected call of RecordStreamWake.
+func (mr *MockHistoryServiceClientMockRecorder) RecordStreamWake(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordStreamWake", reflect.TypeOf((*MockHistoryServiceClient)(nil).RecordStreamWake), varargs...)
+}
+
 // RecordWorkflowTaskStarted mocks base method.
 func (m *MockHistoryServiceClient) RecordWorkflowTaskStarted(ctx context.Context, in *historyservice.RecordWorkflowTaskStartedRequest, opts ...grpc.CallOption) (*historyservice.RecordWorkflowTaskStartedResponse, error) {
 	m.ctrl.T.Helper()
@@ -2453,6 +2473,21 @@ func (m *MockHistoryServiceServer) RecordChildExecutionCompleted(arg0 context.Co
 func (mr *MockHistoryServiceServerMockRecorder) RecordChildExecutionCompleted(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordChildExecutionCompleted", reflect.TypeOf((*MockHistoryServiceServer)(nil).RecordChildExecutionCompleted), arg0, arg1)
+}
+
+// RecordStreamWake mocks base method.
+func (m *MockHistoryServiceServer) RecordStreamWake(arg0 context.Context, arg1 *historyservice.RecordStreamWakeRequest) (*historyservice.RecordStreamWakeResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RecordStreamWake", arg0, arg1)
+	ret0, _ := ret[0].(*historyservice.RecordStreamWakeResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RecordStreamWake indicates an expected call of RecordStreamWake.
+func (mr *MockHistoryServiceServerMockRecorder) RecordStreamWake(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordStreamWake", reflect.TypeOf((*MockHistoryServiceServer)(nil).RecordStreamWake), arg0, arg1)
 }
 
 // RecordWorkflowTaskStarted mocks base method.

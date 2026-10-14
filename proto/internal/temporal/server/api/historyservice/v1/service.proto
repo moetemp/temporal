@@ -522,4 +522,10 @@ service HistoryService {
   rpc PollWorkflowExecutionTimeSkipping(PollWorkflowExecutionTimeSkippingRequest) returns (PollWorkflowExecutionTimeSkippingResponse) {
     option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_LONG_POLL;
   }
+
+  // RecordStreamWake records a wake for one stream reader of a Workflow. The wake rides the next
+  // Workflow Task scheduled event, so it adds no event of its own.
+  rpc RecordStreamWake(RecordStreamWakeRequest) returns (RecordStreamWakeResponse) {
+    option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;
+  }
 }

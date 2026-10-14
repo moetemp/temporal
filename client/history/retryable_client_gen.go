@@ -701,6 +701,21 @@ func (c *retryableClient) RecordChildExecutionCompleted(
 	return resp, err
 }
 
+func (c *retryableClient) RecordStreamWake(
+	ctx context.Context,
+	request *historyservice.RecordStreamWakeRequest,
+	opts ...grpc.CallOption,
+) (*historyservice.RecordStreamWakeResponse, error) {
+	var resp *historyservice.RecordStreamWakeResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.RecordStreamWake(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) RecordWorkflowTaskStarted(
 	ctx context.Context,
 	request *historyservice.RecordWorkflowTaskStartedRequest,

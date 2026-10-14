@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.workflow.proto.v1;
+
+option go_package = "go.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpb";
+
+// Lets stream wakes that waited out streamwake.minInterval schedule a Workflow Task.
+message StreamWakeReleaseTask {}
