@@ -911,6 +911,21 @@ func (c *retryableClient) NotifyStream(
 	return resp, err
 }
 
+func (c *retryableClient) NotifyStreams(
+	ctx context.Context,
+	request *workflowservice.NotifyStreamsRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.NotifyStreamsResponse, error) {
+	var resp *workflowservice.NotifyStreamsResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.NotifyStreams(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) PatchSchedule(
 	ctx context.Context,
 	request *workflowservice.PatchScheduleRequest,

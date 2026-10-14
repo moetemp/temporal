@@ -446,6 +446,12 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 	return nil
 }
 
+// takesNotification reports whether a notification that does not close the stream changes the
+// notifier: an open notifier that has not ended and holds a lower counter.
+func (n *StreamNotifier) takesNotification(counter int64) bool {
+	return !n.Closed && !n.Expired && counter > n.Counter
+}
+
 // startIdle arms the expiry of a notifier that a poll started, and changes nothing on one that
 // already saw activity.
 func (n *StreamNotifier) startIdle(ctx chasm.MutableContext, idleTimeout time.Duration) {
