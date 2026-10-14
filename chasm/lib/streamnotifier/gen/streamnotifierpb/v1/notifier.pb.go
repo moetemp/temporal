@@ -16,6 +16,7 @@ import (
 	v1 "go.temporal.io/api/stream/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -62,7 +63,14 @@ type NotifierState struct {
 	// Set when the stream closed with a failure instead of a result, such as when its owner
 	// Workflow failed. The callbacks complete as failed with it, or as canceled when it has
 	// canceled info.
-	CloseFailure  *v12.Failure `protobuf:"bytes,16,opt,name=close_failure,json=closeFailure,proto3" json:"close_failure,omitempty"`
+	CloseFailure *v12.Failure `protobuf:"bytes,16,opt,name=close_failure,json=closeFailure,proto3" json:"close_failure,omitempty"`
+	// When the armed recheck fires, or unset when none is armed. While Workflow readers wait, the
+	// notifier asks them to read again after a quiet period, so a notification that a producer
+	// never sent delays them by at most the period.
+	RecheckTime *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=recheck_time,json=recheckTime,proto3" json:"recheck_time,omitempty"`
+	// The quiet period before the armed recheck. It doubles after each recheck up to
+	// streamnotifier.recheckMax, and a notification sets it back to streamnotifier.recheckInitial.
+	RecheckGap    *durationpb.Duration `protobuf:"bytes,18,opt,name=recheck_gap,json=recheckGap,proto3" json:"recheck_gap,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -195,6 +203,20 @@ func (x *NotifierState) GetCloseFailure() *v12.Failure {
 	return nil
 }
 
+func (x *NotifierState) GetRecheckTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RecheckTime
+	}
+	return nil
+}
+
+func (x *NotifierState) GetRecheckGap() *durationpb.Duration {
+	if x != nil {
+		return x.RecheckGap
+	}
+	return nil
+}
+
 // What the handler's start answered a caller with.
 type CallerStart struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -252,7 +274,7 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto protor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDesc = "" +
 	"\n" +
-	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xad\b\n" +
+	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xa8\t\n" +
 	"\rNotifierState\x12F\n" +
 	"\n" +
 	"stream_ref\x18\x01 \x01(\v2'.temporal.api.stream.v1.StreamReferenceR\tstreamRef\x12\x18\n" +
@@ -270,7 +292,10 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawD
 	"\x10owner_check_time\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\x0eownerCheckTime\x12w\n" +
 	"\rcaller_starts\x18\x0e \x03(\v2R.temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntryR\fcallerStarts\x120\n" +
 	"\x14canceled_request_ids\x18\x0f \x03(\tR\x12canceledRequestIds\x12E\n" +
-	"\rclose_failure\x18\x10 \x01(\v2 .temporal.api.failure.v1.FailureR\fcloseFailure\x1a;\n" +
+	"\rclose_failure\x18\x10 \x01(\v2 .temporal.api.failure.v1.FailureR\fcloseFailure\x12=\n" +
+	"\frecheck_time\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\vrecheckTime\x12:\n" +
+	"\vrecheck_gap\x18\x12 \x01(\v2\x19.google.protobuf.DurationR\n" +
+	"recheckGap\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x7f\n" +
@@ -305,6 +330,7 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_goType
 	(*v11.Payload)(nil),           // 5: temporal.api.common.v1.Payload
 	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
 	(*v12.Failure)(nil),           // 7: temporal.api.failure.v1.Failure
+	(*durationpb.Duration)(nil),   // 8: google.protobuf.Duration
 }
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_depIdxs = []int32{
 	4,  // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.stream_ref:type_name -> temporal.api.stream.v1.StreamReference
@@ -315,13 +341,15 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_depIdx
 	6,  // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.owner_check_time:type_name -> google.protobuf.Timestamp
 	3,  // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.caller_starts:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry
 	7,  // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_failure:type_name -> temporal.api.failure.v1.Failure
-	6,  // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
-	1,  // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	6,  // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_time:type_name -> google.protobuf.Timestamp
+	8,  // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_gap:type_name -> google.protobuf.Duration
+	6,  // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
+	1,  // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_init() }

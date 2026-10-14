@@ -260,3 +260,41 @@ type ownerEnd struct {
 	// When the run closed, if History said.
 	closeTime *time.Time
 }
+
+type recheckTaskHandler struct {
+	chasm.PureTaskHandlerBase
+	config *Config
+}
+
+type recheckTaskHandlerOptions struct {
+	fx.In
+
+	Config *Config
+}
+
+func newRecheckTaskHandler(opts recheckTaskHandlerOptions) *recheckTaskHandler {
+	return &recheckTaskHandler{config: opts.Config}
+}
+
+// Validate keeps only the latest armed recheck of an open notifier.
+func (h *recheckTaskHandler) Validate(
+	_ chasm.Context,
+	n *StreamNotifier,
+	_ chasm.TaskInvocation,
+	task *streamnotifierpb.RecheckTask,
+) (bool, error) {
+	return !n.Closed && !n.Expired &&
+		n.GetRecheckTime().AsTime().Equal(task.GetScheduledTime().AsTime()), nil
+}
+
+// Execute asks the waiting Workflow readers to read again, since no notification came for the
+// quiet period. A producer that appended and stopped before it notified leaves the record in the
+// store, and the read finds it.
+func (h *recheckTaskHandler) Execute(
+	ctx chasm.MutableContext,
+	n *StreamNotifier,
+	_ chasm.TaskAttributes,
+	_ *streamnotifierpb.RecheckTask,
+) error {
+	return n.recheck(ctx, h.config.RecheckMax(ctx.NamespaceEntry().Name().String()))
+}

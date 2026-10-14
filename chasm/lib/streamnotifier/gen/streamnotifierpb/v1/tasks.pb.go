@@ -117,6 +117,52 @@ func (x *OwnerCheckTask) GetScheduledTime() *timestamppb.Timestamp {
 	return nil
 }
 
+// Fires after a quiet period while Workflow readers wait, to ask them to read the stream again.
+type RecheckTask struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The recheck time the task was scheduled for. A newer arming makes it stale.
+	ScheduledTime *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=scheduled_time,json=scheduledTime,proto3" json:"scheduled_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecheckTask) Reset() {
+	*x = RecheckTask{}
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecheckTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecheckTask) ProtoMessage() {}
+
+func (x *RecheckTask) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecheckTask.ProtoReflect.Descriptor instead.
+func (*RecheckTask) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RecheckTask) GetScheduledTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ScheduledTime
+	}
+	return nil
+}
+
 var File_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDesc = "" +
@@ -126,6 +172,8 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDesc
 	"ExpiryTask\x12H\n" +
 	"\x12last_activity_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x10lastActivityTime\"S\n" +
 	"\x0eOwnerCheckTask\x12A\n" +
+	"\x0escheduled_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\rscheduledTime\"P\n" +
+	"\vRecheckTask\x12A\n" +
 	"\x0escheduled_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\rscheduledTimeBVZTgo.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpbb\x06proto3"
 
 var (
@@ -140,20 +188,22 @@ func file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDescG
 	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDescData
 }
 
-var file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_goTypes = []any{
 	(*ExpiryTask)(nil),            // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.ExpiryTask
 	(*OwnerCheckTask)(nil),        // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.OwnerCheckTask
-	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
+	(*RecheckTask)(nil),           // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.RecheckTask
+	(*timestamppb.Timestamp)(nil), // 3: google.protobuf.Timestamp
 }
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_depIdxs = []int32{
-	2, // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.ExpiryTask.last_activity_time:type_name -> google.protobuf.Timestamp
-	2, // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.OwnerCheckTask.scheduled_time:type_name -> google.protobuf.Timestamp
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	3, // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.ExpiryTask.last_activity_time:type_name -> google.protobuf.Timestamp
+	3, // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.OwnerCheckTask.scheduled_time:type_name -> google.protobuf.Timestamp
+	3, // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.RecheckTask.scheduled_time:type_name -> google.protobuf.Timestamp
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_init() }
@@ -167,7 +217,7 @@ func file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDesc), len(file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

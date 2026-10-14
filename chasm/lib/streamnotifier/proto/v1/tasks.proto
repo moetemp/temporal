@@ -19,3 +19,9 @@ message OwnerCheckTask {
   // The owner check time the task was scheduled for. A newer arming makes it stale.
   google.protobuf.Timestamp scheduled_time = 1;
 }
+
+// Fires after a quiet period while Workflow readers wait, to ask them to read the stream again.
+message RecheckTask {
+  // The recheck time the task was scheduled for. A newer arming makes it stale.
+  google.protobuf.Timestamp scheduled_time = 1;
+}

@@ -1486,6 +1486,9 @@ message RecordStreamWakeRequest {
   // The run whose reader the wake is for. A closed run answers NotFound.
   temporal.api.common.v1.WorkflowExecution execution = 2;
   temporal.api.stream.v1.StreamWake wake = 3;
+  // Counts the wake's reader toward history.maximumStreamWakeSources and records no wake. A
+  // reader's attach asks for this, so an attach past the limit fails.
+  bool reserve_only = 4;
 }
 
 message RecordStreamWakeResponse {}

@@ -75,6 +75,22 @@ func (h *handler) AttachStreamCallback(
 	if err := h.checkFirstRun(ctx, req.GetNamespaceId(), ns, fe.GetStreamRef()); err != nil {
 		return nil, err
 	}
+	if target := fe.GetWorkflowTarget(); target != nil {
+		// The reader counts toward its run's readers now, so an attach past the limit fails, and a
+		// run that already closed refuses it.
+		_, err := h.historyClient.RecordStreamWake(ctx, &historyservice.RecordStreamWakeRequest{
+			NamespaceId: req.GetNamespaceId(),
+			Execution: &commonpb.WorkflowExecution{
+				WorkflowId: target.GetWorkflowId(),
+				RunId:      target.GetRunId(),
+			},
+			Wake:        &streampb.StreamWake{SubscriptionId: target.GetSubscriptionId()},
+			ReserveOnly: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 	err := startOrUpdate(
 		ctx,
 		req.GetNamespaceId(),
@@ -88,6 +104,8 @@ func (h *handler) AttachStreamCallback(
 			return struct{}{}, n.attach(mctx, attachInput{
 				requestID:          r.GetRequestId(),
 				callback:           r.GetCallback(),
+				workflowTarget:     r.GetWorkflowTarget(),
+				recheckInitial:     h.config.RecheckInitial(ns),
 				operationToken:     r.GetOperationToken(),
 				startTime:          r.GetStartTime(),
 				maxCallbacks:       h.config.MaxCallbacks(ns),
@@ -129,6 +147,7 @@ func (h *handler) NotifyStream(
 			retention:    h.config.ClosedRetention(ns),
 
 			idleTimeoutNoCallbacks: h.config.IdleTimeoutNoCallbacks(ns),
+			recheckInitial:         h.config.RecheckInitial(ns),
 		})
 	}
 	// A notification starts a notifier when the stream has none. A reader that armed the store

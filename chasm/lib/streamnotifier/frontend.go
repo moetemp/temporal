@@ -20,6 +20,10 @@ import (
 // travels on the read path.
 const maxMetadataBytes = 2 * 1024
 
+// maxSubscriptionIDBytes bounds a Workflow reader's subscription ID, which every wake copies into
+// the reader's History.
+const maxSubscriptionIDBytes = 256
+
 // maxPositionBytes bounds a notification's position, which every callback copies into its
 // caller's history.
 const maxPositionBytes = 1024
@@ -138,16 +142,27 @@ func (h *frontendHandler) AttachStreamCallback(
 	if len(req.GetRequestId()) > h.config.MaxIDLength() {
 		return nil, serviceerror.NewInvalidArgument("request_id is too long")
 	}
-	if req.GetCallback().GetUrl() == "" {
-		return nil, serviceerror.NewInvalidArgument("callback.url is required")
+	if (req.GetCallback() == nil) == (req.GetWorkflowTarget() == nil) {
+		return nil, serviceerror.NewInvalidArgument(
+			"exactly one of callback and workflow_target is required",
+		)
 	}
-	// The validator checks the URL against the namespace's allowed addresses and normalizes the
-	// headers in place.
-	cb := &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: req.GetCallback()}}
-	opts := callbacks.ValidatorOptions{EnabledKinds: []callbacks.Kind{callbacks.KindNexus}}
-	err = h.callbackValidator.Validate(ctx, req.GetNamespace(), []*commonpb.Callback{cb}, opts)
-	if err != nil {
-		return nil, err
+	if target := req.GetWorkflowTarget(); target != nil {
+		if err := h.validateWorkflowTarget(target); err != nil {
+			return nil, err
+		}
+	} else {
+		if req.GetCallback().GetUrl() == "" {
+			return nil, serviceerror.NewInvalidArgument("callback.url is required")
+		}
+		// The validator checks the URL against the namespace's allowed addresses and normalizes
+		// the headers in place.
+		cb := &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: req.GetCallback()}}
+		opts := callbacks.ValidatorOptions{EnabledKinds: []callbacks.Kind{callbacks.KindNexus}}
+		err = h.callbackValidator.Validate(ctx, req.GetNamespace(), []*commonpb.Callback{cb}, opts)
+		if err != nil {
+			return nil, err
+		}
 	}
 	resp, err := h.client.AttachStreamCallback(ctx, &streamnotifierpb.AttachStreamCallbackRequest{
 		NamespaceId:     namespaceID,
@@ -155,6 +170,31 @@ func (h *frontendHandler) AttachStreamCallback(
 		FrontendRequest: req,
 	})
 	return resp.GetFrontendResponse(), err
+}
+
+// validateWorkflowTarget checks a Workflow reader's target. The Workflow is in the request's
+// namespace, so a target names no namespace.
+func (h *frontendHandler) validateWorkflowTarget(target *streampb.WorkflowWakeTarget) error {
+	if target.GetWorkflowId() == "" || target.GetRunId() == "" {
+		return serviceerror.NewInvalidArgument(
+			"workflow_target must name a workflow ID and a run ID",
+		)
+	}
+	if len(target.GetWorkflowId()) > h.config.MaxIDLength() ||
+		len(target.GetRunId()) > h.config.MaxIDLength() {
+		return serviceerror.NewInvalidArgument("workflow_target names an ID that is too long")
+	}
+	if target.GetSubscriptionId() == "" {
+		return serviceerror.NewInvalidArgument("workflow_target.subscription_id is required")
+	}
+	if len(target.GetSubscriptionId()) > maxSubscriptionIDBytes {
+		return serviceerror.NewInvalidArgumentf(
+			"workflow_target.subscription_id is %d bytes, more than the %d allowed",
+			len(target.GetSubscriptionId()),
+			maxSubscriptionIDBytes,
+		)
+	}
+	return nil
 }
 
 func (h *frontendHandler) DetachStreamCallback(

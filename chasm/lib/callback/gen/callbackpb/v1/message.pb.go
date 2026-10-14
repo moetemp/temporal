@@ -134,7 +134,7 @@ type CallbackState struct {
 	// Progress of the source that no delivery carried yet: the latest one, so progress reported while
 	// a delivery is in flight folds into the next delivery.
 	PendingProgress *Progress `protobuf:"bytes,10,opt,name=pending_progress,json=pendingProgress,proto3" json:"pending_progress,omitempty"`
-	// The counter of the progress delivery in flight, or zero when none is. At most one is in flight.
+	// The number of the progress delivery in flight, or zero when none is. At most one is in flight.
 	ProgressInFlight int64 `protobuf:"varint,11,opt,name=progress_in_flight,json=progressInFlight,proto3" json:"progress_in_flight,omitempty"`
 	// The highest counter a progress delivery carried.
 	DeliveredProgressCounter int64 `protobuf:"varint,12,opt,name=delivered_progress_counter,json=deliveredProgressCounter,proto3" json:"delivered_progress_counter,omitempty"`
@@ -146,8 +146,12 @@ type CallbackState struct {
 	// progress or completion and its parent may drop it. Dropping it drops its pending completion
 	// too, which a closed receiver wouldn't take.
 	ReceiverClosed bool `protobuf:"varint,15,opt,name=receiver_closed,json=receiverClosed,proto3" json:"receiver_closed,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The number of progress deliveries started so far. The next one is numbered one higher.
+	ProgressDeliveries int64 `protobuf:"varint,17,opt,name=progress_deliveries,json=progressDeliveries,proto3" json:"progress_deliveries,omitempty"`
+	// The counter that the progress delivery in flight carries.
+	ProgressInFlightCounter int64 `protobuf:"varint,18,opt,name=progress_in_flight_counter,json=progressInFlightCounter,proto3" json:"progress_in_flight_counter,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *CallbackState) Reset() {
@@ -278,6 +282,20 @@ func (x *CallbackState) GetReceiverClosed() bool {
 	return false
 }
 
+func (x *CallbackState) GetProgressDeliveries() int64 {
+	if x != nil {
+		return x.ProgressDeliveries
+	}
+	return 0
+}
+
+func (x *CallbackState) GetProgressInFlightCounter() int64 {
+	if x != nil {
+		return x.ProgressInFlightCounter
+	}
+	return 0
+}
+
 // Non-terminal progress of a callback's source, delivered while the source runs. It says that the
 // source moved, not what it holds.
 type Progress struct {
@@ -288,7 +306,10 @@ type Progress struct {
 	// kept. Positive.
 	Counter int64 `protobuf:"varint,2,opt,name=counter,proto3" json:"counter,omitempty"`
 	// Small details for the receiver.
-	Metadata      map[string]string `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Metadata map[string]string `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Asks the receiver to read again even with no new counter, so it also finds what a lost
+	// notification would have told it.
+	Recheck       bool `protobuf:"varint,4,opt,name=recheck,proto3" json:"recheck,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -344,12 +365,20 @@ func (x *Progress) GetMetadata() map[string]string {
 	return nil
 }
 
+func (x *Progress) GetRecheck() bool {
+	if x != nil {
+		return x.Recheck
+	}
+	return false
+}
+
 type Callback struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Variant:
 	//
 	//	*Callback_Nexus_
 	//	*Callback_NexusHandler_
+	//	*Callback_StreamWake_
 	Variant       isCallback_Variant `protobuf_oneof:"variant"`
 	Links         []*v11.Link        `protobuf:"bytes,100,rep,name=links,proto3" json:"links,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -411,6 +440,15 @@ func (x *Callback) GetNexusHandler() *Callback_NexusHandler {
 	return nil
 }
 
+func (x *Callback) GetStreamWake() *Callback_StreamWake {
+	if x != nil {
+		if x, ok := x.Variant.(*Callback_StreamWake_); ok {
+			return x.StreamWake
+		}
+	}
+	return nil
+}
+
 func (x *Callback) GetLinks() []*v11.Link {
 	if x != nil {
 		return x.Links
@@ -430,9 +468,15 @@ type Callback_NexusHandler_ struct {
 	NexusHandler *Callback_NexusHandler `protobuf:"bytes,4,opt,name=nexus_handler,json=nexusHandler,proto3,oneof"`
 }
 
+type Callback_StreamWake_ struct {
+	StreamWake *Callback_StreamWake `protobuf:"bytes,5,opt,name=stream_wake,json=streamWake,proto3,oneof"`
+}
+
 func (*Callback_Nexus_) isCallback_Variant() {}
 
 func (*Callback_NexusHandler_) isCallback_Variant() {}
+
+func (*Callback_StreamWake_) isCallback_Variant() {}
 
 // Trigger for when the workflow is closed.
 type CallbackState_WorkflowClosed struct {
@@ -600,11 +644,73 @@ func (x *Callback_NexusHandler) GetSourceContext() *v11.Payload {
 	return nil
 }
 
+// Wakes one stream reader of a Workflow run in the callback's namespace. The progress and the
+// completion go to History as stream wakes, which ride the run's next Workflow Task.
+type Callback_StreamWake struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId     string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	RunId          string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	SubscriptionId string                 `protobuf:"bytes,3,opt,name=subscription_id,json=subscriptionId,proto3" json:"subscription_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *Callback_StreamWake) Reset() {
+	*x = Callback_StreamWake{}
+	mi := &file_temporal_server_chasm_lib_callback_proto_v1_message_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Callback_StreamWake) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Callback_StreamWake) ProtoMessage() {}
+
+func (x *Callback_StreamWake) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_callback_proto_v1_message_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Callback_StreamWake.ProtoReflect.Descriptor instead.
+func (*Callback_StreamWake) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDescGZIP(), []int{2, 2}
+}
+
+func (x *Callback_StreamWake) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *Callback_StreamWake) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *Callback_StreamWake) GetSubscriptionId() string {
+	if x != nil {
+		return x.SubscriptionId
+	}
+	return ""
+}
+
 var File_temporal_server_chasm_lib_callback_proto_v1_message_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\"\xa3\a\n" +
+	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\"\x91\b\n" +
 	"\rCallbackState\x12R\n" +
 	"\bcallback\x18\x01 \x01(\v26.temporal.server.chasm.lib.callbacks.proto.v1.CallbackR\bcallback\x12G\n" +
 	"\x11registration_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x10registrationTime\x12T\n" +
@@ -621,18 +727,23 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\x1adelivered_progress_counter\x18\f \x01(\x03R\x18deliveredProgressCounter\x12+\n" +
 	"\x11progress_disabled\x18\r \x01(\bR\x10progressDisabled\x12)\n" +
 	"\x10progress_attempt\x18\x0e \x01(\x05R\x0fprogressAttempt\x12'\n" +
-	"\x0freceiver_closed\x18\x0f \x01(\bR\x0ereceiverClosed\x1a\x10\n" +
-	"\x0eWorkflowClosed\"\xdf\x01\n" +
+	"\x0freceiver_closed\x18\x0f \x01(\bR\x0ereceiverClosed\x12/\n" +
+	"\x13progress_deliveries\x18\x11 \x01(\x03R\x12progressDeliveries\x12;\n" +
+	"\x1aprogress_in_flight_counter\x18\x12 \x01(\x03R\x17progressInFlightCounter\x1a\x10\n" +
+	"\x0eWorkflowClosed\"\xf9\x01\n" +
 	"\bProgress\x12\x1a\n" +
 	"\bposition\x18\x01 \x01(\tR\bposition\x12\x18\n" +
 	"\acounter\x18\x02 \x01(\x03R\acounter\x12`\n" +
-	"\bmetadata\x18\x03 \x03(\v2D.temporal.server.chasm.lib.callbacks.proto.v1.Progress.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\x03 \x03(\v2D.temporal.server.chasm.lib.callbacks.proto.v1.Progress.MetadataEntryR\bmetadata\x12\x18\n" +
+	"\arecheck\x18\x04 \x01(\bR\arecheck\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x83\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd8\x06\n" +
 	"\bCallback\x12T\n" +
 	"\x05nexus\x18\x02 \x01(\v2<.temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusH\x00R\x05nexus\x12j\n" +
-	"\rnexus_handler\x18\x04 \x01(\v2C.temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandlerH\x00R\fnexusHandler\x122\n" +
+	"\rnexus_handler\x18\x04 \x01(\v2C.temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandlerH\x00R\fnexusHandler\x12d\n" +
+	"\vstream_wake\x18\x05 \x01(\v2A.temporal.server.chasm.lib.callbacks.proto.v1.Callback.StreamWakeH\x00R\n" +
+	"streamWake\x122\n" +
 	"\x05links\x18d \x03(\v2\x1c.temporal.api.common.v1.LinkR\x05links\x1a\xb6\x01\n" +
 	"\x05Nexus\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12`\n" +
@@ -644,7 +755,13 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\x0ftask_queue_name\x18\x01 \x01(\tR\rtaskQueueName\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12\x1c\n" +
 	"\toperation\x18\x03 \x01(\tR\toperation\x12F\n" +
-	"\x0esource_context\x18\x04 \x01(\v2\x1f.temporal.api.common.v1.PayloadR\rsourceContextB\t\n" +
+	"\x0esource_context\x18\x04 \x01(\v2\x1f.temporal.api.common.v1.PayloadR\rsourceContext\x1am\n" +
+	"\n" +
+	"StreamWake\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12'\n" +
+	"\x0fsubscription_id\x18\x03 \x01(\tR\x0esubscriptionIdB\t\n" +
 	"\avariantJ\x04\b\x01\x10\x02*\xc9\x01\n" +
 	"\x0eCallbackStatus\x12\x1f\n" +
 	"\x1bCALLBACK_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
@@ -667,7 +784,7 @@ func file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDescGZIP(
 }
 
 var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_goTypes = []any{
 	(CallbackStatus)(0),                  // 0: temporal.server.chasm.lib.callbacks.proto.v1.CallbackStatus
 	(*CallbackState)(nil),                // 1: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState
@@ -677,31 +794,33 @@ var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_goTypes = []a
 	nil,                                  // 5: temporal.server.chasm.lib.callbacks.proto.v1.Progress.MetadataEntry
 	(*Callback_Nexus)(nil),               // 6: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus
 	(*Callback_NexusHandler)(nil),        // 7: temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler
-	nil,                                  // 8: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntry
-	(*timestamppb.Timestamp)(nil),        // 9: google.protobuf.Timestamp
-	(*v1.Failure)(nil),                   // 10: temporal.api.failure.v1.Failure
-	(*v11.Link)(nil),                     // 11: temporal.api.common.v1.Link
-	(*v11.Payload)(nil),                  // 12: temporal.api.common.v1.Payload
+	(*Callback_StreamWake)(nil),          // 8: temporal.server.chasm.lib.callbacks.proto.v1.Callback.StreamWake
+	nil,                                  // 9: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntry
+	(*timestamppb.Timestamp)(nil),        // 10: google.protobuf.Timestamp
+	(*v1.Failure)(nil),                   // 11: temporal.api.failure.v1.Failure
+	(*v11.Link)(nil),                     // 12: temporal.api.common.v1.Link
+	(*v11.Payload)(nil),                  // 13: temporal.api.common.v1.Payload
 }
 var file_temporal_server_chasm_lib_callback_proto_v1_message_proto_depIdxs = []int32{
 	3,  // 0: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.callback:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback
-	9,  // 1: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.registration_time:type_name -> google.protobuf.Timestamp
+	10, // 1: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.registration_time:type_name -> google.protobuf.Timestamp
 	0,  // 2: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.status:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.CallbackStatus
-	9,  // 3: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.last_attempt_complete_time:type_name -> google.protobuf.Timestamp
-	10, // 4: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.last_attempt_failure:type_name -> temporal.api.failure.v1.Failure
-	9,  // 5: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.next_attempt_schedule_time:type_name -> google.protobuf.Timestamp
+	10, // 3: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.last_attempt_complete_time:type_name -> google.protobuf.Timestamp
+	11, // 4: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.last_attempt_failure:type_name -> temporal.api.failure.v1.Failure
+	10, // 5: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.next_attempt_schedule_time:type_name -> google.protobuf.Timestamp
 	2,  // 6: temporal.server.chasm.lib.callbacks.proto.v1.CallbackState.pending_progress:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Progress
 	5,  // 7: temporal.server.chasm.lib.callbacks.proto.v1.Progress.metadata:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Progress.MetadataEntry
 	6,  // 8: temporal.server.chasm.lib.callbacks.proto.v1.Callback.nexus:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus
 	7,  // 9: temporal.server.chasm.lib.callbacks.proto.v1.Callback.nexus_handler:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler
-	11, // 10: temporal.server.chasm.lib.callbacks.proto.v1.Callback.links:type_name -> temporal.api.common.v1.Link
-	8,  // 11: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.header:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntry
-	12, // 12: temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler.source_context:type_name -> temporal.api.common.v1.Payload
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	8,  // 10: temporal.server.chasm.lib.callbacks.proto.v1.Callback.stream_wake:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.StreamWake
+	12, // 11: temporal.server.chasm.lib.callbacks.proto.v1.Callback.links:type_name -> temporal.api.common.v1.Link
+	9,  // 12: temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.header:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntry
+	13, // 13: temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandler.source_context:type_name -> temporal.api.common.v1.Payload
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_callback_proto_v1_message_proto_init() }
@@ -712,6 +831,7 @@ func file_temporal_server_chasm_lib_callback_proto_v1_message_proto_init() {
 	file_temporal_server_chasm_lib_callback_proto_v1_message_proto_msgTypes[2].OneofWrappers = []any{
 		(*Callback_Nexus_)(nil),
 		(*Callback_NexusHandler_)(nil),
+		(*Callback_StreamWake_)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -719,7 +839,7 @@ func file_temporal_server_chasm_lib_callback_proto_v1_message_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc), len(file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

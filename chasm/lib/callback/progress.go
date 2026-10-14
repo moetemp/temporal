@@ -44,6 +44,8 @@ type progressDelivery func(
 // variant takes only the completion. Each variant that takes progress adds its case here.
 func variantProgressDelivery(cb *callbackspb.Callback) progressDelivery {
 	switch cb.GetVariant().(type) {
+	case *callbackspb.Callback_StreamWake_:
+		return deliverStreamWakeProgress
 	default:
 		return nil
 	}
@@ -54,8 +56,9 @@ var progressDeliveryFor = variantProgressDelivery
 
 // DeliverProgress hands the source's progress to the callback while the source runs. Progress is
 // dropped once the completion is scheduled, since the completion supersedes it and never waits for
-// it, after the receiver refused progress, and when the counter is not above one already seen. A
-// delivery in flight takes the newest pending progress when it finishes, so a burst folds into it.
+// it, after the receiver refused progress, and when the counter is not above one already seen,
+// unless it asks for a recheck. A delivery in flight takes the newest pending progress when it
+// finishes, so a burst folds into it.
 func (c *Callback) DeliverProgress(
 	ctx chasm.MutableContext,
 	progress *callbackspb.Progress,
@@ -66,15 +69,35 @@ func (c *Callback) DeliverProgress(
 	if progressDeliveryFor(c.GetCallback()) == nil {
 		return nil
 	}
-	seen := max(c.GetPendingProgress().GetCounter(), c.DeliveredProgressCounter, c.ProgressInFlight)
-	if progress.GetCounter() <= seen {
+	seen := max(
+		c.GetPendingProgress().GetCounter(),
+		c.DeliveredProgressCounter,
+		c.ProgressInFlightCounter,
+	)
+	if progress.GetCounter() <= seen && !progress.GetRecheck() {
 		return nil
 	}
-	c.PendingProgress = progress
+	c.PendingProgress = foldProgress(c.GetPendingProgress(), progress)
 	if c.ProgressInFlight == 0 {
 		return c.startProgressDelivery(ctx)
 	}
 	return nil
+}
+
+// foldProgress merges progress into the progress that waits. The higher counter wins with its
+// position and metadata, and a recheck stays set.
+func foldProgress(waiting, next *callbackspb.Progress) *callbackspb.Progress {
+	if waiting == nil {
+		return next
+	}
+	folded := common.CloneProto(waiting)
+	if next.GetCounter() >= folded.GetCounter() {
+		folded.Counter = next.GetCounter()
+		folded.Position = next.GetPosition()
+		folded.Metadata = next.GetMetadata()
+	}
+	folded.Recheck = folded.GetRecheck() || next.GetRecheck()
+	return folded
 }
 
 func (c *Callback) startProgressDelivery(ctx chasm.MutableContext) error {
@@ -82,10 +105,13 @@ func (c *Callback) startProgressDelivery(ctx chasm.MutableContext) error {
 	if err != nil {
 		return err
 	}
-	c.ProgressInFlight = c.GetPendingProgress().GetCounter()
+	// Deliveries are numbered, since a recheck may carry the counter of one already delivered.
+	c.ProgressDeliveries++
+	c.ProgressInFlight = c.ProgressDeliveries
+	c.ProgressInFlightCounter = c.GetPendingProgress().GetCounter()
 	c.ProgressAttempt = 0
 	ctx.AddTask(c, chasm.TaskAttributes{Destination: destination}, &callbackspb.ProgressTask{
-		Counter: c.ProgressInFlight,
+		Delivery: c.ProgressInFlight,
 	})
 	return nil
 }
@@ -96,6 +122,7 @@ func (c *Callback) startProgressDelivery(ctx chasm.MutableContext) error {
 func (c *Callback) stopProgress() {
 	c.PendingProgress = nil
 	c.ProgressInFlight = 0
+	c.ProgressInFlightCounter = 0
 	c.ProgressAttempt = 0
 }
 
@@ -114,8 +141,8 @@ func (c *Callback) loadProgressArgs(
 type saveProgressInput struct {
 	// inFlight names the delivery, as the task that made it saw it.
 	inFlight int64
-	// sent is the counter the delivery carried, the newest pending progress when it was made.
-	sent        int64
+	// sent is the progress the delivery carried, the newest pending progress when it was made.
+	sent        *callbackspb.Progress
 	result      progressResult
 	err         error
 	retryPolicy func(attempt int32, err error) time.Duration
@@ -131,8 +158,15 @@ func (c *Callback) saveProgressResult(
 	}
 	switch input.result {
 	case progressDelivered:
-		c.DeliveredProgressCounter = max(c.DeliveredProgressCounter, input.sent)
-		if c.GetPendingProgress().GetCounter() > c.DeliveredProgressCounter {
+		c.DeliveredProgressCounter = max(c.DeliveredProgressCounter, input.sent.GetCounter())
+		pending := c.GetPendingProgress()
+		if input.sent.GetRecheck() && pending.GetRecheck() {
+			// The recheck on the wire covers one that came while it was there.
+			pending = common.CloneProto(pending)
+			pending.Recheck = false
+			c.PendingProgress = pending
+		}
+		if pending.GetCounter() > c.DeliveredProgressCounter || pending.GetRecheck() {
 			return nil, c.startProgressDelivery(ctx)
 		}
 		c.stopProgress()
@@ -152,8 +186,8 @@ func (c *Callback) saveProgressResult(
 			c,
 			chasm.TaskAttributes{ScheduledTime: ctx.Now(c).Add(backoff)},
 			&callbackspb.ProgressBackoffTask{
-				Counter: c.ProgressInFlight,
-				Attempt: c.ProgressAttempt,
+				Delivery: c.ProgressInFlight,
+				Attempt:  c.ProgressAttempt,
 			},
 		)
 	default:
@@ -179,7 +213,7 @@ func (h *progressTaskHandler) Validate(
 ) (bool, error) {
 	return cb.Status == callbackspb.CALLBACK_STATUS_STANDBY &&
 		!cb.ProgressDisabled &&
-		cb.ProgressInFlight == task.Counter &&
+		cb.ProgressInFlight == task.Delivery &&
 		cb.ProgressAttempt == task.Attempt, nil
 }
 
@@ -218,8 +252,8 @@ func (h *progressTaskHandler) Execute(
 	}
 	retryPolicy := h.invocation.config.RetryPolicy()
 	_, _, err = chasm.UpdateComponent(ctx, ref, (*Callback).saveProgressResult, saveProgressInput{
-		inFlight: task.Counter,
-		sent:     invocation.progress.GetCounter(),
+		inFlight: task.Delivery,
+		sent:     invocation.progress,
 		result:   result,
 		err:      err,
 		retryPolicy: func(attempt int32, err error) time.Duration {
@@ -249,7 +283,7 @@ func (h *progressBackoffTaskHandler) Validate(
 ) (bool, error) {
 	return cb.Status == callbackspb.CALLBACK_STATUS_STANDBY &&
 		!cb.ProgressDisabled &&
-		cb.ProgressInFlight == task.Counter &&
+		cb.ProgressInFlight == task.Delivery &&
 		cb.ProgressAttempt == task.Attempt, nil
 }
 
@@ -265,8 +299,8 @@ func (h *progressBackoffTaskHandler) Execute(
 		return err
 	}
 	ctx.AddTask(cb, chasm.TaskAttributes{Destination: destination}, &callbackspb.ProgressTask{
-		Counter: task.Counter,
-		Attempt: task.Attempt,
+		Delivery: task.Delivery,
+		Attempt:  task.Attempt,
 	})
 	return nil
 }

@@ -61,6 +61,12 @@ func Invoke(
 				releaseFn(nil)
 				return nil, consts.ErrWorkflowCompleted
 			}
+			if req.GetReserveOnly() {
+				view, viewCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
+				if err == nil && view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId()) {
+					return &api.UpdateWorkflowAction{Noop: true, CreateWorkflowTask: false}, nil
+				}
+			}
 			// An error from here on returns without releasing, so the cache drops the mutable
 			// state that resolving the CHASM Workflow may have touched.
 			wf, chasmCtx, err := mutableState.ChasmWorkflowComponent(ctx)
@@ -69,7 +75,12 @@ func Invoke(
 					"stream wakes need the CHASM Workflow, which this execution does not have",
 				)
 			}
-			if err := wf.RecordStreamWake(chasmCtx, wake, maxSources); err != nil {
+			if req.GetReserveOnly() {
+				err = wf.ReserveStreamWakeSource(chasmCtx, wake.GetSubscriptionId(), maxSources)
+			} else {
+				err = wf.RecordStreamWake(chasmCtx, wake, maxSources)
+			}
+			if err != nil {
 				return nil, err
 			}
 			return &api.UpdateWorkflowAction{Noop: false, CreateWorkflowTask: false}, nil

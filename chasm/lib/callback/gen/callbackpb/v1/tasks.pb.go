@@ -115,8 +115,8 @@ func (x *BackoffTask) GetAttempt() int32 {
 // Delivers the callback's pending progress while the source runs.
 type ProgressTask struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The counter of the delivery in flight when the task was scheduled.
-	Counter int64 `protobuf:"varint,1,opt,name=counter,proto3" json:"counter,omitempty"`
+	// The number of the delivery in flight when the task was scheduled.
+	Delivery int64 `protobuf:"varint,1,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	// The attempt of that delivery.
 	Attempt       int32 `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -153,9 +153,9 @@ func (*ProgressTask) Descriptor() ([]byte, []int) {
 	return file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ProgressTask) GetCounter() int64 {
+func (x *ProgressTask) GetDelivery() int64 {
 	if x != nil {
-		return x.Counter
+		return x.Delivery
 	}
 	return 0
 }
@@ -170,7 +170,7 @@ func (x *ProgressTask) GetAttempt() int32 {
 // Retries a progress delivery that failed with a retryable error.
 type ProgressBackoffTask struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Counter       int64                  `protobuf:"varint,1,opt,name=counter,proto3" json:"counter,omitempty"`
+	Delivery      int64                  `protobuf:"varint,1,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	Attempt       int32                  `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -206,9 +206,9 @@ func (*ProgressBackoffTask) Descriptor() ([]byte, []int) {
 	return file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *ProgressBackoffTask) GetCounter() int64 {
+func (x *ProgressBackoffTask) GetDelivery() int64 {
 	if x != nil {
-		return x.Counter
+		return x.Delivery
 	}
 	return 0
 }
@@ -228,12 +228,12 @@ const file_temporal_server_chasm_lib_callback_proto_v1_tasks_proto_rawDesc = "" 
 	"\x0eInvocationTask\x12\x18\n" +
 	"\aattempt\x18\x01 \x01(\x05R\aattempt\"'\n" +
 	"\vBackoffTask\x12\x18\n" +
-	"\aattempt\x18\x01 \x01(\x05R\aattempt\"B\n" +
-	"\fProgressTask\x12\x18\n" +
-	"\acounter\x18\x01 \x01(\x03R\acounter\x12\x18\n" +
-	"\aattempt\x18\x02 \x01(\x05R\aattempt\"I\n" +
-	"\x13ProgressBackoffTask\x12\x18\n" +
-	"\acounter\x18\x01 \x01(\x03R\acounter\x12\x18\n" +
+	"\aattempt\x18\x01 \x01(\x05R\aattempt\"D\n" +
+	"\fProgressTask\x12\x1a\n" +
+	"\bdelivery\x18\x01 \x01(\x03R\bdelivery\x12\x18\n" +
+	"\aattempt\x18\x02 \x01(\x05R\aattempt\"K\n" +
+	"\x13ProgressBackoffTask\x12\x1a\n" +
+	"\bdelivery\x18\x01 \x01(\x03R\bdelivery\x12\x18\n" +
 	"\aattempt\x18\x02 \x01(\x05R\aattemptBGZEgo.temporal.io/server/chasm/lib/callbacks/gen/callbackspb;callbackspbb\x06proto3"
 
 var (

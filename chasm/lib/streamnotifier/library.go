@@ -41,17 +41,20 @@ type library struct {
 	handler               *handler
 	expiryTaskHandler     *expiryTaskHandler
 	ownerCheckTaskHandler *ownerCheckTaskHandler
+	recheckTaskHandler    *recheckTaskHandler
 }
 
 func newLibrary(
 	handler *handler,
 	expiryTaskHandler *expiryTaskHandler,
 	ownerCheckTaskHandler *ownerCheckTaskHandler,
+	recheckTaskHandler *recheckTaskHandler,
 ) *library {
 	return &library{
 		handler:               handler,
 		expiryTaskHandler:     expiryTaskHandler,
 		ownerCheckTaskHandler: ownerCheckTaskHandler,
+		recheckTaskHandler:    recheckTaskHandler,
 	}
 }
 
@@ -63,6 +66,7 @@ func (l *library) Tasks() []*chasm.RegistrableTask {
 	return []*chasm.RegistrableTask{
 		chasm.NewRegistrablePureTask("expiry", l.expiryTaskHandler),
 		chasm.NewRegistrableSideEffectTask("ownerCheck", l.ownerCheckTaskHandler),
+		chasm.NewRegistrablePureTask("recheck", l.recheckTaskHandler),
 	}
 }
 

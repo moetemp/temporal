@@ -10503,8 +10503,11 @@ type RecordStreamWakeRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	NamespaceId string                 `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
 	// The run whose reader the wake is for. A closed run answers NotFound.
-	Execution     *v14.WorkflowExecution `protobuf:"bytes,2,opt,name=execution,proto3" json:"execution,omitempty"`
-	Wake          *v124.StreamWake       `protobuf:"bytes,3,opt,name=wake,proto3" json:"wake,omitempty"`
+	Execution *v14.WorkflowExecution `protobuf:"bytes,2,opt,name=execution,proto3" json:"execution,omitempty"`
+	Wake      *v124.StreamWake       `protobuf:"bytes,3,opt,name=wake,proto3" json:"wake,omitempty"`
+	// Counts the wake's reader toward history.maximumStreamWakeSources and records no wake. A
+	// reader's attach asks for this, so an attach past the limit fails.
+	ReserveOnly   bool `protobuf:"varint,4,opt,name=reserve_only,json=reserveOnly,proto3" json:"reserve_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10558,6 +10561,13 @@ func (x *RecordStreamWakeRequest) GetWake() *v124.StreamWake {
 		return x.Wake
 	}
 	return nil
+}
+
+func (x *RecordStreamWakeRequest) GetReserveOnly() bool {
+	if x != nil {
+		return x.ReserveOnly
+	}
+	return false
 }
 
 type RecordStreamWakeResponse struct {
@@ -11684,11 +11694,12 @@ const file_temporal_server_api_historyservice_v1_request_response_proto_rawDesc 
 	")PollWorkflowExecutionTimeSkippingResponse\x12f\n" +
 	"\bresponse\x18\x01 \x01(\v2J.temporal.api.workflowservice.v1.PollWorkflowExecutionTimeSkippingResponseR\bresponse\"\xa3\x01\n" +
 	"\x1cOrphanedChildReplacementInfo\x12\x82\x01\n" +
-	"$parent_current_version_history_items\x18\x01 \x03(\v22.temporal.server.api.history.v1.VersionHistoryItemR parentCurrentVersionHistoryItems\"\xda\x01\n" +
+	"$parent_current_version_history_items\x18\x01 \x03(\v22.temporal.server.api.history.v1.VersionHistoryItemR parentCurrentVersionHistoryItems\"\xfd\x01\n" +
 	"\x17RecordStreamWakeRequest\x12!\n" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12G\n" +
 	"\texecution\x18\x02 \x01(\v2).temporal.api.common.v1.WorkflowExecutionR\texecution\x126\n" +
-	"\x04wake\x18\x03 \x01(\v2\".temporal.api.stream.v1.StreamWakeR\x04wake:\x1b\x92\xc4\x03\x17*\x15execution.workflow_id\"\x1a\n" +
+	"\x04wake\x18\x03 \x01(\v2\".temporal.api.stream.v1.StreamWakeR\x04wake\x12!\n" +
+	"\freserve_only\x18\x04 \x01(\bR\vreserveOnly:\x1b\x92\xc4\x03\x17*\x15execution.workflow_id\"\x1a\n" +
 	"\x18RecordStreamWakeResponse:t\n" +
 	"\arouting\x12\x1f.google.protobuf.MessageOptions\x18\xc28 \x01(\v25.temporal.server.api.historyservice.v1.RoutingOptionsR\arouting\x88\x01\x01B<Z:go.temporal.io/server/api/historyservice/v1;historyserviceb\x06proto3"
 

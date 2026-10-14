@@ -64,6 +64,22 @@ records whose notification was lost, so this also bounds how long a client sleep
 producer stopped before it notified.`,
 )
 
+var RecheckInitial = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.recheckInitial",
+	time.Minute,
+	`How long a stream notifier with Workflow readers waits with no notification before it asks
+them to read the stream again. A producer that appended and stopped before it notified leaves a
+record that this read finds. Each recheck doubles the wait up to streamnotifier.recheckMax, and a
+notification sets it back. Zero turns rechecks off.`,
+)
+
+var RecheckMax = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.recheckMax",
+	time.Hour,
+	`The longest wait between two rechecks of a stream notifier's Workflow readers. An idle reader
+gets about 30 rechecks a day with the defaults, each one Workflow Task and one read.`,
+)
+
 var OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.ownerCheckInterval",
 	5*time.Minute,
@@ -100,6 +116,8 @@ type Config struct {
 	IdleTimeout            dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	IdleTimeoutNoCallbacks dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	PollMaxWait            dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	RecheckInitial         dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	RecheckMax             dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	ClosedRetention        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCheckInterval     dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCloseGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
@@ -118,6 +136,8 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 		IdleTimeout:            IdleTimeout.Get(dc),
 		IdleTimeoutNoCallbacks: IdleTimeoutNoCallbacks.Get(dc),
 		PollMaxWait:            PollMaxWait.Get(dc),
+		RecheckInitial:         RecheckInitial.Get(dc),
+		RecheckMax:             RecheckMax.Get(dc),
 		ClosedRetention:        ClosedRetention.Get(dc),
 		OwnerCheckInterval:     OwnerCheckInterval.Get(dc),
 		OwnerCloseGrace:        OwnerCloseGrace.Get(dc),
