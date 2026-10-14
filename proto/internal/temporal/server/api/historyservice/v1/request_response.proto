@@ -1491,6 +1491,12 @@ message RecordStreamWakeRequest {
   // Counts the wake's reader toward history.maximumStreamWakeSources and records no wake. A
   // reader's attach asks for this, so an attach past the limit fails.
   bool reserve_only = 4;
+  // Stops counting the wake's reader toward history.maximumStreamWakeSources and records no wake.
+  // A reader that detached, or whose attach failed after its reserve, frees its place this way.
+  bool release = 5;
 }
 
-message RecordStreamWakeResponse {}
+message RecordStreamWakeResponse {
+  // Set when a reserve counted a reader that did not count before.
+  bool reserved = 1;
+}
