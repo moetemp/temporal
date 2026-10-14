@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,8 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/api/notificationservice/v1"
 	streampb "go.temporal.io/api/stream/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -23,9 +26,11 @@ import (
 	"go.temporal.io/server/chasm/lib/callback"
 	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
+	"go.temporal.io/server/common/callbacks"
 	"go.temporal.io/server/common/dynamicconfig"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexustest"
+	"go.temporal.io/server/common/payload"
 	"go.temporal.io/server/common/payloads"
 	"go.temporal.io/server/tests/testcore"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -801,4 +806,187 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierCancelCompletesTheCaller(chas
 	var result string
 	s.NoError(run.Get(ctx, &result))
 	s.Equal("canceled", result, "the caller's operation ends canceled")
+}
+
+// TestStreamNotifierProgressReachesStandaloneCallerWorker follows a stream with a standalone
+// operation whose only callback is a Worker's. The notifier's progress reaches the Worker as
+// OnProgress, and the close reaches it as OnComplete with the state the Worker returned.
+func (s *NexusWorkflowTestSuite) TestStreamNotifierProgressReachesStandaloneCallerWorker(
+	chasmEnabled bool,
+) {
+	if !chasmEnabled {
+		// A standalone operation runs on CHASM only.
+		return
+	}
+	env := s.newTestEnv(
+		true,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
+		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
+		testcore.WithDynamicConfig(
+			callback.AllowedAddresses,
+			[]any{map[string]any{"Pattern": "*", "AllowInsecure": true}},
+		),
+		testcore.WithDynamicConfig(callback.RetryPolicyInitialInterval, 10*time.Millisecond),
+		testcore.WithDynamicConfig(callback.RetryPolicyMaximumInterval, 50*time.Millisecond),
+		testcore.WithDynamicConfig(
+			chasmnexus.EnabledCallbackKinds,
+			[]callbacks.Kind{callbacks.KindNexus, callbacks.KindNexusHandler},
+		),
+	)
+	ctx := s.Context()
+	frontend := env.FrontendClient()
+	stream := &streampb.StreamReference{
+		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+		WorkflowId: "producer-" + uuid.NewString(),
+		RunId:      "first-run",
+		Topic:      "tokens",
+	}
+	notify := func(counter int64, closeStream bool) {
+		req := &workflowservice.NotifyStreamRequest{
+			Namespace: env.Namespace().String(),
+			StreamRef: stream,
+			Position:  fmt.Sprintf("cursor-%d", counter),
+			Counter:   counter,
+			Close:     closeStream,
+		}
+		if closeStream {
+			req.CloseResult = testcore.MustToPayload(s.T(), "summary")
+		}
+		_, err := frontend.NotifyStream(ctx, req)
+		s.NoError(err)
+	}
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			_, _ string,
+			_ *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			_, err := frontend.AttachStreamCallback(
+				ctx,
+				&workflowservice.AttachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: options.RequestID,
+					Callback: &commonpb.Callback_Nexus{
+						Url:    options.CallbackURL,
+						Header: options.CallbackHeader,
+					},
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+			return &nexus.HandlerStartOperationResultAsync{
+				OperationToken: stream.GetWorkflowId(),
+			}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+	workerQueue := testcore.RandomizeStr("stream-follower-" + s.T().Name())
+
+	operationID := "follower-" + uuid.NewString()
+	_, err := env.startNexusOperation(ctx, &workflowservice.StartNexusOperationExecutionRequest{
+		OperationId: operationID,
+		Endpoint:    endpointName,
+		CompletionCallbacks: []*commonpb.Callback{{
+			Variant: &commonpb.Callback_NexusHandler_{
+				NexusHandler: &commonpb.Callback_NexusHandler{
+					TaskQueueName:     workerQueue,
+					Service:           "NotificationService",
+					Operation:         "OnComplete",
+					ProgressOperation: "OnProgress",
+				},
+			},
+		}},
+	})
+	s.NoError(err)
+
+	poll := func() *workflowservice.PollNexusTaskQueueResponse {
+		for {
+			res, err := frontend.PollNexusTaskQueue(ctx, &workflowservice.PollNexusTaskQueueRequest{
+				Namespace: env.Namespace().String(),
+				Identity:  uuid.NewString(),
+				TaskQueue: &taskqueuepb.TaskQueue{
+					Name: workerQueue,
+					Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
+				},
+			})
+			s.NoError(err)
+			if res.GetTaskToken() != nil {
+				return res
+			}
+		}
+	}
+	answer := func(task *workflowservice.PollNexusTaskQueueResponse, response any) {
+		result, err := payload.Encode(response)
+		s.NoError(err)
+		_, err = frontend.RespondNexusTaskCompleted(
+			ctx,
+			&workflowservice.RespondNexusTaskCompletedRequest{
+				Namespace: env.Namespace().String(),
+				Identity:  uuid.NewString(),
+				TaskToken: task.GetTaskToken(),
+				Response: &nexuspb.Response{Variant: &nexuspb.Response_StartOperation{
+					StartOperation: &nexuspb.StartOperationResponse{
+						Variant: &nexuspb.StartOperationResponse_SyncSuccess{
+							SyncSuccess: &nexuspb.StartOperationResponse_Sync{Payload: result},
+						},
+					},
+				}},
+			},
+		)
+		s.NoError(err)
+	}
+	// awaitProgress answers OnProgress tasks with state until one carries the counter.
+	awaitProgress := func(counter int64, state string) *notificationservice.OnProgressRequest {
+		for {
+			task := poll()
+			start := task.GetRequest().GetStartOperation()
+			s.Equal("OnProgress", start.GetOperation())
+			var req notificationservice.OnProgressRequest
+			s.NoError(payload.Decode(start.GetPayload(), &req))
+			answer(task, &notificationservice.OnProgressResponse{ReceiverState: []byte(state)})
+			if req.GetProgress().GetCounter() >= counter {
+				return &req
+			}
+		}
+	}
+
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		desc, err := frontend.DescribeStreamNotifier(
+			ctx,
+			&workflowservice.DescribeStreamNotifierRequest{
+				Namespace: env.Namespace().String(),
+				StreamRef: stream,
+			},
+		)
+		s.NoError(err)
+		s.Len(desc.GetCallbacks(), 1)
+	}, 10*time.Second, 50*time.Millisecond)
+
+	notify(1, false)
+	first := awaitProgress(1, "read-to-1")
+	s.Equal(int64(1), first.GetProgress().GetCounter())
+	s.Equal("cursor-1", first.GetProgress().GetPosition())
+	s.Equal(stream.GetWorkflowId(), first.GetOperationToken(), "the token names the stream")
+
+	notify(2, false)
+	// The second delivery carries the first one's state. Its answer keeps that state, so the
+	// completion carries it whichever result the callback saves last.
+	second := awaitProgress(2, "read-to-1")
+	s.Equal("cursor-2", second.GetProgress().GetPosition())
+	s.Equal([]byte("read-to-1"), second.GetReceiverState())
+
+	notify(3, true)
+	task := poll()
+	start := task.GetRequest().GetStartOperation()
+	s.Equal("OnComplete", start.GetOperation())
+	var onComplete notificationservice.OnCompleteRequest
+	s.NoError(payload.Decode(start.GetPayload(), &onComplete))
+	s.Equal([]byte("read-to-1"), onComplete.GetReceiverState())
+	var result string
+	s.NoError(payload.Decode(onComplete.GetSuccess(), &result))
+	s.Equal("summary", result, "the close result reaches the Worker")
+	answer(task, &notificationservice.OnCompleteResponse{})
 }
