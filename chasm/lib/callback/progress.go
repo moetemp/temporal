@@ -160,6 +160,12 @@ func foldProgress(waiting, next *callbackspb.Progress) *callbackspb.Progress {
 }
 
 func (c *Callback) startProgressDelivery(ctx chasm.MutableContext) error {
+	return c.startProgressDeliveryAfter(ctx, 0)
+}
+
+// startProgressDeliveryAfter starts a delivery that goes out after gap, with the progress that is
+// newest by then.
+func (c *Callback) startProgressDeliveryAfter(ctx chasm.MutableContext, gap time.Duration) error {
 	destination, err := callbackDestination(c.GetCallback())
 	if err != nil {
 		return err
@@ -169,6 +175,14 @@ func (c *Callback) startProgressDelivery(ctx chasm.MutableContext) error {
 	c.ProgressInFlight = c.ProgressDeliveries
 	c.ProgressInFlightCounter = c.GetPendingProgress().GetCounter()
 	c.ProgressAttempt = 0
+	if gap > 0 {
+		ctx.AddTask(
+			c,
+			chasm.TaskAttributes{ScheduledTime: ctx.Now(c).Add(gap)},
+			&callbackspb.ProgressBackoffTask{Delivery: c.ProgressInFlight},
+		)
+		return nil
+	}
 	ctx.AddTask(c, chasm.TaskAttributes{Destination: destination}, &callbackspb.ProgressTask{
 		Delivery: c.ProgressInFlight,
 	})
@@ -235,6 +249,8 @@ type saveProgressInput struct {
 	retryPolicy func(attempt int32, err error) time.Duration
 	// reply is a NexusHandler receiver's answer to a delivered progress.
 	reply nexusHandlerProgressReply
+	// behindGap is how long a receiver that is behind waits for the same progress again.
+	behindGap time.Duration
 }
 
 func (c *Callback) saveProgressResult(
@@ -258,11 +274,14 @@ func (c *Callback) saveProgressResult(
 			pending.Recheck = false
 			c.PendingProgress = pending
 		}
-		// A receiver that is behind gets the pending progress again at once, which is the sent
-		// progress unless newer progress replaced it.
-		if pending.GetCounter() > c.DeliveredProgressCounter || pending.GetRecheck() ||
-			(input.reply.behind && pending != nil) {
+		if pending.GetCounter() > c.DeliveredProgressCounter || pending.GetRecheck() {
 			return nil, c.startProgressDelivery(ctx)
+		}
+		// A receiver that is behind gets the pending progress again, which is the sent progress
+		// unless newer progress replaced it. A follower that stays behind on a busy stream
+		// answers each delivery so, and the gap bounds what it costs.
+		if input.reply.behind && pending != nil {
+			return nil, c.startProgressDeliveryAfter(ctx, input.behindGap)
 		}
 		c.stopProgress()
 	case progressRefused:
@@ -356,7 +375,8 @@ func (h *progressTaskHandler) Execute(
 		retryPolicy: func(attempt int32, err error) time.Duration {
 			return retryPolicy.ComputeNextDelay(0, int(attempt), err)
 		},
-		reply: reply,
+		reply:     reply,
+		behindGap: h.invocation.config.ProgressBehindInterval(ns.Name().String()),
 	})
 	return err
 }

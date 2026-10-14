@@ -34,6 +34,14 @@ may return. The server stores it on the callback and sends it in the next progre
 the completion. A larger state turns progress off for the callback.`,
 )
 
+var ProgressBehindInterval = dynamicconfig.NewNamespaceDurationSetting(
+	"callback.nexusHandler.progressBehindInterval",
+	time.Second,
+	`How long a NexusHandler callback waits before it delivers the same progress again to a receiver
+that answered behind. Newer progress that comes in the gap goes with that delivery. This bounds
+the deliveries of a receiver that stays behind on a busy stream.`,
+)
+
 var RequestTimeout = dynamicconfig.NewDestinationDurationSetting(
 	"callback.request.timeout",
 	time.Second*10,
@@ -78,6 +86,8 @@ type Config struct {
 	EnableProgress dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	// ReceiverStateMaxSize caps the receiver_state of a NexusHandler callback.
 	ReceiverStateMaxSize dynamicconfig.IntPropertyFnWithNamespaceFilter
+	// ProgressBehindInterval delays the redelivery to a receiver that answered behind.
+	ProgressBehindInterval dynamicconfig.DurationPropertyFnWithNamespaceFilter
 }
 
 func configProvider(dc *dynamicconfig.Collection) *Config {
@@ -92,9 +102,10 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 				backoff.NoInterval,
 			)
 		},
-		InspectSourceHeader:  InspectSourceHeader.Get(dc),
-		EnableProgress:       NexusOperationEnableProgress.Get(dc),
-		ReceiverStateMaxSize: NexusHandlerReceiverStateMaxSize.Get(dc),
+		InspectSourceHeader:    InspectSourceHeader.Get(dc),
+		EnableProgress:         NexusOperationEnableProgress.Get(dc),
+		ReceiverStateMaxSize:   NexusHandlerReceiverStateMaxSize.Get(dc),
+		ProgressBehindInterval: ProgressBehindInterval.Get(dc),
 	}
 }
 
