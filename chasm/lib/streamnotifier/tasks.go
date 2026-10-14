@@ -270,6 +270,42 @@ type ownerEnd struct {
 	notFound bool
 }
 
+type debounceTaskHandler struct {
+	chasm.PureTaskHandlerBase
+	config *Config
+}
+
+type debounceTaskHandlerOptions struct {
+	fx.In
+
+	Config *Config
+}
+
+func newDebounceTaskHandler(opts debounceTaskHandlerOptions) *debounceTaskHandler {
+	return &debounceTaskHandler{config: opts.Config}
+}
+
+// Validate keeps only the task of the open window of an open notifier.
+func (h *debounceTaskHandler) Validate(
+	_ chasm.Context,
+	n *StreamNotifier,
+	_ chasm.TaskInvocation,
+	task *streamnotifierpb.DebounceTask,
+) (bool, error) {
+	return !n.Closed && !n.Expired &&
+		n.GetDebounceUntil().AsTime().Equal(task.GetScheduledTime().AsTime()), nil
+}
+
+// Execute delivers the newest notification that came inside the window that ended.
+func (h *debounceTaskHandler) Execute(
+	ctx chasm.MutableContext,
+	n *StreamNotifier,
+	_ chasm.TaskAttributes,
+	_ *streamnotifierpb.DebounceTask,
+) error {
+	return n.endDebounceWindow(ctx, h.config.DebounceWindow(ctx.NamespaceEntry().Name().String()))
+}
+
 type recheckTaskHandler struct {
 	chasm.PureTaskHandlerBase
 	config *Config
