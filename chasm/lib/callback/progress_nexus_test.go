@@ -65,6 +65,16 @@ func newNexusProgressTest(
 	cb *Callback,
 	historyClient resource.HistoryClient,
 ) *nexusProgressTest {
+	return newNexusProgressTestWithSource(t, cb, historyClient, nexusrpc.CompleteOperationOptions{})
+}
+
+// newNexusProgressTestWithSource is newNexusProgressTest under a parent with the given completion.
+func newNexusProgressTestWithSource(
+	t *testing.T,
+	cb *Callback,
+	historyClient resource.HistoryClient,
+	completion nexusrpc.CompleteOperationOptions,
+) *nexusProgressTest {
 	npt := &nexusProgressTest{
 		progressTest:    &progressTest{t: t},
 		status:          http.StatusOK,
@@ -113,7 +123,7 @@ func newNexusProgressTest(
 		t,
 		npt.handler.invocation,
 		cb,
-		nexusrpc.CompleteOperationOptions{},
+		completion,
 	)
 	return npt
 }
@@ -361,7 +371,19 @@ type nexusHandlerProgressTest struct {
 }
 
 func newNexusHandlerProgressTest(t *testing.T, cb *Callback) *nexusHandlerProgressTest {
-	nt := &nexusHandlerProgressTest{nexusProgressTest: newNexusProgressTest(t, cb, nil)}
+	return newNexusHandlerProgressTestWithToken(t, cb, "")
+}
+
+// newNexusHandlerProgressTestWithToken puts the callback under a parent with a handler token, as
+// a standalone operation is.
+func newNexusHandlerProgressTestWithToken(
+	t *testing.T,
+	cb *Callback,
+	token string,
+) *nexusHandlerProgressTest {
+	nt := &nexusHandlerProgressTest{nexusProgressTest: newNexusProgressTestWithSource(
+		t, cb, nil, nexusrpc.CompleteOperationOptions{OperationToken: token},
+	)}
 	matchingClient := matchingservicemock.NewMockMatchingServiceClient(gomock.NewController(t))
 	matchingClient.EXPECT().DispatchNexusTask(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(
@@ -453,6 +475,16 @@ func TestNexusHandlerProgressDelivery(t *testing.T) {
 		state := nt.state()
 		require.Equal(t, int64(1), state.GetDeliveredProgressCounter())
 		require.Zero(t, state.GetProgressInFlight())
+	})
+
+	t.Run("CarriesTheHandlerTokenOfAStandaloneSource", func(t *testing.T) {
+		nt := newNexusHandlerProgressTestWithToken(
+			t, newNexusHandlerProgressCallback("OnProgress"), "handler-token",
+		)
+		nt.answer(syncSuccessResponse(), nil)
+		nt.report(1)
+		require.NoError(t, nt.runInFlight())
+		require.Equal(t, "handler-token", nt.onProgressRequest(0).GetOperationToken())
 	})
 
 	t.Run("NoProgressOperationSendsNothing", func(t *testing.T) {

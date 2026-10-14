@@ -44,6 +44,13 @@ type ProgressSource interface {
 	) (nexusrpc.CompleteOperationOptions, error)
 }
 
+// HandlerTokenSource is implemented by a parent that has a handler token, such as a standalone
+// Nexus operation. Its NexusHandler callbacks send the token with each progress, so the receiver
+// knows what the progress is about without a describe call.
+type HandlerTokenSource interface {
+	HandlerToken(ctx chasm.Context) string
+}
+
 // progressInvocation is what a progress task needs to make one delivery.
 type progressInvocation struct {
 	callback *callbackspb.Callback
@@ -52,9 +59,10 @@ type progressInvocation struct {
 	options nexusrpc.CompleteOperationOptions
 
 	// Set for a NexusHandler delivery.
-	requestID     string
-	receiverState []byte
-	sourceLinks   []*nexuspb.Link
+	requestID      string
+	receiverState  []byte
+	sourceLinks    []*nexuspb.Link
+	operationToken string
 	// reply is where a NexusHandler delivery puts the receiver's answer.
 	reply *nexusHandlerProgressReply
 }
@@ -111,10 +119,7 @@ func (c *Callback) DeliverProgress(
 	ctx chasm.MutableContext,
 	progress *callbackspb.Progress,
 ) error {
-	if c.Status != callbackspb.CALLBACK_STATUS_STANDBY || c.ProgressDisabled {
-		return nil
-	}
-	if progressDeliveryFor(c.GetCallback()) == nil {
+	if !c.TakesProgress() {
 		return nil
 	}
 	seen := max(
@@ -130,6 +135,12 @@ func (c *Callback) DeliverProgress(
 		return c.startProgressDelivery(ctx)
 	}
 	return nil
+}
+
+// TakesProgress reports whether a progress delivery to the callback can still be made.
+func (c *Callback) TakesProgress() bool {
+	return c.Status == callbackspb.CALLBACK_STATUS_STANDBY && !c.ProgressDisabled &&
+		progressDeliveryFor(c.GetCallback()) != nil
 }
 
 // foldProgress merges progress into the progress that waits. The higher counter wins with its
@@ -187,8 +198,12 @@ func (c *Callback) loadProgressArgs(
 	if c.GetCallback().GetNexusHandler() != nil {
 		invocation.requestID = c.RequestId
 		invocation.receiverState = slices.Clone(c.ReceiverState)
+		parent := c.CompletionSource.Get(ctx)
+		if source, ok := parent.(HandlerTokenSource); ok {
+			invocation.operationToken = source.HandlerToken(ctx)
+		}
 		// The links point to this callback, as for the completion.
-		if parent, ok := c.CompletionSource.Get(ctx).(chasm.Component); ok {
+		if parent, ok := parent.(chasm.Component); ok {
 			selfLink, err := buildCallbackLink(ctx, parent, c.RequestId)
 			if err != nil {
 				return progressInvocation{}, err
@@ -587,8 +602,9 @@ func deliverNexusHandlerProgress(
 			Counter:  progress.GetCounter(),
 			Metadata: maps.Clone(progress.GetMetadata()),
 		},
-		SourceContext: target.GetSourceContext(),
-		ReceiverState: invocation.receiverState,
+		SourceContext:  target.GetSourceContext(),
+		OperationToken: invocation.operationToken,
+		ReceiverState:  invocation.receiverState,
 	})
 	if err != nil {
 		return progressRefused, err

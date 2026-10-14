@@ -19,6 +19,7 @@ import (
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/callback"
+	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
 	nexusoperationpb "go.temporal.io/server/chasm/lib/nexusoperation/gen/nexusoperationpb/v1"
 	"go.temporal.io/server/common/backoff"
 	"go.temporal.io/server/common/metrics"
@@ -109,7 +110,8 @@ type Operation struct {
 	// Keyed by completionCallbackID(requestID, index).
 	Callbacks chasm.Map[string, *callback.Callback]
 
-	// PendingProgress is the latest progress no Workflow Task has carried yet.
+	// PendingProgress is the latest progress no Workflow Task has carried yet. For a standalone
+	// operation, it is the latest progress that came before the start.
 	PendingProgress chasm.Field[*nexuspb.NexusOperationProgress]
 	// DeliveredProgress is the latest progress a Workflow Task carried. A delivery whose
 	// counter is not above it is stale.
@@ -260,10 +262,13 @@ func (o *Operation) onStarted(ctx chasm.MutableContext, operationToken string, s
 		return store.OnNexusOperationStarted(ctx, o, operationToken, startTime, links)
 	}
 	o.Links = append(o.Links, links...)
-	return TransitionStarted.Apply(o, ctx, EventStarted{
+	if err := TransitionStarted.Apply(o, ctx, EventStarted{
 		OperationToken: operationToken,
 		StartTime:      startTime,
-	})
+	}); err != nil {
+		return err
+	}
+	return o.relayPendingProgress(ctx)
 }
 
 // onCompleted applies the succeeded transition or delegates to the store if one is present.
@@ -342,18 +347,19 @@ func (o *Operation) HandleNexusCompletion(
 	}
 }
 
-// onProgress keeps the progress with the highest counter for the caller. Progress before the
-// operation started is dropped, since it cannot stand in for the start response, and so is progress
-// after it closed, since its completion supersedes it.
+// onProgress keeps the progress with the highest counter for the caller. For a Workflow caller,
+// progress before the operation started is dropped, since it cannot stand in for the start
+// response, and so is progress after it closed, since its completion supersedes it. A standalone
+// operation relays progress to its callbacks.
 func (o *Operation) onProgress(
 	ctx chasm.MutableContext,
 	progress *nexuspb.NexusOperationProgress,
 ) error {
-	if o.Status != nexusoperationpb.OPERATION_STATUS_STARTED {
-		return nil
-	}
 	parent, ok := o.Store.TryGet(ctx)
 	if !ok {
+		return o.relayProgress(ctx, progress)
+	}
+	if o.Status != nexusoperationpb.OPERATION_STATUS_STARTED {
 		return nil
 	}
 	store, ok := parent.(ProgressStore)
@@ -370,6 +376,78 @@ func (o *Operation) onProgress(
 	}
 	o.PendingProgress = chasm.NewDataField(ctx, progress)
 	return store.OnNexusOperationProgress(ctx, o)
+}
+
+// relayProgress hands a standalone operation's progress to its callbacks, which are its callers.
+// Each callback folds progress on its own. Progress before the start is kept and relayed at the
+// start, since the handler's first progress often arrives before its start response.
+func (o *Operation) relayProgress(
+	ctx chasm.MutableContext,
+	progress *nexuspb.NexusOperationProgress,
+) error {
+	if o.isClosed() {
+		return nil
+	}
+	callbacks := o.progressCallbacks(ctx)
+	if len(callbacks) == 0 {
+		// The handler's notifier stops sending progress to this operation on the refusal.
+		return serviceerror.NewFailedPrecondition("no callback of the operation takes progress")
+	}
+	if o.Status != nexusoperationpb.OPERATION_STATUS_STARTED {
+		if previous, ok := o.PendingProgress.TryGet(ctx); ok &&
+			previous.GetCounter() >= progress.GetCounter() {
+			return nil
+		}
+		o.PendingProgress = chasm.NewDataField(ctx, progress)
+		return nil
+	}
+	for _, cb := range callbacks {
+		if err := cb.DeliverProgress(ctx, callbackProgress(progress)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// relayPendingProgress relays the progress a standalone operation kept before its start.
+func (o *Operation) relayPendingProgress(ctx chasm.MutableContext) error {
+	progress, ok := o.PendingProgress.TryGet(ctx)
+	if !ok {
+		return nil
+	}
+	o.PendingProgress = chasm.NewEmptyField[*nexuspb.NexusOperationProgress]()
+	for _, cb := range o.progressCallbacks(ctx) {
+		if err := cb.DeliverProgress(ctx, callbackProgress(progress)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// progressCallbacks returns the callbacks that take progress, in key order.
+func (o *Operation) progressCallbacks(ctx chasm.MutableContext) []*callback.Callback {
+	var callbacks []*callback.Callback
+	for _, id := range slices.Sorted(maps.Keys(o.Callbacks)) {
+		if cb := o.Callbacks[id].Get(ctx); cb.TakesProgress() {
+			callbacks = append(callbacks, cb)
+		}
+	}
+	return callbacks
+}
+
+// callbackProgress is the operation's progress in the form its callbacks fold and deliver.
+func callbackProgress(progress *nexuspb.NexusOperationProgress) *callbackspb.Progress {
+	return &callbackspb.Progress{
+		Position: progress.GetPosition(),
+		Counter:  progress.GetCounter(),
+		Metadata: maps.Clone(progress.GetMetadata()),
+	}
+}
+
+// HandlerToken returns the handler's token, empty before the operation started. The operation's
+// NexusHandler callbacks send it with progress.
+func (o *Operation) HandlerToken(_ chasm.Context) string {
+	return o.OperationToken
 }
 
 // TakePendingProgress returns the pending progress and records it as delivered.

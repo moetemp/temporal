@@ -56,6 +56,11 @@ func (m *mockNexusCompletionGetterComponent) GetNexusCompletion(_ chasm.Context,
 	return m.completion, m.err
 }
 
+// HandlerToken stands in for a standalone operation's token. Tests set it as the completion's.
+func (m *mockNexusCompletionGetterComponent) HandlerToken(_ chasm.Context) string {
+	return m.completion.OperationToken
+}
+
 func (m *mockNexusCompletionGetterComponent) LifecycleState(_ chasm.Context) chasm.LifecycleState {
 	return chasm.LifecycleStateRunning
 }
