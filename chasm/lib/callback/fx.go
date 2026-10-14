@@ -76,6 +76,8 @@ var Module = fx.Module(
 	fx.Provide(httpCallerProviderProvider),
 	fx.Provide(newInvocationTaskHandler),
 	fx.Provide(newBackoffTaskHandler),
+	fx.Provide(newProgressTaskHandler),
+	fx.Provide(newProgressBackoffTaskHandler),
 	fx.Provide(newLibrary),
 	fx.Invoke(register),
 )
