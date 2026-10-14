@@ -57,6 +57,7 @@ func newProgressTest(t *testing.T, cb *Callback) *progressTest {
 			RetryPolicy: func() backoff.RetryPolicy {
 				return backoff.NewExponentialRetryPolicy(time.Second)
 			},
+			ProgressBehindInterval: func(string) time.Duration { return time.Second },
 		},
 		NamespaceRegistry: nsRegistry,
 		MetricsHandler:    metrics.NoopMetricsHandler,
