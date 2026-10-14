@@ -181,7 +181,8 @@ var (
 
 		// P3: A stream notification is a hint the next append repeats, so it yields to starts and
 		// signals under namespace rate limiting.
-		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStream": 3,
+		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStream":  3,
+		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStreams": 3,
 
 		// P3: Progress APIs for reporting cancellations and failures.
 		// They are relatively low priority as the tasks need to be retried anyway.
