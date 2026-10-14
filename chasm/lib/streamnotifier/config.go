@@ -117,6 +117,17 @@ var MaxNotifyBatch = dynamicconfig.NewNamespaceIntSetting(
 parallel, each on the notifier of its stream.`,
 )
 
+var DebounceWindow = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.debounceWindow",
+	time.Second,
+	`How often a stream notifier delivers progress to its callbacks. A notification after a quiet
+window goes out at once and opens a window. Notifications inside the window update the counter
+and wait. At the window's end the newest one goes out and opens the next window. So a busy stream
+wakes each Workflow reader and each Nexus caller at most once per window. A poll returns as soon as
+the counter passes the one it waits for, and a close goes out at once. Zero delivers every
+notification at once.`,
+)
+
 var ClosedRetention = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.closedRetention",
 	7*24*time.Hour,
@@ -142,6 +153,7 @@ type Config struct {
 	OwnerCloseGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerStartGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	MaxNotifyBatch         dynamicconfig.IntPropertyFnWithNamespaceFilter
+	DebounceWindow         dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	MaxIDLength            dynamicconfig.IntPropertyFn
 	// The close result becomes the operation's result, so it takes the payload blob limits.
 	BlobSizeLimitError dynamicconfig.IntPropertyFnWithNamespaceFilter
@@ -164,6 +176,7 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 		OwnerCloseGrace:        OwnerCloseGrace.Get(dc),
 		OwnerStartGrace:        OwnerStartGrace.Get(dc),
 		MaxNotifyBatch:         MaxNotifyBatch.Get(dc),
+		DebounceWindow:         DebounceWindow.Get(dc),
 		MaxIDLength:            dynamicconfig.MaxIDLengthLimit.Get(dc),
 		BlobSizeLimitError:     dynamicconfig.BlobSizeLimitError.Get(dc),
 		BlobSizeLimitWarn:      dynamicconfig.BlobSizeLimitWarn.Get(dc),

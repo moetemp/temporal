@@ -79,6 +79,43 @@ func (this *OwnerCheckTask) Equal(that interface{}) bool {
 	return proto.Equal(this, that1)
 }
 
+// Marshal an object of type DebounceTask to the protobuf v3 wire format
+func (val *DebounceTask) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type DebounceTask from the protobuf v3 wire format
+func (val *DebounceTask) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *DebounceTask) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two DebounceTask values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *DebounceTask) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *DebounceTask
+	switch t := that.(type) {
+	case *DebounceTask:
+		that1 = t
+	case DebounceTask:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}
+
 // Marshal an object of type RecheckTask to the protobuf v3 wire format
 func (val *RecheckTask) Marshal() ([]byte, error) {
 	return proto.Marshal(val)

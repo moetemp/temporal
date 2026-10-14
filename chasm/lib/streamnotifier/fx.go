@@ -14,6 +14,7 @@ var HistoryModule = fx.Module(
 		newExpiryTaskHandler,
 		newOwnerCheckTaskHandler,
 		newRecheckTaskHandler,
+		newDebounceTaskHandler,
 		newLibrary,
 		newSystemNexusHandler,
 	),
