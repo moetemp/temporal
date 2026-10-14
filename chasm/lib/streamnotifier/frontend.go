@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
+	"golang.org/x/sync/errgroup"
 )
 
 // maxMetadataBytes bounds a notification's metadata, so progress stays a notification and the data
@@ -27,6 +28,9 @@ const maxSubscriptionIDBytes = 256
 // maxPositionBytes bounds a notification's position, which every callback copies into its
 // caller's history.
 const maxPositionBytes = 1024
+
+// notifyBatchParallelism bounds the notifier calls one NotifyStreams request has in flight.
+const notifyBatchParallelism = 32
 
 // FrontendHandler serves the stream notifier RPCs of the WorkflowService.
 type FrontendHandler interface {
@@ -50,6 +54,10 @@ type FrontendHandler interface {
 		context.Context,
 		*workflowservice.PollStreamNotifierRequest,
 	) (*workflowservice.PollStreamNotifierResponse, error)
+	NotifyStreams(
+		context.Context,
+		*workflowservice.NotifyStreamsRequest,
+	) (*workflowservice.NotifyStreamsResponse, error)
 }
 
 type frontendHandler struct {
@@ -227,26 +235,9 @@ func (h *frontendHandler) NotifyStream(
 	if err != nil {
 		return nil, err
 	}
-	if req.GetCounter() <= 0 {
-		return nil, serviceerror.NewInvalidArgument("counter must be positive")
-	}
-	if len(req.GetPosition()) > maxPositionBytes {
-		return nil, serviceerror.NewInvalidArgumentf(
-			"position is %d bytes, more than the %d allowed",
-			len(req.GetPosition()),
-			maxPositionBytes,
-		)
-	}
-	size := 0
-	for key, value := range req.GetMetadata() {
-		size += len(key) + len(value)
-	}
-	if size > maxMetadataBytes {
-		return nil, serviceerror.NewInvalidArgumentf(
-			"metadata is %d bytes, more than the %d allowed",
-			size,
-			maxMetadataBytes,
-		)
+	err = validateNotification(req.GetPosition(), req.GetCounter(), req.GetMetadata())
+	if err != nil {
+		return nil, err
 	}
 	if req.GetCloseResult() != nil && !req.GetClose() {
 		return nil, serviceerror.NewInvalidArgument("close_result is only allowed with close")
@@ -279,6 +270,99 @@ func (h *frontendHandler) NotifyStream(
 		FrontendRequest: req,
 	})
 	return resp.GetFrontendResponse(), err
+}
+
+// validateNotification checks the fields that NotifyStream and a NotifyStreams entry share.
+func validateNotification(position string, counter int64, metadata map[string]string) error {
+	if counter <= 0 {
+		return serviceerror.NewInvalidArgument("counter must be positive")
+	}
+	if len(position) > maxPositionBytes {
+		return serviceerror.NewInvalidArgumentf(
+			"position is %d bytes, more than the %d allowed",
+			len(position),
+			maxPositionBytes,
+		)
+	}
+	size := 0
+	for key, value := range metadata {
+		size += len(key) + len(value)
+	}
+	if size > maxMetadataBytes {
+		return serviceerror.NewInvalidArgumentf(
+			"metadata is %d bytes, more than the %d allowed",
+			size,
+			maxMetadataBytes,
+		)
+	}
+	return nil
+}
+
+// NotifyStreams checks every entry before it applies any, so a bad entry fails the request and
+// leaves no notifier changed. Then it applies each entry as a NotifyStream on the notifier of its
+// stream. The first failure fails the request, and the entries already applied stay applied.
+func (h *frontendHandler) NotifyStreams(
+	ctx context.Context,
+	req *workflowservice.NotifyStreamsRequest,
+) (*workflowservice.NotifyStreamsResponse, error) {
+	entries := req.GetNotifications()
+	if len(entries) == 0 {
+		return nil, serviceerror.NewInvalidArgument("notifications is empty")
+	}
+	if limit := h.config.MaxNotifyBatch(req.GetNamespace()); len(entries) > limit {
+		return nil, serviceerror.NewInvalidArgumentf(
+			"notifications has %d entries, more than the %d allowed",
+			len(entries),
+			limit,
+		)
+	}
+	requests := make([]*streamnotifierpb.NotifyStreamRequest, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for i, entry := range entries {
+		namespaceID, businessID, err := h.resolve(req.GetNamespace(), entry.GetStreamRef())
+		if err != nil {
+			return nil, err
+		}
+		if err := validateNotification(
+			entry.GetPosition(),
+			entry.GetCounter(),
+			entry.GetMetadata(),
+		); err != nil {
+			return nil, err
+		}
+		// Two entries for one stream would race on its notifier, and a driver folds them anyway.
+		if _, ok := seen[businessID]; ok {
+			return nil, serviceerror.NewInvalidArgumentf(
+				"notifications has two entries for the stream %q",
+				businessID,
+			)
+		}
+		seen[businessID] = struct{}{}
+		requests[i] = &streamnotifierpb.NotifyStreamRequest{
+			NamespaceId: namespaceID,
+			BusinessId:  businessID,
+			FrontendRequest: &workflowservice.NotifyStreamRequest{
+				Namespace: req.GetNamespace(),
+				StreamRef: entry.GetStreamRef(),
+				Position:  entry.GetPosition(),
+				Counter:   entry.GetCounter(),
+				Metadata:  entry.GetMetadata(),
+				Identity:  req.GetIdentity(),
+			},
+		}
+	}
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(notifyBatchParallelism)
+	for _, request := range requests {
+		group.Go(func() error {
+			_, err := h.client.NotifyStream(groupCtx, request)
+			return err
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return &workflowservice.NotifyStreamsResponse{}, nil
 }
 
 func (h *frontendHandler) DescribeStreamNotifier(

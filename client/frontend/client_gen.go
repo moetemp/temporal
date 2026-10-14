@@ -609,6 +609,16 @@ func (c *clientImpl) NotifyStream(
 	return c.client.NotifyStream(ctx, request, opts...)
 }
 
+func (c *clientImpl) NotifyStreams(
+	ctx context.Context,
+	request *workflowservice.NotifyStreamsRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.NotifyStreamsResponse, error) {
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return c.client.NotifyStreams(ctx, request, opts...)
+}
+
 func (c *clientImpl) PatchSchedule(
 	ctx context.Context,
 	request *workflowservice.PatchScheduleRequest,

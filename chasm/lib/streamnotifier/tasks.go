@@ -155,6 +155,13 @@ func (h *ownerCheckTaskHandler) Execute(
 			// and the first close wins, so a just-closed run is left to it for the grace.
 			waiting := end.workerCloses && end.closeTime != nil &&
 				mctx.Now(n).Before(end.closeTime.Add(h.config.OwnerCloseGrace(ns.Name().String())))
+			// A reader may subscribe before its owner starts, so a missing owner gets a grace from
+			// the notifier's start.
+			startGrace := h.config.OwnerStartGrace(ns.Name().String())
+			if end.notFound && n.StartTime != nil &&
+				mctx.Now(n).Before(n.StartTime.AsTime().Add(startGrace)) {
+				waiting = true
+			}
 			if end.ended && !waiting {
 				if err := n.close(mctx, nil, end.failure); err != nil {
 					return struct{}{}, err
@@ -192,7 +199,7 @@ func (h *ownerCheckTaskHandler) ownerEnded(
 		},
 	)
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
-		return ownerEnd{ended: true, failure: streamFailure(ownerEndedFailure)}, nil
+		return ownerEnd{ended: true, failure: streamFailure(ownerEndedFailure), notFound: true}, nil
 	}
 	if err != nil {
 		return ownerEnd{}, err
@@ -259,6 +266,8 @@ type ownerEnd struct {
 	workerCloses bool
 	// When the run closed, if History said.
 	closeTime *time.Time
+	// Set when no run of the Workflow ID exists, so the owner may not have started yet.
+	notFound bool
 }
 
 type recheckTaskHandler struct {
