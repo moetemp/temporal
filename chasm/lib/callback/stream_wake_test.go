@@ -122,7 +122,13 @@ func TestStreamWakeCompletion(t *testing.T) {
 		calls  int
 	}{
 		{name: "TheCloseReachesTheReader", wake: closeWake, result: invocationResultOK{}, calls: 1},
-		{name: "ADetachedReaderNeedsNone", result: invocationResultOK{}},
+		{name: "ADetachedReaderFreesItsPlace", result: invocationResultOK{}, calls: 1},
+		{
+			name:   "ADetachedReaderOfAClosedRunFreesNothing",
+			err:    serviceerror.NewNotFound("workflow execution already completed"),
+			result: invocationResultOK{},
+			calls:  1,
+		},
 		{
 			name:   "AClosedRunNeedsNone",
 			wake:   closeWake,
@@ -157,6 +163,9 @@ func TestStreamWakeCompletion(t *testing.T) {
 			require.Len(t, got, tc.calls)
 			if tc.calls > 0 {
 				require.Equal(t, "sub", got[0].GetWake().GetSubscriptionId())
+				require.Equal(t, tc.wake == nil, got[0].GetRelease())
+			}
+			if tc.calls > 0 && tc.wake != nil {
 				require.True(t, got[0].GetWake().GetClosed())
 				require.Equal(t, []byte("done"), got[0].GetWake().GetCloseResult().GetData())
 			}

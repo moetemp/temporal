@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/contextutil"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/resource"
 )
 
@@ -75,21 +76,28 @@ func (h *handler) AttachStreamCallback(
 	if err := h.checkFirstRun(ctx, req.GetNamespaceId(), ns, fe.GetStreamRef()); err != nil {
 		return nil, err
 	}
-	if target := fe.GetWorkflowTarget(); target != nil {
-		// The reader counts toward its run's readers now, so an attach past the limit fails, and a
-		// run that already closed refuses it.
-		_, err := h.historyClient.RecordStreamWake(ctx, &historyservice.RecordStreamWakeRequest{
+	target := fe.GetWorkflowTarget()
+	sourceRequest := func(release bool) *historyservice.RecordStreamWakeRequest {
+		return &historyservice.RecordStreamWakeRequest{
 			NamespaceId: req.GetNamespaceId(),
 			Execution: &commonpb.WorkflowExecution{
 				WorkflowId: target.GetWorkflowId(),
 				RunId:      target.GetRunId(),
 			},
 			Wake:        &streampb.StreamWake{SubscriptionId: target.GetSubscriptionId()},
-			ReserveOnly: true,
-		})
+			ReserveOnly: !release,
+			Release:     release,
+		}
+	}
+	reserved := false
+	if target != nil {
+		// The reader counts toward its run's readers now, so an attach past the limit fails, and a
+		// run that already closed refuses it.
+		resp, err := h.historyClient.RecordStreamWake(ctx, sourceRequest(false))
 		if err != nil {
 			return nil, err
 		}
+		reserved = resp.GetReserved()
 	}
 	err := startOrUpdate(
 		ctx,
@@ -117,6 +125,15 @@ func (h *handler) AttachStreamCallback(
 		fe,
 	)
 	if err != nil {
+		if reserved {
+			// No callback holds the place this attach took. A reader that already counted before
+			// this attach keeps its place, since a callback of an earlier attach may hold it.
+			_, releaseErr := h.historyClient.RecordStreamWake(ctx, sourceRequest(true))
+			if releaseErr != nil {
+				h.logger.Warn("Failed to free a stream reader's place after a failed attach",
+					tag.Error(releaseErr))
+			}
+		}
 		return nil, err
 	}
 	return &streamnotifierpb.AttachStreamCallbackResponse{

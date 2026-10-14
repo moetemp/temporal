@@ -56,6 +56,8 @@ type notifierTest struct {
 	// reserveErr is History's answer to the reservation of a Workflow reader's attach.
 	reserveErr error
 	reserved   []*historyservice.RecordStreamWakeRequest
+	// counted makes History answer that a reserve's reader counted before.
+	counted bool
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
@@ -110,7 +112,9 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 			_ ...grpc.CallOption,
 		) (*historyservice.RecordStreamWakeResponse, error) {
 			nt.reserved = append(nt.reserved, req)
-			return &historyservice.RecordStreamWakeResponse{}, nt.reserveErr
+			return &historyservice.RecordStreamWakeResponse{
+				Reserved: req.GetReserveOnly() && !nt.counted,
+			}, nt.reserveErr
 		}).
 		AnyTimes()
 	h := newHandler(config, log.NewTestLogger(), attachHistory)
@@ -1178,6 +1182,20 @@ func TestWorkflowTargets(t *testing.T) {
 		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed,
 			"an attach past the readers per run fails where user code sees it")
 		require.NotContains(t, nt.callbacks(), "b")
+	})
+
+	t.Run("AFailedAttachFreesItsReserve", func(t *testing.T) {
+		nt := newNotifierTest(t, 1)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		var failed *serviceerror.FailedPrecondition
+		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
+		require.Len(t, nt.reserved, 3)
+		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, "sub-b", nt.reserved[2].GetWake().GetSubscriptionId())
+
+		nt.counted = true
+		require.ErrorAs(t, nt.attachWorkflow("c", "sub-a"), &failed)
+		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
 	})
 
 	t.Run("DescribeShowsTheTarget", func(t *testing.T) {

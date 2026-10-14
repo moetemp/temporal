@@ -10507,7 +10507,10 @@ type RecordStreamWakeRequest struct {
 	Wake      *v124.StreamWake       `protobuf:"bytes,3,opt,name=wake,proto3" json:"wake,omitempty"`
 	// Counts the wake's reader toward history.maximumStreamWakeSources and records no wake. A
 	// reader's attach asks for this, so an attach past the limit fails.
-	ReserveOnly   bool `protobuf:"varint,4,opt,name=reserve_only,json=reserveOnly,proto3" json:"reserve_only,omitempty"`
+	ReserveOnly bool `protobuf:"varint,4,opt,name=reserve_only,json=reserveOnly,proto3" json:"reserve_only,omitempty"`
+	// Stops counting the wake's reader toward history.maximumStreamWakeSources and records no wake.
+	// A reader that detached, or whose attach failed after its reserve, frees its place this way.
+	Release       bool `protobuf:"varint,5,opt,name=release,proto3" json:"release,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10570,8 +10573,17 @@ func (x *RecordStreamWakeRequest) GetReserveOnly() bool {
 	return false
 }
 
+func (x *RecordStreamWakeRequest) GetRelease() bool {
+	if x != nil {
+		return x.Release
+	}
+	return false
+}
+
 type RecordStreamWakeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Set when a reserve counted a reader that did not count before.
+	Reserved      bool `protobuf:"varint,1,opt,name=reserved,proto3" json:"reserved,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10604,6 +10616,13 @@ func (x *RecordStreamWakeResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use RecordStreamWakeResponse.ProtoReflect.Descriptor instead.
 func (*RecordStreamWakeResponse) Descriptor() ([]byte, []int) {
 	return file_temporal_server_api_historyservice_v1_request_response_proto_rawDescGZIP(), []int{166}
+}
+
+func (x *RecordStreamWakeResponse) GetReserved() bool {
+	if x != nil {
+		return x.Reserved
+	}
+	return false
 }
 
 type ExecuteMultiOperationRequest_Operation struct {
@@ -11694,13 +11713,15 @@ const file_temporal_server_api_historyservice_v1_request_response_proto_rawDesc 
 	")PollWorkflowExecutionTimeSkippingResponse\x12f\n" +
 	"\bresponse\x18\x01 \x01(\v2J.temporal.api.workflowservice.v1.PollWorkflowExecutionTimeSkippingResponseR\bresponse\"\xa3\x01\n" +
 	"\x1cOrphanedChildReplacementInfo\x12\x82\x01\n" +
-	"$parent_current_version_history_items\x18\x01 \x03(\v22.temporal.server.api.history.v1.VersionHistoryItemR parentCurrentVersionHistoryItems\"\xfd\x01\n" +
+	"$parent_current_version_history_items\x18\x01 \x03(\v22.temporal.server.api.history.v1.VersionHistoryItemR parentCurrentVersionHistoryItems\"\x97\x02\n" +
 	"\x17RecordStreamWakeRequest\x12!\n" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12G\n" +
 	"\texecution\x18\x02 \x01(\v2).temporal.api.common.v1.WorkflowExecutionR\texecution\x126\n" +
 	"\x04wake\x18\x03 \x01(\v2\".temporal.api.stream.v1.StreamWakeR\x04wake\x12!\n" +
-	"\freserve_only\x18\x04 \x01(\bR\vreserveOnly:\x1b\x92\xc4\x03\x17*\x15execution.workflow_id\"\x1a\n" +
-	"\x18RecordStreamWakeResponse:t\n" +
+	"\freserve_only\x18\x04 \x01(\bR\vreserveOnly\x12\x18\n" +
+	"\arelease\x18\x05 \x01(\bR\arelease:\x1b\x92\xc4\x03\x17*\x15execution.workflow_id\"6\n" +
+	"\x18RecordStreamWakeResponse\x12\x1a\n" +
+	"\breserved\x18\x01 \x01(\bR\breserved:t\n" +
 	"\arouting\x12\x1f.google.protobuf.MessageOptions\x18\xc28 \x01(\v25.temporal.server.api.historyservice.v1.RoutingOptionsR\arouting\x88\x01\x01B<Z:go.temporal.io/server/api/historyservice/v1;historyserviceb\x06proto3"
 
 var (

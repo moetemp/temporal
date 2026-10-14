@@ -426,3 +426,40 @@ func (s *StreamWakeSuite) TestTheReaderLimitFailsTheAttach() {
 	var failed *serviceerror.FailedPrecondition
 	s.ErrorAs(r.attach("jetty/run/2", "sub-2"), &failed)
 }
+
+func (s *StreamWakeSuite) TestADetachedReaderFreesItsPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	_, err := r.env.FrontendClient().DetachStreamCallback(
+		s.Context(),
+		&workflowservice.DetachStreamCallbackRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+			RequestId: "jetty/run/1",
+		},
+	)
+	s.NoError(err)
+	// The detach frees the place when the callback's completion runs.
+	s.Await(func(s *StreamWakeSuite) {
+		s.NoError(r.attach("jetty/run/2", "sub-2"))
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestATakenCloseFreesTheReadersPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, testcore.MustToPayload(s.T(), "summary"))
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes := lastScheduledWakes(task)
+		s.NotEmpty(wakes)
+		s.True(wakes[len(wakes)-1].GetClosed())
+	}, 10*time.Second, 50*time.Millisecond)
+	r.stream.Topic = "another"
+	s.NoError(r.attach("jetty/run/2", "sub-2"))
+}
