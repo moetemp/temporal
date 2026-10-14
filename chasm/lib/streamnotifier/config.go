@@ -82,10 +82,12 @@ gets about 30 rechecks a day with the defaults, each one Workflow Task and one r
 
 var OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.ownerCheckInterval",
-	5*time.Minute,
+	30*time.Second,
 	`How often a stream notifier with callbacks attached checks whether the stream's owner Workflow
 ended. If its run chain closed without closing the stream, the notifier closes it and fails the
-callbacks.`,
+callbacks. No Worker closes a stream when its owner's chain ends, so this interval plus
+streamnotifier.ownerCloseGrace bounds how long waiting callbacks wait for an implicit close. Each
+check costs one describe of the owner per interval for each notifier with callbacks attached.`,
 )
 
 var OwnerCloseGrace = dynamicconfig.NewNamespaceDurationSetting(

@@ -969,6 +969,12 @@ func TestClosedRetentionCoversTheStoreRetention(t *testing.T) {
 		"a closed stream answers late attaches as long as the store keeps its records")
 }
 
+func TestTheOwnerCheckRunsEveryThirtySeconds(t *testing.T) {
+	require.Equal(t, 30*time.Second,
+		configProvider(dynamicconfig.NewNoopCollection()).OwnerCheckInterval("ns"),
+		"an implicit close reaches waiting callers within about 30 s plus the grace")
+}
+
 func TestTheDefaultHoldsTwoThousandWaitingCallers(t *testing.T) {
 	maxCallbacks := configProvider(dynamicconfig.NewNoopCollection()).MaxCallbacks("ns")
 	nt := newNotifierTest(t, maxCallbacks)
