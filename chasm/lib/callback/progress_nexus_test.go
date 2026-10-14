@@ -81,8 +81,9 @@ func newNexusProgressTest(
 			RetryPolicy: func() backoff.RetryPolicy {
 				return backoff.NewExponentialRetryPolicy(time.Second)
 			},
-			EnableProgress:       func(string) bool { return npt.progressEnabled },
-			ReceiverStateMaxSize: func(string) int { return testReceiverStateMaxSize },
+			EnableProgress:         func(string) bool { return npt.progressEnabled },
+			ReceiverStateMaxSize:   func(string) int { return testReceiverStateMaxSize },
+			ProgressBehindInterval: func(string) time.Duration { return time.Second },
 		},
 		NamespaceRegistry: nsRegistry,
 		MetricsHandler:    metrics.NoopMetricsHandler,
@@ -650,6 +651,29 @@ func TestNexusHandlerProgressDelivery(t *testing.T) {
 		require.Zero(t, state.GetProgressInFlight())
 		require.Nil(t, state.GetPendingProgress())
 		require.Equal(t, []byte("page-2"), state.GetReceiverState())
+	})
+
+	t.Run("BehindWaitsTheGap", func(t *testing.T) {
+		cb := newNexusHandlerProgressCallback("OnProgress")
+		cb.ProgressDeliveries = 1
+		cb.ProgressInFlight = 1
+		cb.PendingProgress = &callbackspb.Progress{Counter: 1}
+		now := time.Unix(1700000000, 0)
+		mctx := &chasm.MockMutableContext{
+			MockContext: chasm.MockContext{HandleNow: func(chasm.Component) time.Time { return now }},
+		}
+		_, err := cb.saveProgressResult(mctx, saveProgressInput{
+			inFlight:  1,
+			sent:      &callbackspb.Progress{Counter: 1},
+			result:    progressDelivered,
+			reply:     nexusHandlerProgressReply{behind: true},
+			behindGap: time.Second,
+		})
+		require.NoError(t, err)
+		require.Len(t, mctx.Tasks, 1)
+		require.Equal(t, &callbackspb.ProgressBackoffTask{Delivery: 2}, mctx.Tasks[0].Payload)
+		require.Equal(t, now.Add(time.Second), mctx.Tasks[0].Attributes.ScheduledTime)
+		require.Equal(t, int64(2), cb.ProgressInFlight)
 	})
 
 	t.Run("BehindGivesWayToNewerProgress", func(t *testing.T) {
