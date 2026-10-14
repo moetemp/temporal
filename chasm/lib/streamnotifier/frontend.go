@@ -96,23 +96,8 @@ func (h *frontendHandler) resolve(
 			"the stream notifier requires CHASM, which is not enabled for this namespace",
 		)
 	}
-	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
-		return "", "", serviceerror.NewInvalidArgument(
-			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW",
-		)
-	}
-	if ref.GetWorkflowId() == "" {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
-	}
-	if ref.GetTopic() == "" {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is required")
-	}
-	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
-	// its own; without it the request would reach a different notifier.
-	if ref.GetRunId() == "" {
-		return "", "", serviceerror.NewInvalidArgument(
-			"stream_ref.run_id must name the run chain's first run",
-		)
+	if err := ValidateReference(ref); err != nil {
+		return "", "", err
 	}
 	// Both become part of the notifier's business ID.
 	if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
@@ -126,6 +111,29 @@ func (h *frontendHandler) resolve(
 		return "", "", err
 	}
 	return id.String(), BusinessID(ref), nil
+}
+
+// ValidateReference rejects a stream reference the notifier cannot key a stream by.
+func ValidateReference(ref *streampb.StreamReference) error {
+	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
+		return serviceerror.NewInvalidArgument(
+			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW",
+		)
+	}
+	if ref.GetWorkflowId() == "" {
+		return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
+	}
+	if ref.GetTopic() == "" {
+		return serviceerror.NewInvalidArgument("stream_ref.topic is required")
+	}
+	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
+	// its own; without it the request would reach a different notifier.
+	if ref.GetRunId() == "" {
+		return serviceerror.NewInvalidArgument(
+			"stream_ref.run_id must name the run chain's first run",
+		)
+	}
+	return nil
 }
 
 func (h *frontendHandler) AttachStreamCallback(

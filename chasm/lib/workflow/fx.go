@@ -4,6 +4,7 @@ import (
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/nexusoperation"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.uber.org/fx"
 )
 
@@ -29,6 +30,11 @@ var Module = fx.Module(
 // HistoryHandlerModule wires the workflow library's Nexus handler to the
 // history service. Only include this in services that provide
 // historyservice.HistoryServiceServer (the history service).
-var HistoryHandlerModule = fx.Invoke(func(library *library, historyHandler historyservice.HistoryServiceServer) {
+var HistoryHandlerModule = fx.Invoke(func(
+	library *library,
+	historyHandler historyservice.HistoryServiceServer,
+	streamNotifier streamnotifier.SystemNexusHandler,
+) {
 	library.workflowServiceNexusHandler.setHistoryHandler(historyHandler)
+	library.workflowServiceNexusHandler.setStreamNotifier(streamNotifier)
 })
