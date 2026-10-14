@@ -162,6 +162,7 @@ func (h *handler) NotifyStream(
 
 		idleTimeoutNoCallbacks: h.config.IdleTimeoutNoCallbacks(ns),
 		recheckInitial:         h.config.RecheckInitial(ns),
+		debounceWindow:         h.config.DebounceWindow(ns),
 	}
 	var err error
 	if fe.GetClose() {

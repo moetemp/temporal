@@ -53,6 +53,7 @@ type notifierTest struct {
 	// ownerCloseTime is when the owner's run closed, as the owner check's describe answers.
 	ownerCloseTime *timestamppb.Timestamp
 	recheck        *recheckTaskHandler
+	debounce       *debounceTaskHandler
 	// reserveErr is History's answer to the reservation of a Workflow reader's attach.
 	reserveErr error
 	reserved   []*historyservice.RecordStreamWakeRequest
@@ -76,6 +77,8 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		OwnerCheckInterval: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(5 * time.Minute),
 		OwnerCloseGrace:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		OwnerStartGrace:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
+		// Most tests check one delivery per notification. The debounce tests turn it on.
+		DebounceWindow: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(0),
 		MaxIDLength:        dynamicconfig.GetIntPropertyFn(1000),
 	}
 	ctrl := gomock.NewController(t)
@@ -129,7 +132,8 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
 	recheck := newRecheckTaskHandler(recheckTaskHandlerOptions{Config: config})
-	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck, recheck)))
+	debounce := newDebounceTaskHandler(debounceTaskHandlerOptions{Config: config})
+	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck, recheck, debounce)))
 	engine := chasmtest.NewEngine(t, registry)
 	*nt = notifierTest{
 		t:          t,
@@ -139,6 +143,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		expiry:     expiry,
 		ownerCheck: ownerCheck,
 		recheck:    recheck,
+		debounce:   debounce,
 		history:    history,
 		ref: &streampb.StreamReference{
 			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
@@ -208,6 +213,19 @@ func (nt *notifierTest) attachWorkflow(requestID, subscription string) error {
 		},
 	})
 	return err
+}
+
+// runDebounce runs the task of the open debounce window.
+func (nt *notifierTest) runDebounce() {
+	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+		func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			task := &streamnotifierpb.DebounceTask{ScheduledTime: n.GetDebounceUntil()}
+			valid, err := nt.debounce.Validate(ctx, n, chasm.TaskInvocation{}, task)
+			require.NoError(nt.t, err)
+			require.True(nt.t, valid, "a debounce window is open")
+			return struct{}{}, nt.debounce.Execute(ctx, n, chasm.TaskAttributes{}, task)
+		}, struct{}{})
+	require.NoError(nt.t, err)
 }
 
 // runRecheck runs the armed recheck.
@@ -1433,6 +1451,96 @@ func TestRechecks(t *testing.T) {
 		require.NoError(t, nt.notify(1, true))
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
 			require.Nil(t, n.GetRecheckTime())
+		})
+	})
+}
+
+func TestDebounce(t *testing.T) {
+	newDebounced := func(t *testing.T) *notifierTest {
+		nt := newNotifierTest(t, 10)
+		nt.handler.config.DebounceWindow = dynamicconfig.GetDurationPropertyFnFilteredByNamespace(
+			time.Hour,
+		)
+		require.NoError(t, nt.attachWorkflow("a", "sub"))
+		return nt
+	}
+	// handed is the highest counter handed to the callback, waiting, in flight or delivered.
+	handed := func(nt *notifierTest) int64 {
+		var counter int64
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			cb := n.Callbacks["a"].Get(ctx)
+			counter = max(
+				cb.GetPendingProgress().GetCounter(),
+				cb.GetProgressInFlightCounter(),
+				cb.GetDeliveredProgressCounter(),
+			)
+		})
+		return counter
+	}
+
+	t.Run("TheFirstNotificationGoesOutAtOnce", func(t *testing.T) {
+		nt := newDebounced(t)
+		require.NoError(t, nt.notify(1, false))
+		require.Equal(t, int64(1), handed(nt))
+		now := nt.now()
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.True(t, now.Add(time.Hour).Equal(n.GetDebounceUntil().AsTime()),
+				"the delivery opened a window")
+			require.False(t, n.GetDebounceHeld())
+		})
+	})
+
+	t.Run("ABurstGivesOneLeadingAndOneTrailingDelivery", func(t *testing.T) {
+		nt := newDebounced(t)
+		for counter := int64(1); counter <= 100; counter++ {
+			require.NoError(t, nt.notify(counter, false))
+		}
+		require.Equal(t, int64(1), handed(nt), "the window holds the other 99")
+		require.Equal(t, int64(100), nt.describe().GetCounter(), "the notifier keeps the newest")
+		nt.runDebounce()
+		require.Equal(t, int64(100), handed(nt), "the window's end delivers the newest")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.NotNil(t, n.GetDebounceUntil(), "the trailing delivery opens the next window")
+			require.False(t, n.GetDebounceHeld())
+		})
+		nt.runDebounce()
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Nil(t, n.GetDebounceUntil(), "a quiet window closes")
+		})
+		require.NoError(t, nt.notify(101, false))
+		require.Equal(t, int64(101), handed(nt), "after a quiet window the next one goes out at once")
+	})
+
+	t.Run("ACloseGoesOutAtOnce", func(t *testing.T) {
+		nt := newDebounced(t)
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(2, false))
+		require.NoError(t, nt.notify(3, true))
+		require.True(t, nt.describe().GetClosed())
+		require.NotEqual(t, callbackspb.CALLBACK_STATUS_STANDBY, nt.callbacks()["a"].GetStatus(),
+			"the close completes the reader at once")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Nil(t, n.GetDebounceUntil(), "a closed stream has no window")
+		})
+	})
+
+	t.Run("APollSeesAHeldCounter", func(t *testing.T) {
+		nt := newDebounced(t)
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(2, false))
+		resp, err := nt.poll(1)
+		require.NoError(t, err)
+		require.Equal(t, int64(2), resp.GetCounter(), "a poll costs no delivery, so it does not wait")
+	})
+
+	t.Run("ZeroTurnsTheDebounceOff", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub"))
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(2, false))
+		require.Equal(t, int64(2), handed(nt))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Nil(t, n.GetDebounceUntil())
 		})
 	})
 }
