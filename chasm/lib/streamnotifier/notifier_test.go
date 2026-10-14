@@ -47,12 +47,17 @@ type notifierTest struct {
 	// ownerFirstRun is the first run of the owner's chain as an attach sees it; empty means the
 	// owner does not exist.
 	ownerFirstRun string
+	// runChains maps a run ID to its chain's first run ID, for a describe that names a run. A run
+	// that is not in it answers as ownerFirstRun does.
+	runChains map[string]string
 	// ownerCloseTime is when the owner's run closed, as the owner check's describe answers.
 	ownerCloseTime *timestamppb.Timestamp
 	recheck        *recheckTaskHandler
 	// reserveErr is History's answer to the reservation of a Workflow reader's attach.
 	reserveErr error
 	reserved   []*historyservice.RecordStreamWakeRequest
+	// counted makes History answer that a reserve's reader counted before.
+	counted bool
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
@@ -82,16 +87,20 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	attachHistory := historyservicemock.NewMockHistoryServiceClient(ctrl)
 	attachHistory.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(
-			context.Context,
-			*historyservice.DescribeWorkflowExecutionRequest,
-			...grpc.CallOption,
+			_ context.Context,
+			req *historyservice.DescribeWorkflowExecutionRequest,
+			_ ...grpc.CallOption,
 		) (*historyservice.DescribeWorkflowExecutionResponse, error) {
-			if nt.ownerFirstRun == "" {
+			firstRun, ok := nt.runChains[req.GetRequest().GetExecution().GetRunId()]
+			if !ok {
+				firstRun = nt.ownerFirstRun
+			}
+			if firstRun == "" {
 				return nil, serviceerror.NewNotFound("workflow not found")
 			}
 			return &historyservice.DescribeWorkflowExecutionResponse{
 				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
-					FirstRunId: nt.ownerFirstRun,
+					FirstRunId: firstRun,
 				},
 			}, nil
 		}).
@@ -103,7 +112,9 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 			_ ...grpc.CallOption,
 		) (*historyservice.RecordStreamWakeResponse, error) {
 			nt.reserved = append(nt.reserved, req)
-			return &historyservice.RecordStreamWakeResponse{}, nt.reserveErr
+			return &historyservice.RecordStreamWakeResponse{
+				Reserved: req.GetReserveOnly() && !nt.counted,
+			}, nt.reserveErr
 		}).
 		AnyTimes()
 	h := newHandler(config, log.NewTestLogger(), attachHistory)
@@ -536,6 +547,32 @@ func TestStreamNotifier(t *testing.T) {
 		)
 		nt.ref.RunId = "first-run"
 		require.NoError(t, nt.attach("a"))
+	})
+
+	t.Run("AnAttachToAnEarlierChainOfAReusedWorkflowIDIsTaken", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.ref = &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "wf",
+			RunId:      "first-chain",
+			Topic:      "t",
+		}
+		// The Workflow ID now belongs to a second chain.
+		nt.ownerFirstRun = "second-chain"
+		nt.runChains = map[string]string{
+			"first-chain":       "first-chain",
+			"first-chain-retry": "first-chain",
+			"second-chain":      "second-chain",
+		}
+		require.NoError(t, nt.attach("a"))
+		nt.ref.RunId = "first-chain-retry"
+		var invalid *serviceerror.InvalidArgument
+		require.ErrorAs(
+			t,
+			nt.attach("b"),
+			&invalid,
+			"a later run of the earlier chain is still not its first",
+		)
 	})
 
 	t.Run("AReusedWorkflowIDGetsAFreshNotifier", func(t *testing.T) {
@@ -1147,6 +1184,20 @@ func TestWorkflowTargets(t *testing.T) {
 		require.NotContains(t, nt.callbacks(), "b")
 	})
 
+	t.Run("AFailedAttachFreesItsReserve", func(t *testing.T) {
+		nt := newNotifierTest(t, 1)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		var failed *serviceerror.FailedPrecondition
+		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
+		require.Len(t, nt.reserved, 3)
+		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, "sub-b", nt.reserved[2].GetWake().GetSubscriptionId())
+
+		nt.counted = true
+		require.ErrorAs(t, nt.attachWorkflow("c", "sub-a"), &failed)
+		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
+	})
+
 	t.Run("DescribeShowsTheTarget", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
@@ -1166,7 +1217,7 @@ func TestWorkflowTargets(t *testing.T) {
 			wake, err := n.GetStreamWakeCompletion(ctx, "a")
 			require.NoError(t, err)
 			require.True(t, wake.GetClosed())
-			require.Equal(t, []byte("summary"), wake.GetCloseResult().GetData())
+			require.Nil(t, wake.GetCloseResult(), "the reader reads the result from the store")
 			require.Equal(t, int64(4), wake.GetCounter())
 		})
 
@@ -1178,6 +1229,16 @@ func TestWorkflowTargets(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, wake.GetClosed())
 			require.Equal(t, "boom", wake.GetCloseFailure().GetMessage())
+		})
+
+		nt = newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.NoError(t, nt.closeWithFailure(streamFailure(strings.Repeat("x", 5000))))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			wake, err := n.GetStreamWakeCompletion(ctx, "a")
+			require.NoError(t, err)
+			require.True(t, wake.GetClosed())
+			require.Nil(t, wake.GetCloseFailure(), "a large failure stays in the store")
 		})
 	})
 
