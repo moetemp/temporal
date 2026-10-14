@@ -47,6 +47,9 @@ type notifierTest struct {
 	// ownerFirstRun is the first run of the owner's chain as an attach sees it; empty means the
 	// owner does not exist.
 	ownerFirstRun string
+	// runChains maps a run ID to its chain's first run ID, for a describe that names a run. A run
+	// that is not in it answers as ownerFirstRun does.
+	runChains map[string]string
 	// ownerCloseTime is when the owner's run closed, as the owner check's describe answers.
 	ownerCloseTime *timestamppb.Timestamp
 }
@@ -76,16 +79,20 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	attachHistory := historyservicemock.NewMockHistoryServiceClient(ctrl)
 	attachHistory.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(
-			context.Context,
-			*historyservice.DescribeWorkflowExecutionRequest,
-			...grpc.CallOption,
+			_ context.Context,
+			req *historyservice.DescribeWorkflowExecutionRequest,
+			_ ...grpc.CallOption,
 		) (*historyservice.DescribeWorkflowExecutionResponse, error) {
-			if nt.ownerFirstRun == "" {
+			firstRun, ok := nt.runChains[req.GetRequest().GetExecution().GetRunId()]
+			if !ok {
+				firstRun = nt.ownerFirstRun
+			}
+			if firstRun == "" {
 				return nil, serviceerror.NewNotFound("workflow not found")
 			}
 			return &historyservice.DescribeWorkflowExecutionResponse{
 				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
-					FirstRunId: nt.ownerFirstRun,
+					FirstRunId: firstRun,
 				},
 			}, nil
 		}).
@@ -486,6 +493,32 @@ func TestStreamNotifier(t *testing.T) {
 		)
 		nt.ref.RunId = "first-run"
 		require.NoError(t, nt.attach("a"))
+	})
+
+	t.Run("AnAttachToAnEarlierChainOfAReusedWorkflowIDIsTaken", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.ref = &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "wf",
+			RunId:      "first-chain",
+			Topic:      "t",
+		}
+		// The Workflow ID now belongs to a second chain.
+		nt.ownerFirstRun = "second-chain"
+		nt.runChains = map[string]string{
+			"first-chain":       "first-chain",
+			"first-chain-retry": "first-chain",
+			"second-chain":      "second-chain",
+		}
+		require.NoError(t, nt.attach("a"))
+		nt.ref.RunId = "first-chain-retry"
+		var invalid *serviceerror.InvalidArgument
+		require.ErrorAs(
+			t,
+			nt.attach("b"),
+			&invalid,
+			"a later run of the earlier chain is still not its first",
+		)
 	})
 
 	t.Run("AReusedWorkflowIDGetsAFreshNotifier", func(t *testing.T) {
