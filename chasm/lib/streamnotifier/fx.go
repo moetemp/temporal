@@ -14,6 +14,7 @@ var HistoryModule = fx.Module(
 		newExpiryTaskHandler,
 		newOwnerCheckTaskHandler,
 		newRecheckTaskHandler,
+		newDebounceTaskHandler,
 		newLibrary,
 	),
 	fx.Invoke(func(l *library, registry *chasm.Registry) error {
