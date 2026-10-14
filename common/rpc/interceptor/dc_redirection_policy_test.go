@@ -158,6 +158,11 @@ func (s *selectedAPIsForwardingRedirectionPolicySuite) TestSelectedAPIs() {
 		wfMethod("RequestCancelNexusOperationExecution"): {},
 		wfMethod("TerminateNexusOperationExecution"):     {},
 		wfMethod("DeleteNexusOperationExecution"):        {},
+
+		// Stream notifier APIs
+		wfMethod("AttachStreamCallback"): {},
+		wfMethod("DetachStreamCallback"): {},
+		wfMethod("NotifyStream"):         {},
 	}, selectedAPIsForwardingRedirectionPolicyAllowedAPIs)
 }
 
