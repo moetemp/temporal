@@ -75,6 +75,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		ClosedRetention:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		OwnerCheckInterval: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(5 * time.Minute),
 		OwnerCloseGrace:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
+		OwnerStartGrace:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		MaxIDLength:        dynamicconfig.GetIntPropertyFn(1000),
 	}
 	ctrl := gomock.NewController(t)
@@ -337,6 +338,22 @@ func (nt *notifierTest) hasTimer(at time.Time) bool {
 		}
 	}
 	return false
+}
+
+// start starts the notifier the way a client's first poll does, with no wait.
+func (nt *notifierTest) start() {
+	_, err := nt.poll(-1)
+	require.NoError(nt.t, err)
+}
+
+// backdateStart moves the notifier's start back by d.
+func (nt *notifierTest) backdateStart(d time.Duration) {
+	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+		func(n *StreamNotifier, _ chasm.MutableContext, _ struct{}) (struct{}, error) {
+			n.StartTime = timestamppb.New(n.StartTime.AsTime().Add(-d))
+			return struct{}{}, nil
+		}, struct{}{})
+	require.NoError(nt.t, err)
 }
 
 // updateCallback changes one callback's state, standing in for its delivery tasks.
@@ -685,13 +702,20 @@ func TestStreamNotifier(t *testing.T) {
 		require.Contains(t, nt.callbacks(), "later")
 	})
 
-	t.Run("ANotificationStartsAMissingNotifier", func(t *testing.T) {
+	t.Run("ANotificationStartsNoNotifier", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.notify(1, false), "nobody waits on a stream with no notifier")
+		_, err := chasm.ReadComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(*StreamNotifier, chasm.Context, struct{}) (struct{}, error) {
+				return struct{}{}, nil
+			}, struct{}{})
+		var notFound *serviceerror.NotFound
+		require.ErrorAs(t, err, &notFound, "the notification wrote nothing")
+
+		nt = newNotifierTest(t, 10)
+		nt.start()
 		require.NoError(t, nt.notify(1, false))
-		desc := nt.describe()
-		require.Equal(t, int64(1), desc.GetCounter(),
-			"the notifier keeps the counter a reader that armed waits for")
-		require.Empty(t, desc.GetCallbacks())
+		require.Equal(t, int64(1), nt.describe().GetCounter())
 		require.True(t, nt.hasTimer(nt.now().Add(10*time.Minute)),
 			"a notifier with no callbacks ends after the short idle timeout")
 
@@ -702,6 +726,32 @@ func TestStreamNotifier(t *testing.T) {
 		require.True(t, nt.hasTimer(nt.now().Add(time.Hour)),
 			"a notifier with a waiting callback keeps the full idle timeout")
 		require.False(t, nt.hasTimer(nt.now().Add(10*time.Minute)))
+	})
+
+	t.Run("ARepeatedNotificationWritesNothing", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		require.NoError(t, nt.notify(5, false))
+		// A write would touch the notifier and move its activity time off this mark.
+		mark := timestamppb.New(time.Unix(1, 0))
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, _ chasm.MutableContext, _ struct{}) (struct{}, error) {
+				n.LastActivityTime = mark
+				return struct{}{}, nil
+			}, struct{}{})
+		require.NoError(t, err)
+		require.NoError(t, nt.notify(5, false))
+		require.NoError(t, nt.notify(3, false))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, int64(5), n.GetCounter())
+			require.True(t, n.GetLastActivityTime().AsTime().Equal(mark.AsTime()),
+				"a counter at or below the one held costs only a read")
+		})
+		require.NoError(t, nt.notify(6, false))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.False(t, n.GetLastActivityTime().AsTime().Equal(mark.AsTime()),
+				"a higher counter writes")
+		})
 	})
 
 	t.Run("ANotificationAfterTheStreamEndedChangesNothing", func(t *testing.T) {
@@ -914,6 +964,7 @@ func TestStreamNotifier(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				nt := newNotifierTest(t, 10)
 				require.NoError(t, nt.attach("a"))
+				nt.backdateStart(2 * time.Minute)
 				nt.runOwnerCheck(tc.status, tc.err)
 				require.True(t, nt.describe().GetClosed())
 				require.Equal(
@@ -969,6 +1020,35 @@ func TestStreamNotifier(t *testing.T) {
 				require.True(t, nt.describe().GetClosed())
 			})
 		}
+	})
+
+	t.Run("AMissingOwnerGetsTheStartGrace", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		gone := serviceerror.NewNotFound("workflow not found")
+		nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED, gone)
+		require.False(t, nt.describe().GetClosed(), "the owner may not have started yet")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.NotNil(t, n.GetOwnerCheckTime(), "the next check is armed")
+		})
+
+		nt.backdateStart(2 * time.Minute)
+		nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED, gone)
+		require.True(t, nt.describe().GetClosed(), "an owner that never started closes the stream")
+		_, failure := nt.completionOf("a")
+		require.Equal(t, ownerEndedFailure, failure.GetMessage())
+
+		nt = newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, _ chasm.MutableContext, _ struct{}) (struct{}, error) {
+				n.StartTime = nil
+				return struct{}{}, nil
+			}, struct{}{})
+		require.NoError(t, err)
+		nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED, gone)
+		require.True(t, nt.describe().GetClosed(),
+			"a notifier with no start time gets no grace")
 	})
 
 	t.Run("ARunningOwnerArmsTheNextCheck", func(t *testing.T) {
@@ -1084,6 +1164,7 @@ func (nt *notifierTest) poll(after int64) (*workflowservice.PollStreamNotifierRe
 func TestPollStreamNotifier(t *testing.T) {
 	t.Run("ACounterAlreadyAboveReturnsAtOnce", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
+		nt.start()
 		require.NoError(t, nt.notify(42, false))
 		started := time.Now()
 		resp, err := nt.poll(41)
@@ -1097,6 +1178,7 @@ func TestPollStreamNotifier(t *testing.T) {
 
 	t.Run("ANotificationWakesAWaitingPoll", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
+		nt.start()
 		require.NoError(t, nt.notify(1, false))
 		done := make(chan *workflowservice.PollStreamNotifierResponse, 1)
 		go func() {
@@ -1111,6 +1193,7 @@ func TestPollStreamNotifier(t *testing.T) {
 
 	t.Run("TheWaitLimitReturnsNoChange", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
+		nt.start()
 		require.NoError(t, nt.notify(5, false))
 		resp, err := nt.poll(5)
 		require.NoError(t, err)
@@ -1130,6 +1213,7 @@ func TestPollStreamNotifier(t *testing.T) {
 
 	t.Run("APollOnAnEndedNotifierStartsANewOne", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
+		nt.start()
 		require.NoError(t, nt.notify(1, false))
 		nt.expire()
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {

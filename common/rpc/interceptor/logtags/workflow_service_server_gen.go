@@ -277,6 +277,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 		return nil
 	case *workflowservice.NotifyStreamResponse:
 		return nil
+	case *workflowservice.NotifyStreamsRequest:
+		return nil
+	case *workflowservice.NotifyStreamsResponse:
+		return nil
 	case *workflowservice.PatchScheduleRequest:
 		return nil
 	case *workflowservice.PatchScheduleResponse:
