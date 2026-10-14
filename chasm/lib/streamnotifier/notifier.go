@@ -44,6 +44,7 @@ func BusinessID(ref *streampb.StreamReference) string {
 var _ chasm.RootComponent = (*StreamNotifier)(nil)
 var _ callback.CompletionSource = (*StreamNotifier)(nil)
 var _ callback.StreamWakeSource = (*StreamNotifier)(nil)
+var _ callback.ProgressSource = (*StreamNotifier)(nil)
 
 // StreamNotifier holds the Nexus callbacks attached to one stream. It hands each notification to
 // them as progress, folded, and completes them when the stream closes.
@@ -497,6 +498,15 @@ func (n *StreamNotifier) progress() *callbackspb.Progress {
 		Counter:  n.Counter,
 		Metadata: maps.Clone(n.Metadata),
 	}
+}
+
+// GetNexusProgressOptions carries the caller's operation token and start time on each progress
+// delivery, so a caller that has not seen the start response yet can still tell the operation.
+func (n *StreamNotifier) GetNexusProgressOptions(
+	_ chasm.Context,
+	requestID string,
+) (nexusrpc.CompleteOperationOptions, error) {
+	return n.callerStart(requestID), nil
 }
 
 func (n *StreamNotifier) callerStart(requestID string) nexusrpc.CompleteOperationOptions {
