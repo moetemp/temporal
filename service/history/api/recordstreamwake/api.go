@@ -35,6 +35,9 @@ func Invoke(
 	if len(wake.GetSubscriptionId()) > maxSubscriptionIDBytes {
 		return nil, serviceerror.NewInvalidArgument("wake.subscription_id is too long")
 	}
+	if req.GetReserveOnly() && req.GetRelease() {
+		return nil, serviceerror.NewInvalidArgument("reserve_only and release can't both be set")
+	}
 	namespaceEntry, err := api.GetActiveNamespace(
 		shard,
 		namespace.ID(req.GetNamespaceId()),
@@ -44,6 +47,7 @@ func Invoke(
 		return nil, err
 	}
 	maxSources := shard.GetConfig().MaximumStreamWakeSources(namespaceEntry.Name().String())
+	resp := &historyservice.RecordStreamWakeResponse{}
 
 	err = api.GetAndUpdateWorkflowWithNew(
 		ctx,
@@ -54,6 +58,7 @@ func Invoke(
 			execution.GetRunId(),
 		),
 		func(workflowLease api.WorkflowLease) (*api.UpdateWorkflowAction, error) {
+			resp.Reserved = false
 			mutableState := workflowLease.GetMutableState()
 			releaseFn := workflowLease.GetReleaseFn()
 			if !mutableState.IsWorkflowExecutionRunning() {
@@ -61,9 +66,10 @@ func Invoke(
 				releaseFn(nil)
 				return nil, consts.ErrWorkflowCompleted
 			}
-			if req.GetReserveOnly() {
+			if req.GetReserveOnly() || req.GetRelease() {
 				view, viewCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
-				if err == nil && view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId()) {
+				if err == nil &&
+					view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId()) == req.GetReserveOnly() {
 					return &api.UpdateWorkflowAction{Noop: true, CreateWorkflowTask: false}, nil
 				}
 			}
@@ -75,9 +81,13 @@ func Invoke(
 					"stream wakes need the CHASM Workflow, which this execution does not have",
 				)
 			}
-			if req.GetReserveOnly() {
+			switch {
+			case req.GetReserveOnly():
 				err = wf.ReserveStreamWakeSource(chasmCtx, wake.GetSubscriptionId(), maxSources)
-			} else {
+				resp.Reserved = err == nil
+			case req.GetRelease():
+				wf.ReleaseStreamWakeSource(chasmCtx, wake.GetSubscriptionId())
+			default:
 				err = wf.RecordStreamWake(chasmCtx, wake, maxSources)
 			}
 			if err != nil {
@@ -92,5 +102,5 @@ func Invoke(
 	if err != nil {
 		return nil, err
 	}
-	return &historyservice.RecordStreamWakeResponse{}, nil
+	return resp, nil
 }

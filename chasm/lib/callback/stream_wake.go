@@ -81,7 +81,7 @@ func deliverStreamWakeProgress(
 }
 
 // invocableStreamWake delivers the wake that completes a stream wake callback, such as the
-// stream's close, to the reader's Workflow.
+// stream's close, to the reader's Workflow. A reader that needs no wake has its place freed.
 type invocableStreamWake struct {
 	namespaceID string
 	target      *callbackspb.Callback_StreamWake
@@ -102,10 +102,14 @@ func (c invocableStreamWake) Invoke(
 	_ *callbackspb.InvocationTask,
 	_ chasm.TaskAttributes,
 ) invocationResult {
-	if c.wake == nil {
-		return invocationResultOK{}
+	wake := c.wake
+	if wake == nil {
+		wake = &streampb.StreamWake{}
 	}
-	_, err := h.historyClient.RecordStreamWake(ctx, streamWakeRequest(c.namespaceID, c.target, c.wake))
+	req := streamWakeRequest(c.namespaceID, c.target, wake)
+	// The reader detached, so it frees its place among the run's readers for a new one.
+	req.Release = c.wake == nil
+	_, err := h.historyClient.RecordStreamWake(ctx, req)
 	if err == nil {
 		return invocationResultOK{}
 	}
