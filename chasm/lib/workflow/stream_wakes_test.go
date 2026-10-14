@@ -176,3 +176,31 @@ func TestStreamWakeSourcesAreBounded(t *testing.T) {
 	require.ErrorAs(t, st.wf.RecordStreamWake(st.ctx, wakeOf("3", 1), 3), &failed,
 		"a reader counts for the whole run")
 }
+
+func TestStreamWakeSourcesFreeOnReleaseCloseAndResubscribe(t *testing.T) {
+	st := newStreamWakeTest(t)
+	for i := range 3 {
+		require.NoError(t, st.wf.ReserveStreamWakeSource(st.ctx, fmt.Sprint(i), 3))
+	}
+	var failed *serviceerror.FailedPrecondition
+	require.ErrorAs(t, st.wf.ReserveStreamWakeSource(st.ctx, "3", 3), &failed)
+
+	st.wf.ReleaseStreamWakeSource(st.ctx, "0")
+	require.False(t, st.wf.HasStreamWakeSource(st.ctx, "0"))
+	require.NoError(t, st.wf.ReserveStreamWakeSource(st.ctx, "3", 3), "a detached reader's place")
+
+	closed := wakeOf("1", 2)
+	closed.Closed = true
+	st.record(closed)
+	resubscribe := wakeOf("2", 2)
+	resubscribe.Resubscribe = true
+	st.record(resubscribe)
+	st.record(wakeOf("3", 1))
+	require.True(t, st.wf.HasStreamWakeSource(st.ctx, "1"), "a pending close still counts")
+	require.Len(t, st.wf.TakeStreamWakes(st.ctx), 3)
+	require.False(t, st.wf.HasStreamWakeSource(st.ctx, "1"))
+	require.False(t, st.wf.HasStreamWakeSource(st.ctx, "2"))
+	require.True(t, st.wf.HasStreamWakeSource(st.ctx, "3"), "a progress wake keeps its reader")
+	require.NoError(t, st.wf.ReserveStreamWakeSource(st.ctx, "2", 3),
+		"a reader that attaches again counts again")
+}
