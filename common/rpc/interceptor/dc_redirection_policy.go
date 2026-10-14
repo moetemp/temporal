@@ -105,6 +105,7 @@ var selectedAPIsForwardingRedirectionPolicyAllowedAPIs = map[string]struct{}{
 	wfMethod("AttachStreamCallback"): {},
 	wfMethod("DetachStreamCallback"): {},
 	wfMethod("NotifyStream"):         {},
+	wfMethod("PollStreamNotifier"):   {},
 }
 
 func wfMethod(name string) string { return api.WorkflowServicePrefix + name }

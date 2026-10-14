@@ -13,6 +13,7 @@ import (
 	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/callback"
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
@@ -333,7 +334,9 @@ type notifyInput struct {
 	// Set instead of closeResult when the stream closes with a failure.
 	closeFailure *failurepb.Failure
 	idleTimeout  time.Duration
-	retention    time.Duration
+	// The idle timeout when no callback waits, such as for a notifier only clients poll.
+	idleTimeoutNoCallbacks time.Duration
+	retention              time.Duration
 }
 
 // notify keeps the highest counter and hands it to every callback as progress. A close completes
@@ -361,8 +364,41 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 		n.touch(ctx, in.retention)
 		return nil
 	}
-	n.touch(ctx, in.idleTimeout)
+	if n.hasWaitingCallbacks(ctx) {
+		n.touch(ctx, in.idleTimeout)
+	} else {
+		n.touch(ctx, in.idleTimeoutNoCallbacks)
+	}
 	return nil
+}
+
+// startIdle arms the expiry of a notifier that a poll started, and changes nothing on one that
+// already saw activity.
+func (n *StreamNotifier) startIdle(ctx chasm.MutableContext, idleTimeout time.Duration) {
+	if n.LastActivityTime == nil {
+		n.touch(ctx, idleTimeout)
+	}
+}
+
+// pollResponse is what a poll answers with: the latest notification and the close outcome.
+func (n *StreamNotifier) pollResponse(
+	_ chasm.Context,
+	_ struct{},
+) (*workflowservice.PollStreamNotifierResponse, error) {
+	return &workflowservice.PollStreamNotifierResponse{
+		Counter:      n.Counter,
+		Position:     n.Position,
+		Metadata:     maps.Clone(n.Metadata),
+		Closed:       n.Closed,
+		CloseResult:  common.CloneProto(n.CloseResult),
+		CloseFailure: common.CloneProto(n.CloseFailure),
+	}, nil
+}
+
+// pollDone reports whether a poll that waits for a counter above after returns: the counter
+// passed it, the stream closed, or the notifier ended, so the client starts a new one.
+func (n *StreamNotifier) pollDone(after int64) bool {
+	return n.Counter > after || n.Closed || n.Expired
 }
 
 // close completes every callback still waiting: with the result, or with failure when it is set.

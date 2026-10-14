@@ -46,6 +46,24 @@ open: later notifications and attaches work as before. A notifier that goes idle
 ends, and the next attach or notification starts a new one.`,
 )
 
+var IdleTimeoutNoCallbacks = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.idleTimeoutNoCallbacks",
+	time.Hour,
+	`How long an open stream notifier with no callbacks waiting waits for an attach or a
+notification before it ends. A notification or a poll starts a notifier when the stream has none,
+so a sleeping reader has a notifier to wake it. A notification that names the wrong first run
+starts one that nobody attaches to, and this ends it soon.`,
+)
+
+var PollMaxWait = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.pollMaxWait",
+	time.Minute,
+	`The longest PollStreamNotifier waits for a counter above the one it names, or for the close.
+At the limit it returns with no change, and the client reads the stream again. That read finds
+records whose notification was lost, so this also bounds how long a client sleeps after a
+producer stopped before it notified.`,
+)
+
 var OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.ownerCheckInterval",
 	5*time.Minute,
@@ -75,15 +93,17 @@ still holds the records it would read. The default matches the default store ret
 
 // Config holds the stream notifier settings.
 type Config struct {
-	Enabled            dynamicconfig.BoolPropertyFnWithNamespaceFilter
-	ChasmEnabled       dynamicconfig.BoolPropertyFnWithNamespaceFilter
-	MaxCallbacks       dynamicconfig.IntPropertyFnWithNamespaceFilter
-	MaxCallbackBytes   dynamicconfig.IntPropertyFnWithNamespaceFilter
-	IdleTimeout        dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	ClosedRetention    dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	OwnerCheckInterval dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	OwnerCloseGrace    dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	MaxIDLength        dynamicconfig.IntPropertyFn
+	Enabled                dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	ChasmEnabled           dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	MaxCallbacks           dynamicconfig.IntPropertyFnWithNamespaceFilter
+	MaxCallbackBytes       dynamicconfig.IntPropertyFnWithNamespaceFilter
+	IdleTimeout            dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	IdleTimeoutNoCallbacks dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	PollMaxWait            dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	ClosedRetention        dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	OwnerCheckInterval     dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	OwnerCloseGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	MaxIDLength            dynamicconfig.IntPropertyFn
 	// The close result becomes the operation's result, so it takes the payload blob limits.
 	BlobSizeLimitError dynamicconfig.IntPropertyFnWithNamespaceFilter
 	BlobSizeLimitWarn  dynamicconfig.IntPropertyFnWithNamespaceFilter
@@ -91,16 +111,18 @@ type Config struct {
 
 func configProvider(dc *dynamicconfig.Collection) *Config {
 	return &Config{
-		Enabled:            Enabled.Get(dc),
-		ChasmEnabled:       dynamicconfig.EnableChasm.Get(dc),
-		MaxCallbacks:       MaxCallbacks.Get(dc),
-		MaxCallbackBytes:   MaxCallbackBytes.Get(dc),
-		IdleTimeout:        IdleTimeout.Get(dc),
-		ClosedRetention:    ClosedRetention.Get(dc),
-		OwnerCheckInterval: OwnerCheckInterval.Get(dc),
-		OwnerCloseGrace:    OwnerCloseGrace.Get(dc),
-		MaxIDLength:        dynamicconfig.MaxIDLengthLimit.Get(dc),
-		BlobSizeLimitError: dynamicconfig.BlobSizeLimitError.Get(dc),
-		BlobSizeLimitWarn:  dynamicconfig.BlobSizeLimitWarn.Get(dc),
+		Enabled:                Enabled.Get(dc),
+		ChasmEnabled:           dynamicconfig.EnableChasm.Get(dc),
+		MaxCallbacks:           MaxCallbacks.Get(dc),
+		MaxCallbackBytes:       MaxCallbackBytes.Get(dc),
+		IdleTimeout:            IdleTimeout.Get(dc),
+		IdleTimeoutNoCallbacks: IdleTimeoutNoCallbacks.Get(dc),
+		PollMaxWait:            PollMaxWait.Get(dc),
+		ClosedRetention:        ClosedRetention.Get(dc),
+		OwnerCheckInterval:     OwnerCheckInterval.Get(dc),
+		OwnerCloseGrace:        OwnerCloseGrace.Get(dc),
+		MaxIDLength:            dynamicconfig.MaxIDLengthLimit.Get(dc),
+		BlobSizeLimitError:     dynamicconfig.BlobSizeLimitError.Get(dc),
+		BlobSizeLimitWarn:      dynamicconfig.BlobSizeLimitWarn.Get(dc),
 	}
 }

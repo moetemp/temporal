@@ -163,6 +163,7 @@ func (s *selectedAPIsForwardingRedirectionPolicySuite) TestSelectedAPIs() {
 		wfMethod("AttachStreamCallback"): {},
 		wfMethod("DetachStreamCallback"): {},
 		wfMethod("NotifyStream"):         {},
+		wfMethod("PollStreamNotifier"):   {},
 	}, selectedAPIsForwardingRedirectionPolicyAllowedAPIs)
 }
 

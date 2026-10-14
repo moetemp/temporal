@@ -24,6 +24,7 @@ const (
 	StreamNotifierService_DetachStreamCallback_FullMethodName   = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/DetachStreamCallback"
 	StreamNotifierService_NotifyStream_FullMethodName           = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/NotifyStream"
 	StreamNotifierService_DescribeStreamNotifier_FullMethodName = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/DescribeStreamNotifier"
+	StreamNotifierService_PollStreamNotifier_FullMethodName     = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/PollStreamNotifier"
 )
 
 // StreamNotifierServiceClient is the client API for StreamNotifierService service.
@@ -34,6 +35,7 @@ type StreamNotifierServiceClient interface {
 	DetachStreamCallback(ctx context.Context, in *DetachStreamCallbackRequest, opts ...grpc.CallOption) (*DetachStreamCallbackResponse, error)
 	NotifyStream(ctx context.Context, in *NotifyStreamRequest, opts ...grpc.CallOption) (*NotifyStreamResponse, error)
 	DescribeStreamNotifier(ctx context.Context, in *DescribeStreamNotifierRequest, opts ...grpc.CallOption) (*DescribeStreamNotifierResponse, error)
+	PollStreamNotifier(ctx context.Context, in *PollStreamNotifierRequest, opts ...grpc.CallOption) (*PollStreamNotifierResponse, error)
 }
 
 type streamNotifierServiceClient struct {
@@ -80,6 +82,15 @@ func (c *streamNotifierServiceClient) DescribeStreamNotifier(ctx context.Context
 	return out, nil
 }
 
+func (c *streamNotifierServiceClient) PollStreamNotifier(ctx context.Context, in *PollStreamNotifierRequest, opts ...grpc.CallOption) (*PollStreamNotifierResponse, error) {
+	out := new(PollStreamNotifierResponse)
+	err := c.cc.Invoke(ctx, StreamNotifierService_PollStreamNotifier_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // StreamNotifierServiceServer is the server API for StreamNotifierService service.
 // All implementations must embed UnimplementedStreamNotifierServiceServer
 // for forward compatibility
@@ -88,6 +99,7 @@ type StreamNotifierServiceServer interface {
 	DetachStreamCallback(context.Context, *DetachStreamCallbackRequest) (*DetachStreamCallbackResponse, error)
 	NotifyStream(context.Context, *NotifyStreamRequest) (*NotifyStreamResponse, error)
 	DescribeStreamNotifier(context.Context, *DescribeStreamNotifierRequest) (*DescribeStreamNotifierResponse, error)
+	PollStreamNotifier(context.Context, *PollStreamNotifierRequest) (*PollStreamNotifierResponse, error)
 	mustEmbedUnimplementedStreamNotifierServiceServer()
 }
 
@@ -106,6 +118,9 @@ func (UnimplementedStreamNotifierServiceServer) NotifyStream(context.Context, *N
 }
 func (UnimplementedStreamNotifierServiceServer) DescribeStreamNotifier(context.Context, *DescribeStreamNotifierRequest) (*DescribeStreamNotifierResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DescribeStreamNotifier not implemented")
+}
+func (UnimplementedStreamNotifierServiceServer) PollStreamNotifier(context.Context, *PollStreamNotifierRequest) (*PollStreamNotifierResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PollStreamNotifier not implemented")
 }
 func (UnimplementedStreamNotifierServiceServer) mustEmbedUnimplementedStreamNotifierServiceServer() {}
 
@@ -192,6 +207,24 @@ func _StreamNotifierService_DescribeStreamNotifier_Handler(srv interface{}, ctx 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _StreamNotifierService_PollStreamNotifier_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PollStreamNotifierRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StreamNotifierServiceServer).PollStreamNotifier(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StreamNotifierService_PollStreamNotifier_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StreamNotifierServiceServer).PollStreamNotifier(ctx, req.(*PollStreamNotifierRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // StreamNotifierService_ServiceDesc is the grpc.ServiceDesc for StreamNotifierService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -214,6 +247,10 @@ var StreamNotifierService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DescribeStreamNotifier",
 			Handler:    _StreamNotifierService_DescribeStreamNotifier_Handler,
+		},
+		{
+			MethodName: "PollStreamNotifier",
+			Handler:    _StreamNotifierService_PollStreamNotifier_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
