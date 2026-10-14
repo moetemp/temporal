@@ -430,9 +430,12 @@ func (s *StreamWakeSuite) TestAReaderOfAClosedRunIsDropped() {
 	s.NoError(r.env.SdkClient().TerminateWorkflow(
 		s.Context(), r.run.GetID(), r.run.GetRunID(), "the reader is done"))
 	r.notify(1, nil)
-	// The delivery finds the run closed, and the next notification drops the callback.
+	// The delivery finds the run closed, and the next notification drops the callback. A repeated
+	// counter writes nothing, so each try sends a new one.
+	counter := int64(1)
 	s.Await(func(s *StreamWakeSuite) {
-		r.notify(2, nil)
+		counter++
+		r.notify(counter, nil)
 		s.Empty(r.describe().GetCallbacks())
 	}, 10*time.Second, 100*time.Millisecond)
 }
