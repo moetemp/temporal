@@ -362,12 +362,35 @@ func (s *StreamWakeSuite) TestTheNotifierWakesAWorkflowReader() {
 
 func (s *StreamWakeSuite) TestAnAttachAfterNotificationsWakesAtOnce() {
 	r := s.newNotifierReader()
+	// The first reader starts the notifier, so the notification has somewhere to land.
+	s.NoError(r.attach("jetty/run/0", "sub-0"))
 	r.notify(5, nil)
 	s.NoError(r.attach("jetty/run/1", "sub-1"))
-	task := r.poll()
-	s.Equal(int64(5), lastScheduledWakes(task)[0].GetCounter(),
-		"a notification before the attach is not lost")
-	r.respond(task)
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		var counter int64
+		for _, wake := range lastScheduledWakes(task) {
+			if wake.GetSubscriptionId() == "sub-1" {
+				counter = wake.GetCounter()
+			}
+		}
+		s.Equal(int64(5), counter, "a notification before the attach is not lost")
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestANotificationBeforeAnyReaderIsDropped() {
+	r := s.newNotifierReader()
+	r.notify(5, nil)
+	_, err := r.env.FrontendClient().DescribeStreamNotifier(
+		s.Context(),
+		&workflowservice.DescribeStreamNotifierRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+		},
+	)
+	var notFound *serviceerror.NotFound
+	s.ErrorAs(err, &notFound, "the notification wrote nothing, and the reader reads after it attaches")
 }
 
 func (s *StreamWakeSuite) TestTheCloseWakesTheReader() {
