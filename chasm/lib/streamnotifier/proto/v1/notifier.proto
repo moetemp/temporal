@@ -54,6 +54,10 @@ message NotifierState {
   // The quiet period before the armed recheck. It doubles after each recheck up to
   // streamnotifier.recheckMax, and a notification sets it back to streamnotifier.recheckInitial.
   google.protobuf.Duration recheck_gap = 18;
+  // When the notifier started. The owner check leaves an owner that does not exist yet alone for
+  // streamnotifier.ownerStartGrace from this time, since a reader may subscribe before the owner
+  // starts. Unset on a notifier that started before this field.
+  google.protobuf.Timestamp start_time = 19;
 }
 
 // What the handler's start answered a caller with.
