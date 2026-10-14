@@ -13,9 +13,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
+	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/api/notificationservice/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
+	"go.temporal.io/server/api/matchingservice/v1"
+	"go.temporal.io/server/api/matchingservicemock/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/chasm"
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
@@ -26,10 +33,14 @@ import (
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
+	"go.temporal.io/server/common/payload"
 	"go.temporal.io/server/common/resource"
 	queuescommon "go.temporal.io/server/service/history/queues/common"
 	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // nexusProgressRequest is what an outbound progress delivery put on the wire.
@@ -70,7 +81,8 @@ func newNexusProgressTest(
 			RetryPolicy: func() backoff.RetryPolicy {
 				return backoff.NewExponentialRetryPolicy(time.Second)
 			},
-			EnableProgress: func(string) bool { return npt.progressEnabled },
+			EnableProgress:       func(string) bool { return npt.progressEnabled },
+			ReceiverStateMaxSize: func(string) int { return testReceiverStateMaxSize },
 		},
 		NamespaceRegistry: nsRegistry,
 		MetricsHandler:    metrics.NoopMetricsHandler,
@@ -315,4 +327,348 @@ func TestProgressBody(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, `{"counter": "4611686018427387905"}`, string(body),
 		"a decimal string keeps counters above 2^53 exact for double-based parsers")
+}
+
+const testReceiverStateMaxSize = 16
+
+func newNexusHandlerProgressCallback(progressOperation string) *Callback {
+	return &Callback{
+		CallbackState: &callbackspb.CallbackState{
+			RequestId:        "request-id",
+			RegistrationTime: timestamppb.New(time.Now()),
+			Callback: &callbackspb.Callback{
+				Variant: &callbackspb.Callback_NexusHandler_{
+					NexusHandler: &callbackspb.Callback_NexusHandler{
+						TaskQueueName:     testNexusHandlerTaskQueue,
+						Service:           "NotificationService",
+						Operation:         "OnComplete",
+						ProgressOperation: progressOperation,
+						SourceContext:     &commonpb.Payload{Data: []byte("source-context")},
+					},
+				},
+			},
+			Status: callbackspb.CALLBACK_STATUS_STANDBY,
+		},
+	}
+}
+
+// nexusHandlerProgressTest records the OnProgress tasks a NexusHandler callback dispatches, and
+// answers each one with the next of answers.
+type nexusHandlerProgressTest struct {
+	*nexusProgressTest
+	dispatched []*matchingservice.DispatchNexusTaskRequest
+	answers    []func() (*matchingservice.DispatchNexusTaskResponse, error)
+}
+
+func newNexusHandlerProgressTest(t *testing.T, cb *Callback) *nexusHandlerProgressTest {
+	nt := &nexusHandlerProgressTest{nexusProgressTest: newNexusProgressTest(t, cb, nil)}
+	matchingClient := matchingservicemock.NewMockMatchingServiceClient(gomock.NewController(t))
+	matchingClient.EXPECT().DispatchNexusTask(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(
+			_ context.Context,
+			req *matchingservice.DispatchNexusTaskRequest,
+			_ ...grpc.CallOption,
+		) (*matchingservice.DispatchNexusTaskResponse, error) {
+			nt.dispatched = append(nt.dispatched, req)
+			if nt.during != nil {
+				nt.during()
+				nt.during = nil
+			}
+			require.NotEmpty(t, nt.answers, "an answer for each dispatch")
+			answer := nt.answers[0]
+			nt.answers = nt.answers[1:]
+			return answer()
+		}).AnyTimes()
+	nt.handler.invocation.matchingClient = matchingClient
+	return nt
+}
+
+func (nt *nexusHandlerProgressTest) answer(
+	resp *matchingservice.DispatchNexusTaskResponse,
+	err error,
+) {
+	nt.answers = append(nt.answers, func() (*matchingservice.DispatchNexusTaskResponse, error) {
+		return resp, err
+	})
+}
+
+// onProgressRequest decodes the input of the i-th dispatched OnProgress task.
+func (nt *nexusHandlerProgressTest) onProgressRequest(
+	i int,
+) *notificationservice.OnProgressRequest {
+	nt.t.Helper()
+	var req notificationservice.OnProgressRequest
+	require.NoError(nt.t, payload.Decode(
+		nt.dispatched[i].GetRequest().GetStartOperation().GetPayload(),
+		&req,
+	))
+	return &req
+}
+
+// onProgressAnswer is a worker's sync answer to OnProgress, encoded by its data converter.
+func onProgressAnswer(
+	t *testing.T,
+	resp *notificationservice.OnProgressResponse,
+) *matchingservice.DispatchNexusTaskResponse {
+	t.Helper()
+	p, err := payload.Encode(resp)
+	require.NoError(t, err)
+	return startOperationResponse(&nexuspb.StartOperationResponse{
+		Variant: &nexuspb.StartOperationResponse_SyncSuccess{
+			SyncSuccess: &nexuspb.StartOperationResponse_Sync{Payload: p},
+		},
+	})
+}
+
+func TestNexusHandlerProgressDelivery(t *testing.T) {
+	t.Run("DispatchesOnProgress", func(t *testing.T) {
+		nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
+		nt.answer(syncSuccessResponse(), nil)
+		nt.report(1)
+		require.NoError(t, nt.runInFlight())
+
+		require.Len(t, nt.dispatched, 1)
+		dispatched := nt.dispatched[0]
+		require.Equal(t, testNexusHandlerTaskQueue, dispatched.GetTaskQueue().GetName())
+		require.Equal(t, enumspb.TASK_QUEUE_KIND_NORMAL, dispatched.GetTaskQueue().GetKind())
+		start := dispatched.GetRequest().GetStartOperation()
+		require.Equal(t, "NotificationService", start.GetService())
+		require.Equal(t, "OnProgress", start.GetOperation())
+		require.Equal(t, "request-id/progress/1", start.GetRequestId())
+		require.Equal(
+			t,
+			[]byte("temporal.api.notificationservice.v1.OnProgressRequest"),
+			start.GetPayload().GetMetadata()["messageType"],
+		)
+		require.Len(t, start.GetLinks(), 1)
+		require.Equal(t, "temporal.api.common.v1.Link.Callback", start.GetLinks()[0].GetType())
+
+		req := nt.onProgressRequest(0)
+		require.Equal(t, int64(1), req.GetProgress().GetCounter())
+		require.Equal(t, "p", req.GetProgress().GetPosition())
+		require.Equal(t, map[string]string{"topic": "t"}, req.GetProgress().GetMetadata())
+		require.Equal(t, []byte("source-context"), req.GetSourceContext().GetData())
+		require.Empty(t, req.GetReceiverState(), "no state before the first accepted progress")
+
+		state := nt.state()
+		require.Equal(t, int64(1), state.GetDeliveredProgressCounter())
+		require.Zero(t, state.GetProgressInFlight())
+	})
+
+	t.Run("NoProgressOperationSendsNothing", func(t *testing.T) {
+		nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback(""))
+		nt.report(1)
+		require.Nil(t, nt.state().GetPendingProgress())
+		require.Zero(t, nt.state().GetProgressInFlight())
+		require.Empty(t, nt.dispatched)
+	})
+
+	undecodable := startOperationResponse(&nexuspb.StartOperationResponse{
+		Variant: &nexuspb.StartOperationResponse_SyncSuccess{
+			SyncSuccess: &nexuspb.StartOperationResponse_Sync{Payload: &commonpb.Payload{
+				Metadata: map[string][]byte{"encoding": []byte("json/plain")},
+				Data:     []byte("{not json"),
+			}},
+		},
+	})
+	for _, tc := range []struct {
+		name         string
+		response     func(*testing.T) *matchingservice.DispatchNexusTaskResponse
+		err          error
+		wantDisabled bool
+		wantInFlight bool
+	}{
+		{
+			name:     "SyncSuccessIsDelivered",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse { return syncSuccessResponse() },
+		},
+		{
+			name: "AsyncSuccessIsDelivered",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return startOperationResponse(&nexuspb.StartOperationResponse{
+					Variant: &nexuspb.StartOperationResponse_AsyncSuccess{
+						AsyncSuccess: &nexuspb.StartOperationResponse_Async{OperationToken: "t"},
+					},
+				})
+			},
+		},
+		{
+			name: "AnOperationFailureRefuses",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return startOperationResponse(&nexuspb.StartOperationResponse{
+					Variant: &nexuspb.StartOperationResponse_Failure{
+						Failure: &failurepb.Failure{
+							Message: "no progress here",
+							FailureInfo: &failurepb.Failure_ApplicationFailureInfo{
+								ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{},
+							},
+						},
+					},
+				})
+			},
+			wantDisabled: true,
+		},
+		{
+			name: "ANotFoundHandlerErrorRefuses",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return handlerFailureResponse("NOT_FOUND")
+			},
+			wantDisabled: true,
+		},
+		{
+			name: "ABadRequestHandlerErrorRefuses",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return handlerFailureResponse("BAD_REQUEST")
+			},
+			wantDisabled: true,
+		},
+		{
+			name: "AnUnauthorizedHandlerErrorRefuses",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return handlerFailureResponse("UNAUTHORIZED")
+			},
+			wantDisabled: true,
+		},
+		{
+			name: "ARetryableHandlerErrorRetries",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return handlerFailureResponse("INTERNAL")
+			},
+			wantInFlight: true,
+		},
+		{
+			name: "AMatchingTimeoutRetries",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return &matchingservice.DispatchNexusTaskResponse{
+					Outcome: &matchingservice.DispatchNexusTaskResponse_RequestTimeout{
+						RequestTimeout: &matchingservice.DispatchNexusTaskResponse_Timeout{},
+					},
+				}
+			},
+			wantInFlight: true,
+		},
+		{
+			name:         "ARetryableRPCErrorRetries",
+			err:          status.Error(codes.Unavailable, "matching unavailable"),
+			wantInFlight: true,
+		},
+		{
+			name:         "ANonRetryableRPCErrorRefuses",
+			err:          status.Error(codes.InvalidArgument, "odd"),
+			wantDisabled: true,
+		},
+		{
+			name: "AnUndecodableResponseRefuses",
+			response: func(*testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return undecodable
+			},
+			wantDisabled: true,
+		},
+		{
+			name: "AStateOverTheCapRefuses",
+			response: func(t *testing.T) *matchingservice.DispatchNexusTaskResponse {
+				return onProgressAnswer(t, &notificationservice.OnProgressResponse{
+					ReceiverState: bytes.Repeat([]byte("x"), testReceiverStateMaxSize+1),
+				})
+			},
+			wantDisabled: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
+			var resp *matchingservice.DispatchNexusTaskResponse
+			if tc.response != nil {
+				resp = tc.response(t)
+			}
+			nt.answer(resp, tc.err)
+			nt.report(1)
+			// A failed delivery never counts against the task queue's circuit breaker, so a
+			// follower that is down holds back no completion.
+			require.NoError(t, nt.runInFlight())
+			require.Len(t, nt.dispatched, 1)
+			state := nt.state()
+			require.Equal(t, tc.wantDisabled, state.GetProgressDisabled())
+			require.Equal(t, tc.wantInFlight, state.GetProgressInFlight() != 0)
+			require.False(t, state.GetReceiverClosed())
+			require.Empty(t, state.GetReceiverState())
+			if !tc.wantDisabled && !tc.wantInFlight {
+				require.Equal(t, int64(1), state.GetDeliveredProgressCounter())
+			}
+		})
+	}
+
+	t.Run("TheSavedStateReachesTheNextRequest", func(t *testing.T) {
+		nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
+		nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{
+			ReceiverState: []byte("s1"),
+		}), nil)
+		nt.report(1)
+		require.NoError(t, nt.runInFlight())
+		require.Equal(t, []byte("s1"), nt.state().GetReceiverState())
+
+		// An async answer is not read, so the saved state stays.
+		nt.answer(startOperationResponse(&nexuspb.StartOperationResponse{
+			Variant: &nexuspb.StartOperationResponse_AsyncSuccess{
+				AsyncSuccess: &nexuspb.StartOperationResponse_Async{OperationToken: "t"},
+			},
+		}), nil)
+		nt.report(2)
+		require.NoError(t, nt.runInFlight())
+		require.Equal(t, []byte("s1"), nt.onProgressRequest(1).GetReceiverState())
+		require.Equal(t, []byte("s1"), nt.state().GetReceiverState())
+
+		nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{
+			ReceiverState: []byte("s3"),
+		}), nil)
+		nt.report(3)
+		require.NoError(t, nt.runInFlight())
+		require.Equal(t, []byte("s1"), nt.onProgressRequest(2).GetReceiverState())
+		require.Equal(t, []byte("s3"), nt.state().GetReceiverState())
+	})
+
+	t.Run("BehindRedeliversTheSameProgress", func(t *testing.T) {
+		nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
+		nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{
+			ReceiverState: []byte("page-1"),
+			Behind:        true,
+		}), nil)
+		nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{
+			ReceiverState: []byte("page-2"),
+		}), nil)
+		nt.report(1)
+		require.NoError(t, nt.runInFlight())
+		state := nt.state()
+		require.Equal(t, int64(1), state.GetProgressInFlightCounter(), "the same progress goes again")
+		require.Equal(t, []byte("page-1"), state.GetReceiverState())
+
+		require.NoError(t, nt.runInFlight())
+		require.Len(t, nt.dispatched, 2)
+		req := nt.onProgressRequest(1)
+		require.Equal(t, int64(1), req.GetProgress().GetCounter())
+		require.Equal(t, []byte("page-1"), req.GetReceiverState())
+		state = nt.state()
+		require.Zero(t, state.GetProgressInFlight())
+		require.Nil(t, state.GetPendingProgress())
+		require.Equal(t, []byte("page-2"), state.GetReceiverState())
+	})
+
+	t.Run("BehindGivesWayToNewerProgress", func(t *testing.T) {
+		nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
+		nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{
+			ReceiverState: []byte("page-1"),
+			Behind:        true,
+		}), nil)
+		nt.answer(syncSuccessResponse(), nil)
+		nt.report(1)
+		nt.during = func() { nt.report(4) }
+		require.NoError(t, nt.runInFlight())
+		require.Equal(t, int64(4), nt.state().GetProgressInFlightCounter())
+		require.NoError(t, nt.runInFlight())
+		require.Equal(t, int64(4), nt.onProgressRequest(1).GetProgress().GetCounter())
+		require.Equal(
+			t,
+			"request-id/progress/4",
+			nt.dispatched[1].GetRequest().GetStartOperation().GetRequestId(),
+		)
+	})
 }

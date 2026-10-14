@@ -7,12 +7,18 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
+	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/api/notificationservice/v1"
 	"go.temporal.io/api/serviceerror"
+	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/server/api/historyservice/v1"
+	"go.temporal.io/server/api/matchingservice/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	tokenspb "go.temporal.io/server/api/token/v1"
 	"go.temporal.io/server/chasm"
@@ -22,8 +28,10 @@ import (
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
+	"go.temporal.io/server/common/payload"
 	queuescommon "go.temporal.io/server/service/history/queues/common"
 	"go.uber.org/fx"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ProgressSource is implemented by a parent whose Nexus progress deliveries carry the operation's
@@ -42,6 +50,13 @@ type progressInvocation struct {
 	progress *callbackspb.Progress
 	// options carries the ProgressSource's token, start time and links, for a Nexus delivery.
 	options nexusrpc.CompleteOperationOptions
+
+	// Set for a NexusHandler delivery.
+	requestID     string
+	receiverState []byte
+	sourceLinks   []*nexuspb.Link
+	// reply is where a NexusHandler delivery puts the receiver's answer.
+	reply *nexusHandlerProgressReply
 }
 
 // progressResult is how a progress delivery ended.
@@ -71,6 +86,12 @@ func variantProgressDelivery(cb *callbackspb.Callback) progressDelivery {
 	switch cb.GetVariant().(type) {
 	case *callbackspb.Callback_Nexus_:
 		return deliverNexusProgress
+	case *callbackspb.Callback_NexusHandler_:
+		// A worker-hosted handler takes progress only when it names an operation for it.
+		if cb.GetNexusHandler().GetProgressOperation() == "" {
+			return nil
+		}
+		return deliverNexusHandlerProgress
 	case *callbackspb.Callback_StreamWake_:
 		return deliverStreamWakeProgress
 	default:
@@ -163,6 +184,19 @@ func (c *Callback) loadProgressArgs(
 		callback: common.CloneProto(c.GetCallback()),
 		progress: common.CloneProto(c.GetPendingProgress()),
 	}
+	if c.GetCallback().GetNexusHandler() != nil {
+		invocation.requestID = c.RequestId
+		invocation.receiverState = slices.Clone(c.ReceiverState)
+		// The links point to this callback, as for the completion.
+		if parent, ok := c.CompletionSource.Get(ctx).(chasm.Component); ok {
+			selfLink, err := buildCallbackLink(ctx, parent, c.RequestId)
+			if err != nil {
+				return progressInvocation{}, err
+			}
+			invocation.sourceLinks = commonnexus.ConvertLinksToProto([]nexus.Link{selfLink})
+		}
+		return invocation, nil
+	}
 	if c.GetCallback().GetNexus() == nil {
 		return invocation, nil
 	}
@@ -184,6 +218,8 @@ type saveProgressInput struct {
 	result      progressResult
 	err         error
 	retryPolicy func(attempt int32, err error) time.Duration
+	// reply is a NexusHandler receiver's answer to a delivered progress.
+	reply nexusHandlerProgressReply
 }
 
 func (c *Callback) saveProgressResult(
@@ -196,6 +232,9 @@ func (c *Callback) saveProgressResult(
 	}
 	switch input.result {
 	case progressDelivered:
+		if input.reply.read {
+			c.ReceiverState = input.reply.receiverState
+		}
 		c.DeliveredProgressCounter = max(c.DeliveredProgressCounter, input.sent.GetCounter())
 		pending := c.GetPendingProgress()
 		if input.sent.GetRecheck() && pending.GetRecheck() {
@@ -204,7 +243,10 @@ func (c *Callback) saveProgressResult(
 			pending.Recheck = false
 			c.PendingProgress = pending
 		}
-		if pending.GetCounter() > c.DeliveredProgressCounter || pending.GetRecheck() {
+		// A receiver that is behind gets the pending progress again at once, which is the sent
+		// progress unless newer progress replaced it.
+		if pending.GetCounter() > c.DeliveredProgressCounter || pending.GetRecheck() ||
+			(input.reply.behind && pending != nil) {
 			return nil, c.startProgressDelivery(ctx)
 		}
 		c.stopProgress()
@@ -275,6 +317,8 @@ func (h *progressTaskHandler) Execute(
 	)
 	defer cancel()
 
+	var reply nexusHandlerProgressReply
+	invocation.reply = &reply
 	result := progressRefused
 	err = fmt.Errorf("callback variant %T takes no progress", invocation.callback.GetVariant())
 	if deliver := progressDeliveryFor(invocation.callback); deliver != nil {
@@ -297,6 +341,7 @@ func (h *progressTaskHandler) Execute(
 		retryPolicy: func(attempt int32, err error) time.Duration {
 			return retryPolicy.ComputeNextDelay(0, int(attempt), err)
 		},
+		reply: reply,
 	})
 	return err
 }
@@ -511,4 +556,129 @@ func (h *progressTaskHandler) deliverInternal(
 		return progressRefused, err
 	}
 	return progressRetry, err
+}
+
+// nexusHandlerProgressReply is what a worker answered to OnProgress.
+type nexusHandlerProgressReply struct {
+	// read is set for a sync answer, whose receiverState then replaces the saved one.
+	read          bool
+	receiverState []byte
+	behind        bool
+}
+
+// deliverNexusHandlerProgress dispatches OnProgress to the worker's task queue as a sync Nexus
+// task, the way the completion goes. No result counts against the task queue's circuit breaker, so
+// a worker that is down delays progress only and holds back no completion.
+func deliverNexusHandlerProgress(
+	ctx context.Context,
+	h *progressTaskHandler,
+	ref chasm.ComponentRef,
+	invocation progressInvocation,
+) (progressResult, error) {
+	ns, err := h.invocation.namespaceRegistry.GetNamespaceByID(namespace.ID(ref.NamespaceID))
+	if err != nil {
+		return progressRetry, err
+	}
+	target := invocation.callback.GetNexusHandler()
+	progress := invocation.progress
+	input, err := commonnexus.EncodeSystemPayload(&notificationservice.OnProgressRequest{
+		Progress: &nexuspb.NexusOperationProgress{
+			Position: progress.GetPosition(),
+			Counter:  progress.GetCounter(),
+			Metadata: maps.Clone(progress.GetMetadata()),
+		},
+		SourceContext: target.GetSourceContext(),
+		ReceiverState: invocation.receiverState,
+	})
+	if err != nil {
+		return progressRefused, err
+	}
+	request := &matchingservice.DispatchNexusTaskRequest{
+		NamespaceId: ns.ID().String(),
+		TaskQueue: &taskqueuepb.TaskQueue{
+			Name: target.GetTaskQueueName(),
+			Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
+		},
+		Request: &nexuspb.Request{
+			// nolint:forbidigo // Wall-clock schedule time of this attempt, not component state.
+			ScheduledTime: timestamppb.New(time.Now()),
+			Variant: &nexuspb.Request_StartOperation{
+				StartOperation: &nexuspb.StartOperationRequest{
+					Service:   target.GetService(),
+					Operation: target.GetProgressOperation(),
+					RequestId: fmt.Sprintf(
+						"%s/progress/%d", invocation.requestID, progress.GetCounter(),
+					),
+					Payload: input,
+					Links:   invocation.sourceLinks,
+				},
+			},
+			Capabilities: &nexuspb.Request_Capabilities{TemporalFailureResponses: true},
+		},
+	}
+	response, err := h.invocation.matchingClient.DispatchNexusTask(ctx, request)
+	if err != nil {
+		if isRetryableCallError(commonnexus.ConvertGRPCError(err, false)) {
+			return progressRetry, err
+		}
+		return progressRefused, err
+	}
+
+	dispatch := commonnexus.ClassifyStartOperationDispatch(response)
+	if dispatch.Outcome == commonnexus.DispatchOutcomeSyncSuccess {
+		result, reply, err := h.readOnProgressResponse(ns, dispatch.OperationResult)
+		if invocation.reply != nil {
+			*invocation.reply = reply
+		}
+		return result, err
+	}
+	if dispatch.Outcome.Succeeded() {
+		h.invocation.logger.Warn("NexusHandler progress operation started asynchronously",
+			tag.WorkflowNamespace(ns.Name().String()),
+			tag.NewStringTag("task-queue", target.GetTaskQueueName()),
+		)
+		return progressDelivered, nil
+	}
+	err = commonnexus.DispatchResultToError(dispatch)
+	switch dispatch.Outcome { // nolint:exhaustive
+	case commonnexus.DispatchOutcomeOperationFailure:
+		// The handler's own verdict on progress, which another attempt would not change.
+		return progressRefused, err
+	case commonnexus.DispatchOutcomeHandlerFailure,
+		commonnexus.DispatchOutcomeRequestTimeout,
+		commonnexus.DispatchOutcomeUnrecognized:
+		if handlerErr, ok := errors.AsType[*nexus.HandlerError](err); ok && handlerErr.Retryable() {
+			return progressRetry, err
+		}
+		return progressRefused, err
+	default:
+		return progressRetry, err
+	}
+}
+
+// readOnProgressResponse reads a sync answer to OnProgress. An answer the server cannot keep
+// refuses progress, since the receiver would give the same answer again.
+func (h *progressTaskHandler) readOnProgressResponse(
+	ns *namespace.Namespace,
+	result *commonpb.Payload,
+) (progressResult, nexusHandlerProgressReply, error) {
+	response := &notificationservice.OnProgressResponse{}
+	if result != nil {
+		if err := payload.Decode(result, response); err != nil {
+			return progressRefused, nexusHandlerProgressReply{}, fmt.Errorf(
+				"failed to decode the OnProgress response: %w", err,
+			)
+		}
+	}
+	maxSize := h.invocation.config.ReceiverStateMaxSize(ns.Name().String())
+	if size := len(response.GetReceiverState()); size > maxSize {
+		return progressRefused, nexusHandlerProgressReply{}, fmt.Errorf(
+			"receiver_state exceeds size limit. Length=%d Limit=%d", size, maxSize,
+		)
+	}
+	return progressDelivered, nexusHandlerProgressReply{
+		read:          true,
+		receiverState: response.GetReceiverState(),
+		behind:        response.GetBehind(),
+	}, nil
 }
