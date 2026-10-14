@@ -1217,7 +1217,7 @@ func TestWorkflowTargets(t *testing.T) {
 			wake, err := n.GetStreamWakeCompletion(ctx, "a")
 			require.NoError(t, err)
 			require.True(t, wake.GetClosed())
-			require.Equal(t, []byte("summary"), wake.GetCloseResult().GetData())
+			require.Nil(t, wake.GetCloseResult(), "the reader reads the result from the store")
 			require.Equal(t, int64(4), wake.GetCounter())
 		})
 
@@ -1229,6 +1229,16 @@ func TestWorkflowTargets(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, wake.GetClosed())
 			require.Equal(t, "boom", wake.GetCloseFailure().GetMessage())
+		})
+
+		nt = newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.NoError(t, nt.closeWithFailure(streamFailure(strings.Repeat("x", 5000))))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			wake, err := n.GetStreamWakeCompletion(ctx, "a")
+			require.NoError(t, err)
+			require.True(t, wake.GetClosed())
+			require.Nil(t, wake.GetCloseFailure(), "a large failure stays in the store")
 		})
 	})
 

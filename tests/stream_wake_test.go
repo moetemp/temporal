@@ -14,7 +14,6 @@ import (
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -384,9 +383,7 @@ func (s *StreamWakeSuite) TestTheCloseWakesTheReader() {
 		s.True(wakes[len(wakes)-1].GetClosed())
 	}, 10*time.Second, 50*time.Millisecond)
 	closed := wakes[len(wakes)-1]
-	var summary string
-	s.NoError(converter.GetDefaultDataConverter().FromPayload(closed.GetCloseResult(), &summary))
-	s.Equal("summary", summary)
+	s.Nil(closed.GetCloseResult(), "the reader reads the result from the store")
 	s.Equal(int64(3), closed.GetCounter())
 }
 
