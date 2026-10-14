@@ -324,6 +324,53 @@ func (x *StreamWakeState) GetSources() []string {
 	return nil
 }
 
+// The Workflow's Nexus operation progress, keyed by the scheduled event ID of each operation as a
+// decimal string. Kept on the Workflow so a transaction learns whether any progress waits without
+// loading every operation. The progress itself stays on each operation.
+type NexusProgressState struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Index         *TaskCarriedIndex      `protobuf:"bytes,1,opt,name=index,proto3" json:"index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NexusProgressState) Reset() {
+	*x = NexusProgressState{}
+	mi := &file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NexusProgressState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NexusProgressState) ProtoMessage() {}
+
+func (x *NexusProgressState) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NexusProgressState.ProtoReflect.Descriptor instead.
+func (*NexusProgressState) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *NexusProgressState) GetIndex() *TaskCarriedIndex {
+	if x != nil {
+		return x.Index
+	}
+	return nil
+}
+
 var File_temporal_server_chasm_lib_workflow_proto_v1_state_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc = "" +
@@ -349,7 +396,9 @@ const file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc = "" 
 	"\n" +
 	"WakesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x128\n" +
-	"\x05value\x18\x02 \x01(\v2\".temporal.api.stream.v1.StreamWakeR\x05value:\x028\x01BDZBgo.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpbb\x06proto3"
+	"\x05value\x18\x02 \x01(\v2\".temporal.api.stream.v1.StreamWakeR\x05value:\x028\x01\"i\n" +
+	"\x12NexusProgressState\x12S\n" +
+	"\x05index\x18\x01 \x01(\v2=.temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndexR\x05indexBDZBgo.temporal.io/server/chasm/lib/workflow/gen/workflowpb;workflowpbb\x06proto3"
 
 var (
 	file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDescOnce sync.Once
@@ -363,28 +412,30 @@ func file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDescGZIP() 
 	return file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDescData
 }
 
-var file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_goTypes = []any{
 	(*NexusOperationParentData)(nil),    // 0: temporal.server.chasm.lib.workflow.proto.v1.NexusOperationParentData
 	(*NexusCancellationParentData)(nil), // 1: temporal.server.chasm.lib.workflow.proto.v1.NexusCancellationParentData
 	(*IncomingSignalData)(nil),          // 2: temporal.server.chasm.lib.workflow.proto.v1.IncomingSignalData
 	(*TaskCarriedIndex)(nil),            // 3: temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndex
 	(*StreamWakeState)(nil),             // 4: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState
-	nil,                                 // 5: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.WakesEntry
-	(*timestamppb.Timestamp)(nil),       // 6: google.protobuf.Timestamp
-	(*v1.StreamWake)(nil),               // 7: temporal.api.stream.v1.StreamWake
+	(*NexusProgressState)(nil),          // 5: temporal.server.chasm.lib.workflow.proto.v1.NexusProgressState
+	nil,                                 // 6: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.WakesEntry
+	(*timestamppb.Timestamp)(nil),       // 7: google.protobuf.Timestamp
+	(*v1.StreamWake)(nil),               // 8: temporal.api.stream.v1.StreamWake
 }
 var file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_depIdxs = []int32{
-	6, // 0: temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndex.last_carried_time:type_name -> google.protobuf.Timestamp
-	6, // 1: temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndex.release_time:type_name -> google.protobuf.Timestamp
+	7, // 0: temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndex.last_carried_time:type_name -> google.protobuf.Timestamp
+	7, // 1: temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndex.release_time:type_name -> google.protobuf.Timestamp
 	3, // 2: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.index:type_name -> temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndex
-	5, // 3: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.wakes:type_name -> temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.WakesEntry
-	7, // 4: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.WakesEntry.value:type_name -> temporal.api.stream.v1.StreamWake
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	6, // 3: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.wakes:type_name -> temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.WakesEntry
+	3, // 4: temporal.server.chasm.lib.workflow.proto.v1.NexusProgressState.index:type_name -> temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndex
+	8, // 5: temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.WakesEntry.value:type_name -> temporal.api.stream.v1.StreamWake
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_init() }
@@ -398,7 +449,7 @@ func file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc), len(file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

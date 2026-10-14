@@ -6,3 +6,7 @@ option go_package = "go.temporal.io/server/chasm/lib/workflow/gen/workflowpb;wor
 
 // Lets stream wakes that waited out streamwake.minInterval schedule a Workflow Task.
 message StreamWakeReleaseTask {}
+
+// Lets Nexus operation progress that waited out nexusoperation.progressMinInterval schedule a
+// Workflow Task.
+message NexusProgressReleaseTask {}

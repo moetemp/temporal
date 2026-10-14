@@ -57,3 +57,10 @@ message StreamWakeState {
   // history.maximumStreamWakeSources.
   repeated string sources = 3;
 }
+
+// The Workflow's Nexus operation progress, keyed by the scheduled event ID of each operation as a
+// decimal string. Kept on the Workflow so a transaction learns whether any progress waits without
+// loading every operation. The progress itself stays on each operation.
+message NexusProgressState {
+  TaskCarriedIndex index = 1;
+}

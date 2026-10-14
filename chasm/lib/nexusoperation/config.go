@@ -60,6 +60,15 @@ one per operation onto the caller's next Workflow Task scheduled event. When fal
 delivery is refused with a 400, which tells the handler to stop sending progress.`,
 )
 
+var ProgressMinInterval = dynamicconfig.NewNamespaceDurationSetting(
+	"nexusoperation.progressMinInterval",
+	time.Second,
+	`Experimental. The shortest time between a Workflow Task that carried Nexus operation progress
+and the next task that progress schedules for the same caller Workflow. Progress that arrives
+sooner waits, and newer progress folds into it. A task scheduled for any other reason still
+carries it. This bounds the History a long stream costs the caller.`,
+)
+
 var ChasmWorkflowOperationsRolloutPercent = dynamicconfig.NewNamespaceIntSetting(
 	"nexusoperation.chasmWorkflowOperationsRolloutPercent",
 	0,

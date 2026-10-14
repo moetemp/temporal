@@ -82,6 +82,7 @@ type Config struct {
 	EnableCHASMSkipPersistence                 dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	EnableChasmNexusWorkflowOperations         dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	ChasmNexusWorkflowOperationsRolloutPercent dynamicconfig.IntPropertyFnWithNamespaceFilter
+	NexusOperationProgressMinInterval          dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	StreamWakeMinInterval                      dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	MaximumStreamWakeSources                   dynamicconfig.IntPropertyFnWithNamespaceFilter
 	EnableCHASMCallbacks                       dynamicconfig.BoolPropertyFnWithNamespaceFilter
@@ -549,6 +550,7 @@ func NewConfig(
 		EnableCHASMSkipPersistence:                 dynamicconfig.EnableCHASMSkipPersistence.Get(dc),
 		EnableChasmNexusWorkflowOperations:         nexusoperation.EnableChasmWorkflowOperations.Get(dc),
 		ChasmNexusWorkflowOperationsRolloutPercent: nexusoperation.ChasmWorkflowOperationsRolloutPercent.Get(dc),
+		NexusOperationProgressMinInterval:          nexusoperation.ProgressMinInterval.Get(dc),
 		StreamWakeMinInterval:                      dynamicconfig.StreamWakeMinInterval.Get(dc),
 		MaximumStreamWakeSources:                   dynamicconfig.MaximumStreamWakeSources.Get(dc),
 		ChasmMaxInMemoryPureTasks:                  dynamicconfig.ChasmMaxInMemoryPureTasks.Get(dc),

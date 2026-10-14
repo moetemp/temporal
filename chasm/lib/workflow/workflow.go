@@ -49,6 +49,10 @@ type Workflow struct {
 	// StreamWakes holds the wakes of the run's stream readers that wait for, or ride, a Workflow
 	// Task, so a transaction can tell whether a task must be scheduled for them.
 	StreamWakes chasm.Field[*chasmworkflowpb.StreamWakeState]
+
+	// NexusProgress indexes the Nexus operations whose progress waits for, or rides, a Workflow
+	// Task, so a transaction can tell without loading every operation.
+	NexusProgress chasm.Field[*chasmworkflowpb.NexusProgressState]
 }
 
 func NewWorkflow(
