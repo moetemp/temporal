@@ -121,6 +121,12 @@ func TestValidateCallbacks(t *testing.T) {
 		require.NoError(t, v.Validate(ctx, "ns", cbs, opts))
 	})
 
+	t.Run("ValidNexusHandlerCallbackWithProgressOperation", func(t *testing.T) {
+		cb := newNexusHandlerCallback()
+		cb.GetNexusHandler().ProgressOperation = "OnProgress"
+		require.NoError(t, v.Validate(ctx, "ns", []*commonpb.Callback{cb}, opts))
+	})
+
 	t.Run("InternalCallbacksFail", func(t *testing.T) {
 		cbs := []*commonpb.Callback{
 			{
@@ -283,6 +289,13 @@ func TestValidateNexusHandlerCallback(t *testing.T) {
 			name:   "operation length",
 			mutate: func(nh *commonpb.Callback_NexusHandler) { nh.Operation = strings.Repeat("x", 41) },
 			errMsg: "operation exceeds length limit",
+		},
+		{
+			name: "progress_operation length",
+			mutate: func(nh *commonpb.Callback_NexusHandler) {
+				nh.ProgressOperation = strings.Repeat("x", 41)
+			},
+			errMsg: "progress_operation exceeds length limit",
 		},
 		{
 			name: "source_context size",

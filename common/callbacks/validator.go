@@ -178,11 +178,20 @@ func (v *validator) validateNexusHandler(namespaceName string, cb *commonpb.Call
 		name      string
 		value     string
 		maxLength int
+		optional  bool
 	}{
-		{"service", cb.GetService(), v.config.MaxServiceNameLength(namespaceName)},
-		{"operation", cb.GetOperation(), v.config.MaxOperationNameLength(namespaceName)},
+		{"service", cb.GetService(), v.config.MaxServiceNameLength(namespaceName), false},
+		{"operation", cb.GetOperation(), v.config.MaxOperationNameLength(namespaceName), false},
+		// Empty means the callback takes the completion only.
+		{
+			"progress_operation", cb.GetProgressOperation(),
+			v.config.MaxOperationNameLength(namespaceName), true,
+		},
 	} {
 		if field.value == "" {
+			if field.optional {
+				continue
+			}
 			return serviceerror.NewInvalidArgumentf("%s is required", field.name)
 		}
 		if len(field.value) > field.maxLength {

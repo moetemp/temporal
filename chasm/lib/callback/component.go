@@ -266,6 +266,8 @@ func (c *Callback) ToAPICallback() (*commonpb.Callback, error) {
 				Service:       variant.NexusHandler.GetService(),
 				Operation:     variant.NexusHandler.GetOperation(),
 				SourceContext: common.CloneProto(variant.NexusHandler.GetSourceContext()),
+
+				ProgressOperation: variant.NexusHandler.GetProgressOperation(),
 			},
 		}
 		return res, nil
@@ -368,6 +370,8 @@ func FromAPICallback(cb *commonpb.Callback) (*callbackspb.Callback, error) {
 				Service:       variant.NexusHandler.GetService(),
 				Operation:     variant.NexusHandler.GetOperation(),
 				SourceContext: common.CloneProto(variant.NexusHandler.GetSourceContext()),
+
+				ProgressOperation: variant.NexusHandler.GetProgressOperation(),
 			},
 		}
 		return res, nil

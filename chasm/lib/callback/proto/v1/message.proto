@@ -53,6 +53,9 @@ message CallbackState {
   // progress or completion and its parent may drop it. Dropping it drops its pending completion
   // too, which a closed receiver wouldn't take.
   bool receiver_closed = 15;
+  // Opaque state that a NexusHandler receiver returned with its last accepted progress, such as a
+  // read cursor. Sent back in the next progress delivery and in the completion.
+  bytes receiver_state = 16;
   // The number of progress deliveries started so far. The next one is numbered one higher.
   int64 progress_deliveries = 17;
   // The counter that the progress delivery in flight carries.
@@ -110,6 +113,8 @@ message Callback {
     string operation = 3;
     // Arbitrary user-supplied data from the source operation's callsite.
     temporal.api.common.v1.Payload source_context = 4;
+    // Target operation for progress. Empty means the callback takes the completion only.
+    string progress_operation = 5;
   }
 
   // Wakes one stream reader of a Workflow run in the callback's namespace. The progress and the

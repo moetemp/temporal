@@ -146,6 +146,9 @@ type CallbackState struct {
 	// progress or completion and its parent may drop it. Dropping it drops its pending completion
 	// too, which a closed receiver wouldn't take.
 	ReceiverClosed bool `protobuf:"varint,15,opt,name=receiver_closed,json=receiverClosed,proto3" json:"receiver_closed,omitempty"`
+	// Opaque state that a NexusHandler receiver returned with its last accepted progress, such as a
+	// read cursor. Sent back in the next progress delivery and in the completion.
+	ReceiverState []byte `protobuf:"bytes,16,opt,name=receiver_state,json=receiverState,proto3" json:"receiver_state,omitempty"`
 	// The number of progress deliveries started so far. The next one is numbered one higher.
 	ProgressDeliveries int64 `protobuf:"varint,17,opt,name=progress_deliveries,json=progressDeliveries,proto3" json:"progress_deliveries,omitempty"`
 	// The counter that the progress delivery in flight carries.
@@ -280,6 +283,13 @@ func (x *CallbackState) GetReceiverClosed() bool {
 		return x.ReceiverClosed
 	}
 	return false
+}
+
+func (x *CallbackState) GetReceiverState() []byte {
+	if x != nil {
+		return x.ReceiverState
+	}
+	return nil
 }
 
 func (x *CallbackState) GetProgressDeliveries() int64 {
@@ -519,7 +529,8 @@ type Callback_Nexus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Callback URL.
 	// (-- api-linter: core::0140::uri=disabled
-	//     aip.dev/not-precedent: Not respecting aip here. --)
+	//
+	//	aip.dev/not-precedent: Not respecting aip here. --)
 	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
 	// Header to attach to callback request.
 	Header        map[string]string `protobuf:"bytes,2,rep,name=header,proto3" json:"header,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -582,8 +593,10 @@ type Callback_NexusHandler struct {
 	Operation string `protobuf:"bytes,3,opt,name=operation,proto3" json:"operation,omitempty"`
 	// Arbitrary user-supplied data from the source operation's callsite.
 	SourceContext *v11.Payload `protobuf:"bytes,4,opt,name=source_context,json=sourceContext,proto3" json:"source_context,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Target operation for progress. Empty means the callback takes the completion only.
+	ProgressOperation string `protobuf:"bytes,5,opt,name=progress_operation,json=progressOperation,proto3" json:"progress_operation,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Callback_NexusHandler) Reset() {
@@ -642,6 +655,13 @@ func (x *Callback_NexusHandler) GetSourceContext() *v11.Payload {
 		return x.SourceContext
 	}
 	return nil
+}
+
+func (x *Callback_NexusHandler) GetProgressOperation() string {
+	if x != nil {
+		return x.ProgressOperation
+	}
+	return ""
 }
 
 // Wakes one stream reader of a Workflow run in the callback's namespace. The progress and the
@@ -710,7 +730,7 @@ var File_temporal_server_chasm_lib_callback_proto_v1_message_proto protoreflect.
 
 const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\"\x91\b\n" +
+	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\"\xb8\b\n" +
 	"\rCallbackState\x12R\n" +
 	"\bcallback\x18\x01 \x01(\v26.temporal.server.chasm.lib.callbacks.proto.v1.CallbackR\bcallback\x12G\n" +
 	"\x11registration_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x10registrationTime\x12T\n" +
@@ -727,7 +747,8 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\x1adelivered_progress_counter\x18\f \x01(\x03R\x18deliveredProgressCounter\x12+\n" +
 	"\x11progress_disabled\x18\r \x01(\bR\x10progressDisabled\x12)\n" +
 	"\x10progress_attempt\x18\x0e \x01(\x05R\x0fprogressAttempt\x12'\n" +
-	"\x0freceiver_closed\x18\x0f \x01(\bR\x0ereceiverClosed\x12/\n" +
+	"\x0freceiver_closed\x18\x0f \x01(\bR\x0ereceiverClosed\x12%\n" +
+	"\x0ereceiver_state\x18\x10 \x01(\fR\rreceiverState\x12/\n" +
 	"\x13progress_deliveries\x18\x11 \x01(\x03R\x12progressDeliveries\x12;\n" +
 	"\x1aprogress_in_flight_counter\x18\x12 \x01(\x03R\x17progressInFlightCounter\x1a\x10\n" +
 	"\x0eWorkflowClosed\"\xf9\x01\n" +
@@ -738,7 +759,7 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\arecheck\x18\x04 \x01(\bR\arecheck\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd8\x06\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x87\a\n" +
 	"\bCallback\x12T\n" +
 	"\x05nexus\x18\x02 \x01(\v2<.temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusH\x00R\x05nexus\x12j\n" +
 	"\rnexus_handler\x18\x04 \x01(\v2C.temporal.server.chasm.lib.callbacks.proto.v1.Callback.NexusHandlerH\x00R\fnexusHandler\x12d\n" +
@@ -750,12 +771,13 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\x06header\x18\x02 \x03(\v2H.temporal.server.chasm.lib.callbacks.proto.v1.Callback.Nexus.HeaderEntryR\x06header\x1a9\n" +
 	"\vHeaderEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xb6\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xe5\x01\n" +
 	"\fNexusHandler\x12&\n" +
 	"\x0ftask_queue_name\x18\x01 \x01(\tR\rtaskQueueName\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12\x1c\n" +
 	"\toperation\x18\x03 \x01(\tR\toperation\x12F\n" +
-	"\x0esource_context\x18\x04 \x01(\v2\x1f.temporal.api.common.v1.PayloadR\rsourceContext\x1am\n" +
+	"\x0esource_context\x18\x04 \x01(\v2\x1f.temporal.api.common.v1.PayloadR\rsourceContext\x12-\n" +
+	"\x12progress_operation\x18\x05 \x01(\tR\x11progressOperation\x1am\n" +
 	"\n" +
 	"StreamWake\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
