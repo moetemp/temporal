@@ -14,7 +14,6 @@ import (
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -384,9 +383,7 @@ func (s *StreamWakeSuite) TestTheCloseWakesTheReader() {
 		s.True(wakes[len(wakes)-1].GetClosed())
 	}, 10*time.Second, 50*time.Millisecond)
 	closed := wakes[len(wakes)-1]
-	var summary string
-	s.NoError(converter.GetDefaultDataConverter().FromPayload(closed.GetCloseResult(), &summary))
-	s.Equal("summary", summary)
+	s.Nil(closed.GetCloseResult(), "the reader reads the result from the store")
 	s.Equal(int64(3), closed.GetCounter())
 }
 
@@ -425,4 +422,41 @@ func (s *StreamWakeSuite) TestTheReaderLimitFailsTheAttach() {
 	s.NoError(r.attach("jetty/run/1", "sub-1"), "attaching again changes nothing")
 	var failed *serviceerror.FailedPrecondition
 	s.ErrorAs(r.attach("jetty/run/2", "sub-2"), &failed)
+}
+
+func (s *StreamWakeSuite) TestADetachedReaderFreesItsPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	_, err := r.env.FrontendClient().DetachStreamCallback(
+		s.Context(),
+		&workflowservice.DetachStreamCallbackRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+			RequestId: "jetty/run/1",
+		},
+	)
+	s.NoError(err)
+	// The detach frees the place when the callback's completion runs.
+	s.Await(func(s *StreamWakeSuite) {
+		s.NoError(r.attach("jetty/run/2", "sub-2"))
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestATakenCloseFreesTheReadersPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, testcore.MustToPayload(s.T(), "summary"))
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes := lastScheduledWakes(task)
+		s.NotEmpty(wakes)
+		s.True(wakes[len(wakes)-1].GetClosed())
+	}, 10*time.Second, 50*time.Millisecond)
+	r.stream.Topic = "another"
+	s.NoError(r.attach("jetty/run/2", "sub-2"))
 }

@@ -70,6 +70,20 @@ func (w *Workflow) ReserveStreamWakeSource(
 	return nil
 }
 
+// ReleaseStreamWakeSource stops counting a reader toward the run's readers. A wake it has not
+// taken yet stays pending.
+func (w *Workflow) ReleaseStreamWakeSource(ctx chasm.MutableContext, key string) {
+	state := common.CloneProto(w.streamWakeState(ctx))
+	removeStreamWakeSource(state, key)
+	w.setStreamWakeState(ctx, state)
+}
+
+func removeStreamWakeSource(state *chasmworkflowpb.StreamWakeState, key string) {
+	if i, found := slices.BinarySearch(state.Sources, key); found {
+		state.Sources = slices.Delete(state.Sources, i, i+1)
+	}
+}
+
 func addStreamWakeSource(state *chasmworkflowpb.StreamWakeState, key string, maxSources int) error {
 	if _, found := slices.BinarySearch(state.Sources, key); found {
 		return nil
@@ -122,7 +136,9 @@ func (w *Workflow) HasScheduledStreamWakes(ctx chasm.Context) bool {
 
 // TakeStreamWakes returns the pending wake of every reader in subscription ID order, for a Workflow
 // Task scheduled event that is being written. The event acknowledges them, and until the task
-// starts newer wakes for those readers fold into it.
+// starts newer wakes for those readers fold into it. A close or a resubscribe ends the reader's
+// callback, so the reader stops counting toward the run's readers. A reader that attaches again
+// counts again.
 func (w *Workflow) TakeStreamWakes(ctx chasm.MutableContext) []*streampb.StreamWake {
 	state := common.CloneProto(w.streamWakeState(ctx))
 	index, keys := carriedIndexTake(state.GetIndex(), ctx.Now(w))
@@ -134,6 +150,9 @@ func (w *Workflow) TakeStreamWakes(ctx chasm.MutableContext) []*streampb.StreamW
 			continue
 		}
 		delete(state.Wakes, key)
+		if wake.GetClosed() || wake.GetResubscribe() {
+			removeStreamWakeSource(state, key)
+		}
 		taken = append(taken, wake)
 	}
 	w.setStreamWakeState(ctx, state)

@@ -562,7 +562,8 @@ func (n *StreamNotifier) GetNexusCompletion(
 }
 
 // GetStreamWakeCompletion is the wake that completes a Workflow reader's callback: none if the
-// reader detached, a resubscribe if an idle timeout failed it, otherwise the stream's close.
+// reader detached, a resubscribe if an idle timeout failed it, otherwise the stream's close with
+// no result.
 func (n *StreamNotifier) GetStreamWakeCompletion(
 	_ chasm.Context,
 	requestID string,
@@ -580,10 +581,17 @@ func (n *StreamNotifier) GetStreamWakeCompletion(
 		return wake, nil
 	}
 	wake.Closed = true
-	wake.CloseResult = common.CloneProto(n.CloseResult)
-	wake.CloseFailure = common.CloneProto(n.CloseFailure)
+	// One Workflow Task scheduled event carries the wakes of all of a run's readers, so a wake
+	// leaves out a close outcome that can be large. The reader's final read of the store returns
+	// it. Only a close the owner check makes has no outcome in the store, and that one is small.
+	if proto.Size(n.CloseFailure) <= maxWakeCloseFailureBytes {
+		wake.CloseFailure = common.CloneProto(n.CloseFailure)
+	}
 	return wake, nil
 }
+
+// maxWakeCloseFailureBytes bounds the close failure a wake carries.
+const maxWakeCloseFailureBytes = 4 * 1024
 
 func (n *StreamNotifier) describeCallbacks(
 	ctx chasm.Context,
