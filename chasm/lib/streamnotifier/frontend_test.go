@@ -410,7 +410,7 @@ func TestOwnerKindsTakeTheirOwnFields(t *testing.T) {
 			r.ActivityId = strings.Repeat("a", 11)
 		},
 		"an unknown kind": func(r *streampb.StreamReference) {
-			r.OwnerKind = enumspb.StreamOwnerKind(3)
+			r.OwnerKind = enumspb.StreamOwnerKind(4)
 		},
 		"no kind": func(r *streampb.StreamReference) {
 			r.OwnerKind = enumspb.STREAM_OWNER_KIND_UNSPECIFIED
@@ -443,4 +443,59 @@ func TestOwnerKindsTakeTheirOwnFields(t *testing.T) {
 		Topic:      "t",
 	}), "Workflow streams do not need standalone Activities")
 	require.Equal(t, 2, client.notified)
+}
+
+func TestWorkflowActivityRefsTakeTheirOwnFields(t *testing.T) {
+	registry := namespace.NewMockRegistry(gomock.NewController(t))
+	registry.EXPECT().
+		GetNamespaceID(gomock.Any()).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
+	client := &fakeNotifierClient{}
+	h := NewFrontendHandler(client, &Config{
+		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ChasmEnabled:       dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ActivityEnabled:    dynamicconfig.GetBoolPropertyFnFilteredByNamespace(false),
+		BlobSizeLimitError: dynamicconfig.GetIntPropertyFnFilteredByNamespace(1 << 20),
+		BlobSizeLimitWarn:  dynamicconfig.GetIntPropertyFnFilteredByNamespace(1 << 20),
+		MaxIDLength:        dynamicconfig.GetIntPropertyFn(10),
+	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
+	notify := func(stream *streampb.StreamReference) error {
+		_, err := h.NotifyStream(context.Background(), &workflowservice.NotifyStreamRequest{
+			Namespace: "ns", StreamRef: stream, Counter: 1,
+		})
+		return err
+	}
+	workflowActivity := func() *streampb.StreamReference {
+		return &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY,
+			WorkflowId: "wf",
+			RunId:      "run",
+			ActivityId: "act",
+			Topic:      "t",
+		}
+	}
+	// Standalone Activities are off here, and Workflow Activities do not need them.
+	require.NoError(t, notify(workflowActivity()))
+	require.Equal(t, 1, client.notified)
+
+	for name, change := range map[string]func(*streampb.StreamReference){
+		"no workflow_id": func(r *streampb.StreamReference) { r.WorkflowId = "" },
+		"no run_id":      func(r *streampb.StreamReference) { r.RunId = "" },
+		"no activity_id": func(r *streampb.StreamReference) { r.ActivityId = "" },
+		"no topic":       func(r *streampb.StreamReference) { r.Topic = "" },
+		"a long workflow_id": func(r *streampb.StreamReference) {
+			r.WorkflowId = strings.Repeat("w", 11)
+		},
+		"a long activity_id": func(r *streampb.StreamReference) {
+			r.ActivityId = strings.Repeat("a", 11)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ref := workflowActivity()
+			change(ref)
+			var invalid *serviceerror.InvalidArgument
+			require.ErrorAs(t, notify(ref), &invalid)
+		})
+	}
 }
