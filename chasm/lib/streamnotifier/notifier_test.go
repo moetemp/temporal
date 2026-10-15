@@ -81,7 +81,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		OwnerStartGrace:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		// Most tests check one delivery per notification. The debounce tests turn it on.
 		DebounceWindow: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(0),
-		MaxIDLength:        dynamicconfig.GetIntPropertyFn(1000),
+		MaxIDLength:    dynamicconfig.GetIntPropertyFn(1000),
 	}
 	ctrl := gomock.NewController(t)
 	history := historyservicemock.NewMockHistoryServiceClient(ctrl)
