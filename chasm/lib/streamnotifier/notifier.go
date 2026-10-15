@@ -10,6 +10,7 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
@@ -26,14 +27,19 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// BusinessID is the notifier's execution ID for a stream: its owner kind, owner, the first run of
-// the owner's run chain, and topic, escaped so that no two streams map to one ID. One notifier
-// serves the stream across the chain's runs, and a later chain that reuses the Workflow ID and
-// topic gets a notifier of its own.
+// BusinessID is the notifier's execution ID for a stream: its owner kind, owner, the run that keys
+// the owner, and topic, escaped so that no two streams map to one ID. For a Workflow the run is the
+// first run of its chain, so one notifier serves the stream across the chain's runs, and a later
+// chain that reuses the Workflow ID and topic gets a notifier of its own. For an Activity it is the
+// Activity run.
 func BusinessID(ref *streampb.StreamReference) string {
 	kind := strings.ToLower(strings.TrimPrefix(ref.GetOwnerKind().String(), "STREAM_OWNER_KIND_"))
+	ownerID := ref.GetWorkflowId()
+	if ref.GetOwnerKind() == enumspb.STREAM_OWNER_KIND_ACTIVITY {
+		ownerID = ref.GetActivityId()
+	}
 	return kind + "/" + url.PathEscape(
-		ref.GetWorkflowId(),
+		ownerID,
 	) + "/" + url.PathEscape(
 		ref.GetRunId(),
 	) + "/" + url.PathEscape(
@@ -67,6 +73,7 @@ func newStreamNotifier(ref *streampb.StreamReference) *StreamNotifier {
 				WorkflowId: ref.GetWorkflowId(),
 				RunId:      ref.GetRunId(),
 				Topic:      ref.GetTopic(),
+				ActivityId: ref.GetActivityId(),
 			},
 		},
 	}

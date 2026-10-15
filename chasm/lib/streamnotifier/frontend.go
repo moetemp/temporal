@@ -111,9 +111,15 @@ func (h *frontendHandler) resolve(
 	if err := ValidateReference(ref); err != nil {
 		return "", "", err
 	}
-	// Both become part of the notifier's business ID.
+	if err := checkOwnerKindEnabled(h.config, namespaceName, ref); err != nil {
+		return "", "", err
+	}
+	// They become part of the notifier's business ID.
 	if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
+	}
+	if len(ref.GetActivityId()) > h.config.MaxIDLength() {
+		return "", "", serviceerror.NewInvalidArgument("stream_ref.activity_id is too long")
 	}
 	if len(ref.GetTopic()) > h.config.MaxIDLength() {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is too long")
@@ -125,24 +131,60 @@ func (h *frontendHandler) resolve(
 	return id.String(), BusinessID(ref), nil
 }
 
-// ValidateReference rejects a stream reference the notifier cannot key a stream by.
+// ValidateReference rejects a stream reference the notifier cannot key a stream by. Each owner
+// kind takes its own owner field and refuses the other kind's.
 func ValidateReference(ref *streampb.StreamReference) error {
-	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
+	switch ref.GetOwnerKind() {
+	case enumspb.STREAM_OWNER_KIND_WORKFLOW:
+		if ref.GetWorkflowId() == "" {
+			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
+		}
+		if ref.GetActivityId() != "" {
+			return serviceerror.NewInvalidArgument(
+				"stream_ref.activity_id must be empty for STREAM_OWNER_KIND_WORKFLOW",
+			)
+		}
+	case enumspb.STREAM_OWNER_KIND_ACTIVITY:
+		if ref.GetActivityId() == "" {
+			return serviceerror.NewInvalidArgument("stream_ref.activity_id is required")
+		}
+		if ref.GetWorkflowId() != "" {
+			return serviceerror.NewInvalidArgument(
+				"stream_ref.workflow_id must be empty for STREAM_OWNER_KIND_ACTIVITY",
+			)
+		}
+	default:
 		return serviceerror.NewInvalidArgument(
-			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW",
+			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW or " +
+				"STREAM_OWNER_KIND_ACTIVITY",
 		)
-	}
-	if ref.GetWorkflowId() == "" {
-		return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
 	}
 	if ref.GetTopic() == "" {
 		return serviceerror.NewInvalidArgument("stream_ref.topic is required")
 	}
-	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
-	// its own; without it the request would reach a different notifier.
+	// The run that keys the notifier: without it the request would reach a different notifier.
 	if ref.GetRunId() == "" {
 		return serviceerror.NewInvalidArgument(
-			"stream_ref.run_id must name the run chain's first run",
+			"stream_ref.run_id must name the run chain's first run or the Activity run",
+		)
+	}
+	return nil
+}
+
+// checkOwnerKindEnabled refuses an owner kind that is off for the namespace. It is a failed
+// precondition and never Unimplemented, since Core takes Unimplemented as a server with no
+// notifier and stops its notifier calls for every stream. The frontend and the System Nexus
+// notifier both resolve through it.
+func checkOwnerKindEnabled(
+	config *Config,
+	namespaceName string,
+	ref *streampb.StreamReference,
+) error {
+	if ref.GetOwnerKind() == enumspb.STREAM_OWNER_KIND_ACTIVITY &&
+		!config.ActivityEnabled(namespaceName) {
+		return serviceerror.NewFailedPrecondition(
+			"streams owned by a standalone Activity need standalone Activities, " +
+				"which are not enabled for this namespace",
 		)
 	}
 	return nil

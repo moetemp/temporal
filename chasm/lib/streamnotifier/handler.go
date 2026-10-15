@@ -25,10 +25,16 @@ type handler struct {
 	config        *Config
 	logger        log.Logger
 	historyClient resource.HistoryClient
+	owners        *ownerDescriber
 }
 
-func newHandler(config *Config, logger log.Logger, historyClient resource.HistoryClient) *handler {
-	return &handler{config: config, logger: logger, historyClient: historyClient}
+func newHandler(
+	config *Config,
+	logger log.Logger,
+	historyClient resource.HistoryClient,
+	owners *ownerDescriber,
+) *handler {
+	return &handler{config: config, logger: logger, historyClient: historyClient, owners: owners}
 }
 
 // startOrUpdate applies update to the stream's notifier, creating it if the stream has none. A
@@ -75,7 +81,7 @@ func (h *handler) AttachStreamCallback(
 	defer log.CapturePanic(h.logger, &retErr)
 	fe := req.GetFrontendRequest()
 	ns := fe.GetNamespace()
-	if err := h.checkFirstRun(ctx, req.GetNamespaceId(), ns, fe.GetStreamRef()); err != nil {
+	if err := h.owners.checkFirstRun(ctx, req.GetNamespaceId(), ns, fe.GetStreamRef()); err != nil {
 		return nil, err
 	}
 	target := fe.GetWorkflowTarget()
@@ -431,53 +437,4 @@ func (h *handler) PollStreamNotifier(
 		resp = current.response
 	}
 	return &streamnotifierpb.PollStreamNotifierResponse{FrontendResponse: resp}, nil
-}
-
-// checkFirstRun refuses a reference whose run ID is not the first run of its owner's chain. Such a
-// reference would key a second notifier for the stream, and the owner check would take the owner
-// for ended and close that notifier while the stream runs. An owner that does not exist is left to
-// the owner check.
-func (h *handler) checkFirstRun(
-	ctx context.Context,
-	namespaceID, namespaceName string,
-	ref *streampb.StreamReference,
-) error {
-	describe := func(runID string) (*historyservice.DescribeWorkflowExecutionResponse, error) {
-		return h.historyClient.DescribeWorkflowExecution(
-			ctx,
-			&historyservice.DescribeWorkflowExecutionRequest{
-				NamespaceId: namespaceID,
-				Request: &workflowservice.DescribeWorkflowExecutionRequest{
-					Namespace: namespaceName,
-					Execution: &commonpb.WorkflowExecution{
-						WorkflowId: ref.GetWorkflowId(),
-						RunId:      runID,
-					},
-				},
-			},
-		)
-	}
-	resp, err := describe("")
-	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if resp.GetWorkflowExecutionInfo().GetFirstRunId() == ref.GetRunId() {
-		return nil
-	}
-	// A later chain may hold the Workflow ID now. An earlier chain keeps its own notifier, so the
-	// first run of any chain is taken.
-	resp, err = describe(ref.GetRunId())
-	if err == nil && resp.GetWorkflowExecutionInfo().GetFirstRunId() == ref.GetRunId() {
-		return nil
-	}
-	if err != nil && common.IsRetryableRPCError(err) {
-		return err
-	}
-	return serviceerror.NewInvalidArgumentf(
-		"stream_ref.run_id %q is not the first run of the owner's run chain",
-		ref.GetRunId(),
-	)
 }
