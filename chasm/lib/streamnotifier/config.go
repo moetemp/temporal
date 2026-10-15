@@ -3,6 +3,7 @@ package streamnotifier
 import (
 	"time"
 
+	"go.temporal.io/server/chasm/lib/activity"
 	"go.temporal.io/server/common/dynamicconfig"
 )
 
@@ -141,6 +142,7 @@ still holds the records it would read. The default matches the default store ret
 type Config struct {
 	Enabled                dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	ChasmEnabled           dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	ActivityEnabled        dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	MaxCallbacks           dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxCallbackBytes       dynamicconfig.IntPropertyFnWithNamespaceFilter
 	IdleTimeout            dynamicconfig.DurationPropertyFnWithNamespaceFilter
@@ -164,6 +166,7 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 	return &Config{
 		Enabled:                Enabled.Get(dc),
 		ChasmEnabled:           dynamicconfig.EnableChasm.Get(dc),
+		ActivityEnabled:        activity.Enabled.Get(dc),
 		MaxCallbacks:           MaxCallbacks.Get(dc),
 		MaxCallbackBytes:       MaxCallbackBytes.Get(dc),
 		IdleTimeout:            IdleTimeout.Get(dc),
