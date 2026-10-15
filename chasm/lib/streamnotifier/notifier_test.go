@@ -59,6 +59,8 @@ type notifierTest struct {
 	reserved   []*historyservice.RecordStreamWakeRequest
 	// counted makes History answer that a reserve's reader counted before.
 	counted bool
+	// activity describes the owner of an Activity-owned stream.
+	activity *fakeActivityClient
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
@@ -88,6 +90,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		&persistencespb.NamespaceInfo{Id: "namespace-id", Name: "ns"}, nil, "active")
 	registryMock.EXPECT().GetNamespaceByID(gomock.Any()).Return(ns, nil).AnyTimes()
 	nt := &notifierTest{}
+	activity := &fakeActivityClient{t: t}
 	attachHistory := historyservicemock.NewMockHistoryServiceClient(ctrl)
 	attachHistory.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(
@@ -121,11 +124,16 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 			}, nt.reserveErr
 		}).
 		AnyTimes()
-	h := newHandler(config, log.NewTestLogger(), attachHistory)
+	h := newHandler(
+		config,
+		log.NewTestLogger(),
+		attachHistory,
+		newOwnerDescriber(attachHistory, activity),
+	)
 	expiry := newExpiryTaskHandler(expiryTaskHandlerOptions{Config: config})
 	ownerCheck := newOwnerCheckTaskHandler(ownerCheckTaskHandlerOptions{
 		Config:            config,
-		HistoryClient:     history,
+		Owners:            newOwnerDescriber(history, activity),
 		NamespaceRegistry: registryMock,
 	})
 	registry := chasm.NewRegistry(log.NewTestLogger())
@@ -145,6 +153,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		recheck:    recheck,
 		debounce:   debounce,
 		history:    history,
+		activity:   activity,
 		ref: &streampb.StreamReference{
 			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
 			WorkflowId: "wf/1",
@@ -402,11 +411,6 @@ func (nt *notifierTest) runOwnerCheckOf(
 	firstRunID string,
 	err error,
 ) {
-	var armed *streamnotifierpb.OwnerCheckTask
-	nt.read(func(n *StreamNotifier, _ chasm.Context) {
-		require.NotNil(nt.t, n.GetOwnerCheckTime(), "an owner check is armed")
-		armed = &streamnotifierpb.OwnerCheckTask{ScheduledTime: n.GetOwnerCheckTime()}
-	})
 	nt.history.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(
 			_ context.Context,
@@ -434,6 +438,16 @@ func (nt *notifierTest) runOwnerCheckOf(
 				},
 			}, nil
 		})
+	nt.runArmedOwnerCheck()
+}
+
+// runArmedOwnerCheck runs the armed owner check against the describers as they are set up.
+func (nt *notifierTest) runArmedOwnerCheck() {
+	var armed *streamnotifierpb.OwnerCheckTask
+	nt.read(func(n *StreamNotifier, _ chasm.Context) {
+		require.NotNil(nt.t, n.GetOwnerCheckTime(), "an owner check is armed")
+		armed = &streamnotifierpb.OwnerCheckTask{ScheduledTime: n.GetOwnerCheckTime()}
+	})
 	ref := chasm.NewComponentRef[*StreamNotifier](nt.key())
 	require.NoError(nt.t, nt.ownerCheck.Execute(nt.ctx, ref, chasm.TaskAttributes{}, armed))
 }
@@ -648,7 +662,7 @@ func TestStreamNotifier(t *testing.T) {
 		require.True(t, nt.describe().GetClosed())
 		state, failure := nt.completionOf("a")
 		require.Equal(t, nexus.OperationStateFailed, state)
-		require.Equal(t, ownerEndedFailure, failure.GetMessage())
+		require.Equal(t, workflowOwnerEndedFailure, failure.GetMessage())
 	})
 
 	t.Run("HoldsAtMostTheCallbackLimit", func(t *testing.T) {
@@ -961,7 +975,9 @@ func TestStreamNotifier(t *testing.T) {
 				name:  "gone",
 				err:   serviceerror.NewNotFound("workflow not found"),
 				state: nexus.OperationStateFailed,
-				check: func(f *failurepb.Failure) bool { return f.GetMessage() == ownerEndedFailure },
+				check: func(f *failurepb.Failure) bool {
+					return f.GetMessage() == workflowOwnerEndedFailure
+				},
 			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -1039,7 +1055,7 @@ func TestStreamNotifier(t *testing.T) {
 		nt.runOwnerCheck(enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED, gone)
 		require.True(t, nt.describe().GetClosed(), "an owner that never started closes the stream")
 		_, failure := nt.completionOf("a")
-		require.Equal(t, ownerEndedFailure, failure.GetMessage())
+		require.Equal(t, workflowOwnerEndedFailure, failure.GetMessage())
 
 		nt = newNotifierTest(t, 10)
 		require.NoError(t, nt.attach("a"))

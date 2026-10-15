@@ -104,28 +104,19 @@ func (h *frontendHandler) resolve(
 			"the stream notifier requires CHASM, which is not enabled for this namespace",
 		)
 	}
-	if ref.GetOwnerKind() != enumspb.STREAM_OWNER_KIND_WORKFLOW {
-		return "", "", serviceerror.NewInvalidArgument(
-			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW",
-		)
-	}
-	if ref.GetWorkflowId() == "" {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
+	if err := h.validateOwner(namespaceName, ref); err != nil {
+		return "", "", err
 	}
 	if ref.GetTopic() == "" {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is required")
 	}
-	// The run chain's first run keys the notifier, so a later chain reusing the Workflow ID gets
-	// its own; without it the request would reach a different notifier.
+	// The run that keys the notifier: without it the request would reach a different notifier.
 	if ref.GetRunId() == "" {
 		return "", "", serviceerror.NewInvalidArgument(
-			"stream_ref.run_id must name the run chain's first run",
+			"stream_ref.run_id must name the run chain's first run or the Activity run",
 		)
 	}
-	// Both become part of the notifier's business ID.
-	if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
-	}
+	// They become part of the notifier's business ID.
 	if len(ref.GetTopic()) > h.config.MaxIDLength() {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is too long")
 	}
@@ -134,6 +125,53 @@ func (h *frontendHandler) resolve(
 		return "", "", err
 	}
 	return id.String(), BusinessID(ref), nil
+}
+
+// validateOwner checks the owner fields of each kind. A kind that is off for the namespace is a
+// failed precondition and never Unimplemented, since Core takes Unimplemented as a server with no
+// notifier and stops its notifier calls for every stream.
+func (h *frontendHandler) validateOwner(
+	namespaceName string,
+	ref *streampb.StreamReference,
+) error {
+	switch ref.GetOwnerKind() {
+	case enumspb.STREAM_OWNER_KIND_WORKFLOW:
+		if ref.GetWorkflowId() == "" {
+			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
+		}
+		if ref.GetActivityId() != "" {
+			return serviceerror.NewInvalidArgument(
+				"stream_ref.activity_id must be empty for STREAM_OWNER_KIND_WORKFLOW",
+			)
+		}
+		if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
+		}
+	case enumspb.STREAM_OWNER_KIND_ACTIVITY:
+		if ref.GetActivityId() == "" {
+			return serviceerror.NewInvalidArgument("stream_ref.activity_id is required")
+		}
+		if ref.GetWorkflowId() != "" {
+			return serviceerror.NewInvalidArgument(
+				"stream_ref.workflow_id must be empty for STREAM_OWNER_KIND_ACTIVITY",
+			)
+		}
+		if len(ref.GetActivityId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.activity_id is too long")
+		}
+		if !h.config.ActivityEnabled(namespaceName) {
+			return serviceerror.NewFailedPrecondition(
+				"streams owned by a standalone Activity need standalone Activities, " +
+					"which are not enabled for this namespace",
+			)
+		}
+	default:
+		return serviceerror.NewInvalidArgument(
+			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW or " +
+				"STREAM_OWNER_KIND_ACTIVITY",
+		)
+	}
+	return nil
 }
 
 func (h *frontendHandler) AttachStreamCallback(
