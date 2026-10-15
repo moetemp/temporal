@@ -85,9 +85,13 @@ type NotifierState struct {
 	IdleRequestIds []string `protobuf:"bytes,22,rep,name=idle_request_ids,json=idleRequestIds,proto3" json:"idle_request_ids,omitempty"`
 	// The idle callbacks that wait for one wake, by request ID, with the counter the notifier's
 	// counter must pass. A callback leaves this map when the wake goes out.
-	Waits         map[string]int64 `protobuf:"bytes,23,rep,name=waits,proto3" json:"waits,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Waits map[string]int64 `protobuf:"bytes,23,rep,name=waits,proto3" json:"waits,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// When an owner check first found a Workflow Activity owner no longer pending in its running
+	// run, or unset when the last check found it pending. The check gives the Workflow's Worker
+	// streamnotifier.ownerCloseGrace from this time to close the stream with the Activity's outcome.
+	OwnerEndSeenTime *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=owner_end_seen_time,json=ownerEndSeenTime,proto3" json:"owner_end_seen_time,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *NotifierState) Reset() {
@@ -267,6 +271,13 @@ func (x *NotifierState) GetWaits() map[string]int64 {
 	return nil
 }
 
+func (x *NotifierState) GetOwnerEndSeenTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.OwnerEndSeenTime
+	}
+	return nil
+}
+
 // What the handler's start answered a caller with.
 type CallerStart struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -324,7 +335,7 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto protor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDesc = "" +
 	"\n" +
-	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\x92\f\n" +
+	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xdd\f\n" +
 	"\rNotifierState\x12F\n" +
 	"\n" +
 	"stream_ref\x18\x01 \x01(\v2'.temporal.api.stream.v1.StreamReferenceR\tstreamRef\x12\x18\n" +
@@ -351,7 +362,8 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawD
 	"\x0edebounce_until\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\rdebounceUntil\x12#\n" +
 	"\rdebounce_held\x18\x15 \x01(\bR\fdebounceHeld\x12(\n" +
 	"\x10idle_request_ids\x18\x16 \x03(\tR\x0eidleRequestIds\x12a\n" +
-	"\x05waits\x18\x17 \x03(\v2K.temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.WaitsEntryR\x05waits\x1a;\n" +
+	"\x05waits\x18\x17 \x03(\v2K.temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.WaitsEntryR\x05waits\x12I\n" +
+	"\x13owner_end_seen_time\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\x10ownerEndSeenTime\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x7f\n" +
@@ -407,13 +419,14 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_depIdx
 	7,  // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.start_time:type_name -> google.protobuf.Timestamp
 	7,  // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.debounce_until:type_name -> google.protobuf.Timestamp
 	4,  // 12: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.waits:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.WaitsEntry
-	7,  // 13: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
-	1,  // 14: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	7,  // 13: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.owner_end_seen_time:type_name -> google.protobuf.Timestamp
+	7,  // 14: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
+	1,  // 15: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_init() }

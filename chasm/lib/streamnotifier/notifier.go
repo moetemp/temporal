@@ -31,16 +31,20 @@ import (
 // the owner, and topic, escaped so that no two streams map to one ID. For a Workflow the run is the
 // first run of its chain, so one notifier serves the stream across the chain's runs, and a later
 // chain that reuses the Workflow ID and topic gets a notifier of its own. For an Activity it is the
-// Activity run.
+// Activity run. For a Workflow Activity the owner is the Workflow ID and the Activity ID, and the
+// run is the run that scheduled the Activity.
 func BusinessID(ref *streampb.StreamReference) string {
 	kind := strings.ToLower(strings.TrimPrefix(ref.GetOwnerKind().String(), "STREAM_OWNER_KIND_"))
-	ownerID := ref.GetWorkflowId()
-	if ref.GetOwnerKind() == enumspb.STREAM_OWNER_KIND_ACTIVITY {
-		ownerID = ref.GetActivityId()
+	ownerID := url.PathEscape(ref.GetWorkflowId())
+	switch ref.GetOwnerKind() {
+	case enumspb.STREAM_OWNER_KIND_ACTIVITY:
+		ownerID = url.PathEscape(ref.GetActivityId())
+	case enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY:
+		kind = "workflow_activity"
+		ownerID += "/" + url.PathEscape(ref.GetActivityId())
+	default:
 	}
-	return kind + "/" + url.PathEscape(
-		ownerID,
-	) + "/" + url.PathEscape(
+	return kind + "/" + ownerID + "/" + url.PathEscape(
 		ref.GetRunId(),
 	) + "/" + url.PathEscape(
 		ref.GetTopic(),
