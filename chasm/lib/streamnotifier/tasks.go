@@ -2,30 +2,12 @@ package streamnotifier
 
 import (
 	"context"
-	"errors"
-	"time"
 
-	commonpb "go.temporal.io/api/common/v1"
-	enumspb "go.temporal.io/api/enums/v1"
-	failurepb "go.temporal.io/api/failure/v1"
-	"go.temporal.io/api/serviceerror"
-	streampb "go.temporal.io/api/stream/v1"
-	"go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common/namespace"
-	"go.temporal.io/server/common/resource"
 	"go.uber.org/fx"
 )
-
-// ownerEndedFailure is the failure message the callers get when the owner Workflow is gone, or its
-// ID is in another chain, without having closed the stream.
-const ownerEndedFailure = "the owner Workflow ended without closing the stream"
-
-// ownerFailedType is the failure type the callers get when the owner Workflow failed, since the
-// owner check reads no History and so has no failure of its own to hand them.
-const ownerFailedType = "StreamOwnerFailed"
 
 type expiryTaskHandler struct {
 	chasm.PureTaskHandlerBase
@@ -81,7 +63,7 @@ func (h *expiryTaskHandler) Execute(
 type ownerCheckTaskHandler struct {
 	chasm.SideEffectTaskHandlerBase[*streamnotifierpb.OwnerCheckTask]
 	config            *Config
-	historyClient     resource.HistoryClient
+	owners            *ownerDescriber
 	namespaceRegistry namespace.Registry
 }
 
@@ -89,14 +71,14 @@ type ownerCheckTaskHandlerOptions struct {
 	fx.In
 
 	Config            *Config
-	HistoryClient     resource.HistoryClient
+	Owners            *ownerDescriber
 	NamespaceRegistry namespace.Registry
 }
 
 func newOwnerCheckTaskHandler(opts ownerCheckTaskHandlerOptions) *ownerCheckTaskHandler {
 	return &ownerCheckTaskHandler{
 		config:            opts.Config,
-		historyClient:     opts.HistoryClient,
+		owners:            opts.Owners,
 		namespaceRegistry: opts.NamespaceRegistry,
 	}
 }
@@ -112,8 +94,8 @@ func (h *ownerCheckTaskHandler) Validate(
 		n.GetOwnerCheckTime().AsTime().Equal(task.GetScheduledTime().AsTime()), nil
 }
 
-// Execute describes the owner Workflow. If its run chain ended, the stream closes with a failure;
-// otherwise the next check is armed while callbacks still wait.
+// Execute describes the stream's owner. If the owner ended, the stream closes with the owner's
+// outcome. Otherwise the next check is armed while callbacks still wait.
 func (h *ownerCheckTaskHandler) Execute(
 	ctx context.Context,
 	ref chasm.ComponentRef,
@@ -139,7 +121,12 @@ func (h *ownerCheckTaskHandler) Execute(
 	if err != nil {
 		return err
 	}
-	end, err := h.ownerEnded(ctx, ns, stream.GetStreamRef())
+	end, err := h.owners.ended(
+		ctx,
+		ns.ID().String(),
+		ns.Name().String(),
+		stream.GetStreamRef(),
+	)
 	if err != nil {
 		return err
 	}
@@ -175,99 +162,6 @@ func (h *ownerCheckTaskHandler) Execute(
 		struct{}{},
 	)
 	return err
-}
-
-// ownerEnded reports whether the owner Workflow's run chain is closed, and the failure its stream
-// closes with, as a Workflow-run operation completes for the same close status: none for a
-// completed owner, so its callers get an empty result. A Workflow that does not exist (or whose
-// retention passed) counts as ended without closing the stream, and so does a current run of
-// another chain that reused the Workflow ID.
-func (h *ownerCheckTaskHandler) ownerEnded(
-	ctx context.Context,
-	ns *namespace.Namespace,
-	stream *streampb.StreamReference,
-) (ownerEnd, error) {
-	workflowID := stream.GetWorkflowId()
-	resp, err := h.historyClient.DescribeWorkflowExecution(
-		ctx,
-		&historyservice.DescribeWorkflowExecutionRequest{
-			NamespaceId: ns.ID().String(),
-			Request: &workflowservice.DescribeWorkflowExecutionRequest{
-				Namespace: ns.Name().String(),
-				Execution: &commonpb.WorkflowExecution{WorkflowId: workflowID},
-			},
-		},
-	)
-	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
-		return ownerEnd{ended: true, failure: streamFailure(ownerEndedFailure), notFound: true}, nil
-	}
-	if err != nil {
-		return ownerEnd{}, err
-	}
-	// The described run is the chain's current one, so a retry, a cron run or Continue-as-New has
-	// already moved past a closed earlier run.
-	if firstRunID := stream.GetRunId(); firstRunID != "" &&
-		resp.GetWorkflowExecutionInfo().GetFirstRunId() != firstRunID {
-		return ownerEnd{ended: true, failure: streamFailure(ownerEndedFailure)}, nil
-	}
-	info := resp.GetWorkflowExecutionInfo()
-	var closeTime *time.Time
-	if info.GetCloseTime() != nil {
-		t := info.GetCloseTime().AsTime()
-		closeTime = &t
-	}
-	// A completed, failed or canceled run ended through a final Workflow Task, whose Worker
-	// closes the stream itself.
-	byWorker := func(failure *failurepb.Failure) ownerEnd {
-		return ownerEnd{ended: true, failure: failure, workerCloses: true, closeTime: closeTime}
-	}
-	switch info.GetStatus() {
-	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED:
-		return ownerEnd{}, nil
-	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
-		return byWorker(nil), nil
-	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
-		// The check reads no History, so it has the status but not the run's failure.
-		failure := streamFailure("the owner Workflow failed")
-		failure.GetApplicationFailureInfo().Type = ownerFailedType
-		return byWorker(failure), nil
-	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
-		return byWorker(&failurepb.Failure{
-			Message: "operation canceled",
-			FailureInfo: &failurepb.Failure_CanceledFailureInfo{
-				CanceledFailureInfo: &failurepb.CanceledFailureInfo{},
-			},
-		}), nil
-	case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
-		return ownerEnd{ended: true, failure: &failurepb.Failure{
-			Message: "operation terminated",
-			FailureInfo: &failurepb.Failure_TerminatedFailureInfo{
-				TerminatedFailureInfo: &failurepb.TerminatedFailureInfo{},
-			},
-		}}, nil
-	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
-		return ownerEnd{ended: true, failure: &failurepb.Failure{
-			Message: "operation exceeded internal timeout",
-			FailureInfo: &failurepb.Failure_TimeoutFailureInfo{
-				TimeoutFailureInfo: &failurepb.TimeoutFailureInfo{},
-			},
-		}}, nil
-	default:
-		return ownerEnd{ended: true, failure: streamFailure(ownerEndedFailure)}, nil
-	}
-}
-
-// ownerEnd is what the owner check learned about the owner's run chain.
-type ownerEnd struct {
-	ended bool
-	// The failure the stream closes with, or nil for an empty result.
-	failure *failurepb.Failure
-	// Set when the run ended through a final Workflow Task, whose Worker closes the stream.
-	workerCloses bool
-	// When the run closed, if History said.
-	closeTime *time.Time
-	// Set when no run of the Workflow ID exists, so the owner may not have started yet.
-	notFound bool
 }
 
 type debounceTaskHandler struct {
