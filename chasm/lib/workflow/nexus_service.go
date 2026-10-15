@@ -98,6 +98,17 @@ func (h *workflowServiceNexusHandler) notifyStream(
 	return h.streamNotifier.NotifyStream(ctx, req)
 }
 
+func (h *workflowServiceNexusHandler) waitStreamCallback(
+	ctx context.Context,
+	req *workflowservice.WaitStreamCallbackRequest,
+	_ nexus.StartOperationOptions,
+) (*workflowservice.WaitStreamCallbackResponse, error) {
+	if h.streamNotifier == nil {
+		return nil, errStreamNotifierUnavailable
+	}
+	return h.streamNotifier.WaitStreamCallback(ctx, req)
+}
+
 func mustNewWorkflowServiceNexusHandler(
 	handler *workflowServiceNexusHandler,
 ) *nexus.Service {
@@ -114,6 +125,9 @@ func mustNewWorkflowServiceNexusHandler(
 		nexus.NewSyncOperation(ops.DetachStreamCallback.Name(), handler.detachStreamCallback),
 	)
 	svc.MustRegister(nexus.NewSyncOperation(ops.NotifyStream.Name(), handler.notifyStream))
+	svc.MustRegister(
+		nexus.NewSyncOperation(ops.WaitStreamCallback.Name(), handler.waitStreamCallback),
+	)
 	return svc
 }
 
@@ -250,6 +264,19 @@ func NewWorkflowServiceNexusServiceProcessor(
 					r.Namespace = ns
 				},
 				clearIdentity: func(r *workflowservice.DetachStreamCallbackRequest) {
+					r.Identity = ""
+				},
+			},
+		),
+	)
+	sp.MustRegisterOperation(
+		ops.WaitStreamCallback.Name(),
+		chasm.NewRegisterableNexusOperationProcessor(
+			streamNotifierOperationProcessor[*workflowservice.WaitStreamCallbackRequest]{
+				setNamespace: func(r *workflowservice.WaitStreamCallbackRequest, ns string) {
+					r.Namespace = ns
+				},
+				clearIdentity: func(r *workflowservice.WaitStreamCallbackRequest) {
 					r.Identity = ""
 				},
 			},

@@ -31,6 +31,10 @@ type SystemNexusHandler interface {
 		context.Context,
 		*workflowservice.NotifyStreamRequest,
 	) (*workflowservice.NotifyStreamResponse, error)
+	WaitStreamCallback(
+		context.Context,
+		*workflowservice.WaitStreamCallbackRequest,
+	) (*workflowservice.WaitStreamCallbackResponse, error)
 }
 
 // localClient hands requests to the notifier's handler without a network hop.
@@ -60,6 +64,14 @@ func (c localClient) NotifyStream(
 	_ ...grpc.CallOption,
 ) (*streamnotifierpb.NotifyStreamResponse, error) {
 	return c.handler.NotifyStream(ctx, in)
+}
+
+func (c localClient) WaitStreamCallback(
+	ctx context.Context,
+	in *streamnotifierpb.WaitStreamCallbackRequest,
+	_ ...grpc.CallOption,
+) (*streamnotifierpb.WaitStreamCallbackResponse, error) {
+	return c.handler.WaitStreamCallback(ctx, in)
 }
 
 func (c localClient) DescribeStreamNotifier(

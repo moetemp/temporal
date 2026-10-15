@@ -190,6 +190,165 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 	}, 10*time.Second, 50*time.Millisecond)
 }
 
+// TestStreamNotifierIdleCaller attaches a caller idle. A busy stream sends it nothing. A wait
+// after an empty read wakes it once, a wait below the counter wakes it at once, and the close
+// completes it.
+func (s *NexusWorkflowTestSuite) TestStreamNotifierIdleCaller(chasmEnabled bool) {
+	if !chasmEnabled {
+		// Only a CHASM caller takes progress. TestStreamNotifierEndToEnd covers an HSM caller.
+		return
+	}
+	env := s.newTestEnv(
+		chasmEnabled,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
+		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
+		testcore.WithDynamicConfig(
+			callback.AllowedAddresses,
+			[]any{map[string]any{"Pattern": "*", "AllowInsecure": true}},
+		),
+		testcore.WithDynamicConfig(callback.RetryPolicyInitialInterval, 10*time.Millisecond),
+		testcore.WithDynamicConfig(callback.RetryPolicyMaximumInterval, 50*time.Millisecond),
+	)
+	ctx := s.Context()
+	taskQueue := testcore.RandomizeStr(s.T().Name())
+	stream := &streampb.StreamReference{
+		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+		WorkflowId: "producer-" + uuid.NewString(),
+		RunId:      "first-run",
+		Topic:      "tokens",
+	}
+	frontend := env.FrontendClient()
+	notify := func(counter int64, closeStream bool) {
+		req := &workflowservice.NotifyStreamRequest{
+			Namespace: env.Namespace().String(),
+			StreamRef: stream,
+			Position:  "cursor",
+			Counter:   counter,
+			Metadata:  map[string]string{"topic": "tokens"},
+			Close:     closeStream,
+		}
+		if closeStream {
+			req.CloseResult = testcore.MustToPayload(s.T(), "summary")
+		}
+		_, err := frontend.NotifyStream(ctx, req)
+		s.NoError(err)
+	}
+	describe := func() *workflowservice.DescribeStreamNotifierResponse {
+		resp, err := frontend.DescribeStreamNotifier(
+			ctx,
+			&workflowservice.DescribeStreamNotifierRequest{
+				Namespace: env.Namespace().String(),
+				StreamRef: stream,
+			},
+		)
+		s.NoError(err)
+		return resp
+	}
+
+	h := nexustest.Handler{
+		OnStartOperation: func(
+			ctx context.Context,
+			service, operation string,
+			input *nexus.LazyValue,
+			options nexus.StartOperationOptions,
+		) (nexus.HandlerStartOperationResult[any], error) {
+			// The handler attaches the caller idle, as a stream operation's handler does.
+			_, err := frontend.AttachStreamCallback(
+				ctx,
+				&workflowservice.AttachStreamCallbackRequest{
+					Namespace: env.Namespace().String(),
+					StreamRef: stream,
+					RequestId: options.RequestID,
+					Callback: &commonpb.Callback_Nexus{
+						Url:    options.CallbackURL,
+						Header: options.CallbackHeader,
+					},
+					Idle: true,
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+			return &nexus.HandlerStartOperationResultAsync{
+				OperationToken: stream.GetWorkflowId(),
+			}, nil
+		},
+	}
+	endpointName := env.createRandomExternalNexusServer(ctx, s.T(), h)
+
+	callerWF := func(ctx workflow.Context) (string, error) {
+		c := workflow.NewNexusClient(endpointName, "service")
+		var result string
+		err := c.ExecuteOperation(ctx, "operation", "input", workflow.NexusOperationOptions{}).
+			Get(ctx, &result)
+		return result, err
+	}
+	w := worker.New(env.SdkClient(), taskQueue, worker.Options{})
+	w.RegisterWorkflow(callerWF)
+	s.NoError(w.Start())
+	defer w.Stop()
+	run, err := env.SdkClient().
+		ExecuteWorkflow(ctx, client.StartWorkflowOptions{TaskQueue: taskQueue}, callerWF)
+	s.NoError(err)
+	wfExec := &commonpb.WorkflowExecution{WorkflowId: run.GetID(), RunId: run.GetRunID()}
+
+	var started []*historypb.HistoryEvent
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		started = env.GetHistory(env.Namespace().String(), wfExec)
+		s.RequireHistoryEvent(started, enumspb.EVENT_TYPE_NEXUS_OPERATION_STARTED)
+		s.Len(describe().GetCallbacks(), 1)
+	}, 10*time.Second, 50*time.Millisecond)
+
+	wait := func(after int64) {
+		_, err := frontend.WaitStreamCallback(ctx, &workflowservice.WaitStreamCallbackRequest{
+			Namespace:    env.Namespace().String(),
+			StreamRef:    stream,
+			RequestId:    describe().GetCallbacks()[0].GetRequestId(),
+			AfterCounter: after,
+		})
+		s.NoError(err)
+	}
+	delivered := func() int64 { return describe().GetCallbacks()[0].GetDeliveredCounter() }
+
+	// A caller that keeps up with a busy stream gets nothing.
+	for counter := int64(1); counter <= 20; counter++ {
+		notify(counter, false)
+	}
+	time.Sleep(2 * time.Second) //nolint:forbidigo // checks that nothing is delivered
+	s.Zero(delivered(), "an idle caller gets no progress")
+	s.Empty(carriedNexusProgress(env.GetHistory(env.Namespace().String(), wfExec)[len(started):]))
+
+	// A read that finds nothing at 20 asks for one wake. The next notification delivers it.
+	wait(20)
+	time.Sleep(time.Second) //nolint:forbidigo // checks that nothing is delivered
+	s.Zero(delivered(), "the counter has not passed the wait")
+	notify(21, false)
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		s.Equal(int64(21), describe().GetCallbacks()[0].GetDeliveredCounter())
+		s.NotEmpty(carriedNexusProgress(
+			env.GetHistory(env.Namespace().String(), wfExec)[len(started):],
+		))
+	}, 10*time.Second, 50*time.Millisecond)
+
+	// The wake is used up, so later notifications wait for the next read.
+	for counter := int64(22); counter <= 30; counter++ {
+		notify(counter, false)
+	}
+	time.Sleep(2 * time.Second) //nolint:forbidigo // checks that nothing is delivered
+	s.Equal(int64(21), delivered(), "the caller is idle again")
+
+	// A wait below the counter is answered at once.
+	wait(21)
+	s.Await(func(s *NexusWorkflowTestSuite) {
+		s.Equal(int64(30), describe().GetCallbacks()[0].GetDeliveredCounter())
+	}, 10*time.Second, 50*time.Millisecond)
+
+	notify(31, true)
+	var result string
+	s.NoError(run.Get(ctx, &result))
+	s.Equal("summary", result, "the close completes an idle caller")
+}
+
 // TestStreamNotifierFailedCloseFailsTheCaller closes a stream with a failure and checks that the
 // caller's stream-returning operation fails with it as the cause, as a Workflow-run operation fails
 // with its run's failure.

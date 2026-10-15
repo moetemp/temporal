@@ -130,6 +130,8 @@ type attachInput struct {
 	maxCallbackBytes   int
 	idleTimeout        time.Duration
 	ownerCheckInterval time.Duration
+	// Set for a Nexus callback that gets progress only when it waits.
+	idle bool
 }
 
 // attach adds a callback, or changes nothing when one with the request ID is attached. On a
@@ -154,7 +156,7 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 		}
 	}
 	size := callbackBytes(cb, start)
-	if !n.Closed && n.Counter > 0 {
+	if !n.Closed && n.Counter > 0 && !in.idle {
 		// The progress delivered below is kept on the callback.
 		size += proto.Size(n.progress())
 	}
@@ -188,7 +190,10 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 	if n.Closed {
 		return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
 	}
-	if n.Counter > 0 {
+	if in.idle {
+		n.IdleRequestIds = append(n.IdleRequestIds, in.requestID)
+		slices.Sort(n.IdleRequestIds)
+	} else if n.Counter > 0 {
 		// A callback attached after notifications starts from the latest one.
 		if err := cb.DeliverProgress(ctx, n.progress()); err != nil {
 			return err
@@ -369,6 +374,11 @@ func (n *StreamNotifier) failIdleCallbacks(ctx chasm.MutableContext) (bool, erro
 func (n *StreamNotifier) detach(requestID string) {
 	delete(n.Callbacks, requestID)
 	delete(n.CallerStarts, requestID)
+	delete(n.Waits, requestID)
+	n.IdleRequestIds = slices.DeleteFunc(
+		n.IdleRequestIds,
+		func(id string) bool { return id == requestID },
+	)
 	n.IdleFailedRequestIds = slices.DeleteFunc(
 		n.IdleFailedRequestIds,
 		func(id string) bool { return id == requestID },
@@ -459,13 +469,57 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 }
 
 // deliverProgress hands the latest notification to every callback.
+// deliverProgress hands the latest notification to every callback that takes it: a callback
+// that is not idle, or an idle one whose wait the counter passed. That wait is then used up.
 func (n *StreamNotifier) deliverProgress(ctx chasm.MutableContext) error {
 	progress := n.progress()
-	for _, field := range n.Callbacks {
+	for requestID, field := range n.Callbacks {
+		if n.isIdle(requestID) {
+			after, waiting := n.Waits[requestID]
+			if !waiting || n.Counter <= after {
+				continue
+			}
+			delete(n.Waits, requestID)
+		}
 		if err := field.Get(ctx).DeliverProgress(ctx, progress); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// isIdle reports whether the callback was attached idle.
+func (n *StreamNotifier) isIdle(requestID string) bool {
+	_, idle := slices.BinarySearch(n.IdleRequestIds, requestID)
+	return idle
+}
+
+// wait asks for one delivery to an idle callback once the counter passes after. A counter that
+// passed already delivers at once, outside any debounce window. A newer wait replaces an older
+// one. A callback that is not idle gets every delivery, so its wait changes nothing.
+func (n *StreamNotifier) wait(
+	ctx chasm.MutableContext,
+	requestID string,
+	after int64,
+	idleTimeout time.Duration,
+) error {
+	field, ok := n.Callbacks[requestID]
+	if !ok {
+		return serviceerror.NewNotFoundf("no callback is attached with request ID %q", requestID)
+	}
+	// A closed stream completes the callback, which is the last thing it gets.
+	if n.Closed || !n.isIdle(requestID) {
+		return nil
+	}
+	n.touch(ctx, idleTimeout)
+	if n.Counter > after {
+		delete(n.Waits, requestID)
+		return field.Get(ctx).DeliverProgress(ctx, n.progress())
+	}
+	if n.Waits == nil {
+		n.Waits = map[string]int64{}
+	}
+	n.Waits[requestID] = after
 	return nil
 }
 

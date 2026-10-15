@@ -129,3 +129,40 @@ func TestStreamNotifierProcessorRefusesANilRequest(t *testing.T) {
 	var invalid *serviceerror.InvalidArgument
 	require.ErrorAs(t, err, &invalid)
 }
+
+func TestWaitStreamCallbackProcessorRoutesToTheStreamsNotifier(t *testing.T) {
+	sp := NewWorkflowServiceNexusServiceProcessor(Config{}, nil, nil)
+	ref := &streampb.StreamReference{
+		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+		WorkflowId: "owner",
+		RunId:      "first-run",
+		Topic:      "tokens",
+	}
+	ctx := streamNotifierProcessorContext()
+	ctx.ReserializeInputPayload = true
+	result, err := sp.ProcessInput(
+		ctx,
+		workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService.WaitStreamCallback.Name(),
+		payloads.MustEncodeSingle(&workflowservice.WaitStreamCallbackRequest{
+			StreamRef:    ref,
+			RequestId:    "caller-request",
+			AfterCounter: 7,
+			Identity:     "set by the Workflow",
+		}),
+	)
+	require.NoError(t, err)
+	require.Equal(t, chasm.NexusOperationRoutingKeyExecution{
+		NamespaceID: "ns-id",
+		BusinessID:  streamnotifier.BusinessID(ref),
+	}, result.RoutingKey)
+
+	var forwarded workflowservice.WaitStreamCallbackRequest
+	require.NoError(t, sdkconverter.PreferProtoDataConverter.FromPayloads(
+		&commonpb.Payloads{Payloads: []*commonpb.Payload{result.ReserializedInputPayload}},
+		&forwarded,
+	))
+	require.Equal(t, "ns", forwarded.GetNamespace())
+	require.Empty(t, forwarded.GetIdentity())
+	require.Equal(t, int64(7), forwarded.GetAfterCounter())
+	require.Equal(t, "caller-request", forwarded.GetRequestId())
+}
