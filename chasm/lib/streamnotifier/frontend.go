@@ -113,7 +113,8 @@ func (h *frontendHandler) resolve(
 	// The run that keys the notifier: without it the request would reach a different notifier.
 	if ref.GetRunId() == "" {
 		return "", "", serviceerror.NewInvalidArgument(
-			"stream_ref.run_id must name the run chain's first run or the Activity run",
+			"stream_ref.run_id must name the run chain's first run, the Activity run or " +
+				"the run that scheduled the Activity",
 		)
 	}
 	// They become part of the notifier's business ID.
@@ -165,10 +166,24 @@ func (h *frontendHandler) validateOwner(
 					"which are not enabled for this namespace",
 			)
 		}
+	case enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY:
+		// Every namespace has Workflow Activities, so this kind has no namespace gate.
+		if ref.GetWorkflowId() == "" {
+			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
+		}
+		if ref.GetActivityId() == "" {
+			return serviceerror.NewInvalidArgument("stream_ref.activity_id is required")
+		}
+		if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
+		}
+		if len(ref.GetActivityId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.activity_id is too long")
+		}
 	default:
 		return serviceerror.NewInvalidArgument(
-			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW or " +
-				"STREAM_OWNER_KIND_ACTIVITY",
+			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW, " +
+				"STREAM_OWNER_KIND_ACTIVITY or STREAM_OWNER_KIND_WORKFLOW_ACTIVITY",
 		)
 	}
 	return nil
