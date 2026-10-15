@@ -23,7 +23,8 @@ import (
 const workflowOwnerEndedFailure = "the owner Workflow ended without closing the stream"
 
 // activityOwnerEndedFailure is the failure message the callers get when the owner Activity run is
-// gone, or a newer run holds its ID, without having closed the stream.
+// gone, or a newer run holds its ID, without having closed the stream. A Workflow Activity whose
+// stream had no close in time gets it too.
 const activityOwnerEndedFailure = "the owner Activity ended without closing the stream"
 
 // ownerFailedType is the failure type the callers get when the owner failed and the owner check
@@ -39,9 +40,12 @@ type ownerEnd struct {
 	ended bool
 	// The failure the stream closes with, or nil for an empty result.
 	failure *failurepb.Failure
-	// Set when the run ended through a final Workflow Task, whose Worker closes the stream.
+	// Set when the run ended through a final Workflow Task, whose Worker closes the stream. Also set
+	// when a Workflow Activity left its run's pending Activities, since the Workflow's Worker closes
+	// the stream when it resolves the Activity.
 	workerCloses bool
-	// When the run closed, if History said.
+	// When the run closed, if History said. Unset for a Workflow Activity, whose grace starts at the
+	// first check that found it gone.
 	closeTime *time.Time
 	// Set when no run of the owner ID exists, so the owner may not have started yet.
 	notFound bool
@@ -66,10 +70,14 @@ func (d *ownerDescriber) ended(
 	namespaceID, namespaceName string,
 	ref *streampb.StreamReference,
 ) (ownerEnd, error) {
-	if ref.GetOwnerKind() == enumspb.STREAM_OWNER_KIND_ACTIVITY {
+	switch ref.GetOwnerKind() {
+	case enumspb.STREAM_OWNER_KIND_ACTIVITY:
 		return d.activityEnded(ctx, namespaceID, namespaceName, ref)
+	case enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY:
+		return d.workflowActivityEnded(ctx, namespaceID, namespaceName, ref)
+	default:
+		return d.workflowEnded(ctx, namespaceID, namespaceName, ref)
 	}
-	return d.workflowEnded(ctx, namespaceID, namespaceName, ref)
 }
 
 // checkFirstRun refuses a reference whose run ID does not key a notifier of its owner. Such a
@@ -81,10 +89,14 @@ func (d *ownerDescriber) checkFirstRun(
 	namespaceID, namespaceName string,
 	ref *streampb.StreamReference,
 ) error {
-	if ref.GetOwnerKind() == enumspb.STREAM_OWNER_KIND_ACTIVITY {
+	switch ref.GetOwnerKind() {
+	case enumspb.STREAM_OWNER_KIND_ACTIVITY:
 		return d.checkActivityRun(ctx, namespaceID, namespaceName, ref)
+	case enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY:
+		return d.checkWorkflowActivityRun(ctx, namespaceID, namespaceName, ref)
+	default:
+		return d.checkWorkflowFirstRun(ctx, namespaceID, namespaceName, ref)
 	}
-	return d.checkWorkflowFirstRun(ctx, namespaceID, namespaceName, ref)
 }
 
 func (d *ownerDescriber) describeWorkflow(
@@ -299,6 +311,72 @@ func (d *ownerDescriber) checkActivityRun(
 		"stream_ref.run_id %q is not a run of the owner Activity",
 		ref.GetRunId(),
 	)
+}
+
+// workflowActivityEnded reports whether the owner Activity left its scheduling run. The Workflow's
+// Worker closes the stream with the Activity's outcome when it resolves the Activity, so an
+// Activity that is no longer pending gets the close grace. It also gets the start grace, since the Workflow
+// may write to the stream in the activation that schedules the Activity, before History has it.
+// A closed run has no pending Activities, and its Worker had its chance to close, so it ends the
+// stream at once.
+func (d *ownerDescriber) workflowActivityEnded(
+	ctx context.Context,
+	namespaceID, namespaceName string,
+	stream *streampb.StreamReference,
+) (ownerEnd, error) {
+	resp, err := d.describeWorkflow(
+		ctx,
+		namespaceID,
+		namespaceName,
+		stream.GetWorkflowId(),
+		stream.GetRunId(),
+	)
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return ownerEnd{
+			ended:    true,
+			failure:  streamFailure(activityOwnerEndedFailure),
+			notFound: true,
+		}, nil
+	}
+	if err != nil {
+		return ownerEnd{}, err
+	}
+	if status := resp.GetWorkflowExecutionInfo().GetStatus(); status !=
+		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING &&
+		status != enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED {
+		return ownerEnd{ended: true, failure: streamFailure(activityOwnerEndedFailure)}, nil
+	}
+	for _, pending := range resp.GetPendingActivities() {
+		if pending.GetActivityId() == stream.GetActivityId() {
+			return ownerEnd{}, nil
+		}
+	}
+	return ownerEnd{
+		ended:        true,
+		failure:      streamFailure(activityOwnerEndedFailure),
+		workerCloses: true,
+		notFound:     true,
+	}, nil
+}
+
+// checkWorkflowActivityRun takes any run of the Workflow ID, since the run keys the stream and no
+// first-run rule applies. A run that does not exist is left to the owner check.
+func (d *ownerDescriber) checkWorkflowActivityRun(
+	ctx context.Context,
+	namespaceID, namespaceName string,
+	ref *streampb.StreamReference,
+) error {
+	_, err := d.describeWorkflow(
+		ctx,
+		namespaceID,
+		namespaceName,
+		ref.GetWorkflowId(),
+		ref.GetRunId(),
+	)
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return nil
+	}
+	return err
 }
 
 // boundFailure keeps the notifier's state small. A failure above the close limit keeps only its
