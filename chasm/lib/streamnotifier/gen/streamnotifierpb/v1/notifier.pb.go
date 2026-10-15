@@ -84,7 +84,7 @@ type NotifierState struct {
 	// When an owner check first found a Workflow Activity owner no longer pending in its running
 	// run, or unset when the last check found it pending. The check gives the Workflow's Worker
 	// streamnotifier.ownerCloseGrace from this time to close the stream with the Activity's outcome.
-	OwnerEndSeenTime *timestamppb.Timestamp `protobuf:"bytes,22,opt,name=owner_end_seen_time,json=ownerEndSeenTime,proto3" json:"owner_end_seen_time,omitempty"`
+	OwnerEndSeenTime *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=owner_end_seen_time,json=ownerEndSeenTime,proto3" json:"owner_end_seen_time,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -316,7 +316,7 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto protor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDesc = "" +
 	"\n" +
-	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\x96\v\n" +
+	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xa2\v\n" +
 	"\rNotifierState\x12F\n" +
 	"\n" +
 	"stream_ref\x18\x01 \x01(\v2'.temporal.api.stream.v1.StreamReferenceR\tstreamRef\x12\x18\n" +
@@ -342,14 +342,14 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawD
 	"start_time\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x12A\n" +
 	"\x0edebounce_until\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\rdebounceUntil\x12#\n" +
 	"\rdebounce_held\x18\x15 \x01(\bR\fdebounceHeld\x12I\n" +
-	"\x13owner_end_seen_time\x18\x16 \x01(\v2\x1a.google.protobuf.TimestampR\x10ownerEndSeenTime\x1a;\n" +
+	"\x13owner_end_seen_time\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\x10ownerEndSeenTime\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x7f\n" +
 	"\x11CallerStartsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12T\n" +
 	"\x05value\x18\x02 \x01(\v2>.temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStartR\x05value:\x028\x01J\x04\b\t\x10\n" +
-	"J\x04\b\v\x10\f\"q\n" +
+	"J\x04\b\v\x10\fJ\x04\b\x16\x10\x17J\x04\b\x17\x10\x18\"q\n" +
 	"\vCallerStart\x12'\n" +
 	"\x0foperation_token\x18\x01 \x01(\tR\x0eoperationToken\x129\n" +
 	"\n" +
