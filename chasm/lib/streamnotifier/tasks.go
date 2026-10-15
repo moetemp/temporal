@@ -3,10 +3,12 @@ package streamnotifier
 import (
 	"context"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/server/chasm"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common/namespace"
 	"go.uber.org/fx"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type expiryTaskHandler struct {
@@ -138,10 +140,24 @@ func (h *ownerCheckTaskHandler) Execute(
 				return struct{}{}, nil
 			}
 			n.OwnerCheckTime = nil
+			// A Workflow Activity has no close time of its own, so its grace starts at the first
+			// check that saw it gone. Seeing it pending again resets that, since it may have been
+			// gone only because it was not scheduled yet.
+			closeTime := end.closeTime
+			if !end.ended {
+				n.OwnerEndSeenTime = nil
+			} else if end.workerCloses && closeTime == nil &&
+				n.GetStreamRef().GetOwnerKind() == enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY {
+				if n.OwnerEndSeenTime == nil {
+					n.OwnerEndSeenTime = timestamppb.New(mctx.Now(n))
+				}
+				seen := n.OwnerEndSeenTime.AsTime()
+				closeTime = &seen
+			}
 			// The Worker that ran the final task closes the stream with the Workflow's own result,
 			// and the first close wins, so a just-closed run is left to it for the grace.
-			waiting := end.workerCloses && end.closeTime != nil &&
-				mctx.Now(n).Before(end.closeTime.Add(h.config.OwnerCloseGrace(ns.Name().String())))
+			waiting := end.workerCloses && closeTime != nil &&
+				mctx.Now(n).Before(closeTime.Add(h.config.OwnerCloseGrace(ns.Name().String())))
 			// A reader may subscribe before its owner starts, so a missing owner gets a grace from
 			// the notifier's start.
 			startGrace := h.config.OwnerStartGrace(ns.Name().String())
