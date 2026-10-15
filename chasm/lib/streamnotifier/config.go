@@ -98,7 +98,8 @@ var OwnerCloseGrace = dynamicconfig.NewNamespaceDurationSetting(
 canceled. The Worker that ran the final task closes the stream with the Workflow's own result, and
 the notifier keeps the first close, so the check closes it only once this passed. The default
 matches how long Core retries its notifier close. A terminated or timed-out owner has no Worker
-close, so the check closes its stream at once.`,
+close, so the check closes its stream at once. For a stream that a Workflow Activity owns, the grace
+starts at the first check that found the Activity no longer pending in its run.`,
 )
 
 var OwnerStartGrace = dynamicconfig.NewNamespaceDurationSetting(
