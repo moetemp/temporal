@@ -69,6 +69,10 @@ message NotifierState {
   // The idle callbacks that wait for one wake, by request ID, with the counter the notifier's
   // counter must pass. A callback leaves this map when the wake goes out.
   map<string, int64> waits = 23;
+  // When an owner check first found a Workflow Activity owner no longer pending in its running
+  // run, or unset when the last check found it pending. The check gives the Workflow's Worker
+  // streamnotifier.ownerCloseGrace from this time to close the stream with the Activity's outcome.
+  google.protobuf.Timestamp owner_end_seen_time = 24;
 }
 
 // What the handler's start answered a caller with.
