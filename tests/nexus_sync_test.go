@@ -465,6 +465,29 @@ func (s *NexusSyncSuite) TestAuthorizationAndRateLimits() {
 		s.ErrorAs(err, &denied)
 	})
 
+	s.RunSequential("AuthorizesTheEndpointName", func(s *NexusSyncSuite) {
+		endpoint := s.createEndpoint(env, target, testcore.RandomizeStr("sync-tq"))
+		env.SetOnAuthorize(
+			func(
+				_ context.Context,
+				_ *authorization.Claims,
+				ct *authorization.CallTarget,
+			) (authorization.Result, error) {
+				// An authorizer that limits endpoints by name, as on the Nexus HTTP route.
+				if ct.NexusEndpointName == endpoint {
+					return authorization.Result{Decision: authorization.DecisionDeny}, nil
+				}
+				return authorization.Result{Decision: authorization.DecisionAllow}, nil
+			},
+		)
+		defer env.SetOnAuthorize(nil)
+
+		_, err := env.FrontendClient().
+			ExecuteSyncNexusOperation(s.Context(), syncNexusRequest(env.Namespace(), endpoint))
+		var denied *serviceerror.PermissionDenied
+		s.ErrorAs(err, &denied)
+	})
+
 	s.RunSequential("TargetNamespaceRateLimitCounts", func(s *NexusSyncSuite) {
 		limited := s.registerRateLimitedNamespace(env)
 		endpoint := s.createEndpoint(env, limited, testcore.RandomizeStr("sync-tq"))

@@ -16,3 +16,10 @@ var TrailingDelivery = metrics.NewCounterDef(
 		"Deliveries at the end of a debounce window of the newest notification held in it.",
 	),
 )
+var WaitBelowDelivered = metrics.NewCounterDef(
+	"stream_notifier_wait_below_delivered",
+	metrics.WithDescription(
+		"Waits after a counter below one the callback already got, so the reader's store and the "+
+			"notifier disagree.",
+	),
+)

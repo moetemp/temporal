@@ -249,6 +249,7 @@ func (s *WorkflowHandlerSuite) getWorkflowHandler(config *Config) *WorkflowHandl
 		nil, // Not testing ExecuteSyncNexusOperation here
 		nil,
 		nil,
+		SyncNexusChecks{},
 	)
 }
 
