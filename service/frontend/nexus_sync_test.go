@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/api/serviceerror"
@@ -15,10 +16,12 @@ import (
 	"go.temporal.io/server/api/matchingservicemock/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
+	"go.temporal.io/server/common/authorization"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/nexus/nexustest"
 	"go.temporal.io/server/common/rpc/interceptor"
@@ -52,14 +55,53 @@ func (f *fakeSyncRateLimiter) Allow(
 	return f.err
 }
 
+// fakeSyncAuthorizer records each call target and answers with err.
+type fakeSyncAuthorizer struct {
+	targets []*authorization.CallTarget
+	err     error
+}
+
+func (f *fakeSyncAuthorizer) Authorize(
+	_ context.Context,
+	_ *authorization.Claims,
+	target *authorization.CallTarget,
+) (*commonpb.Principal, error) {
+	f.targets = append(f.targets, target)
+	return nil, f.err
+}
+
+// fakeSyncCountLimiter records the target namespace checks and answers with err.
+type fakeSyncCountLimiter struct {
+	calls    []string
+	released int
+	err      error
+}
+
+func (f *fakeSyncCountLimiter) Allow(
+	namespaceName namespace.Name,
+	methodName string,
+	_ metrics.Handler,
+	_ any,
+) (func(), error) {
+	f.calls = append(f.calls, namespaceName.String()+" "+methodName)
+	return func() { f.released++ }, f.err
+}
+
 type syncTestEnv struct {
 	handler       *WorkflowHandler
 	matching      *matchingservicemock.MockMatchingServiceClient
 	rateLimiter   *fakeSyncRateLimiter
+	authorizer    *fakeSyncAuthorizer
+	countLimiter  *fakeSyncCountLimiter
 	endpointCalls []namespace.ID
 }
 
-func newSyncTestEnv(t *testing.T, enabled bool, targetActive bool) *syncTestEnv {
+func newSyncTestEnv(
+	t *testing.T,
+	enabled bool,
+	targetActive bool,
+	targetOpts ...func(*persistencespb.NamespaceInfo),
+) *syncTestEnv {
 	ctrl := gomock.NewController(t)
 	dc := dynamicconfig.NewNoopCollection()
 
@@ -72,8 +114,16 @@ func newSyncTestEnv(t *testing.T, enabled bool, targetActive bool) *syncTestEnv 
 		nil,
 		cluster.TestCurrentClusterName,
 	)
+	targetInfo := &persistencespb.NamespaceInfo{
+		Id:    syncTestTargetID,
+		Name:  syncTestTargetNamespace,
+		State: enumspb.NAMESPACE_STATE_REGISTERED,
+	}
+	for _, opt := range targetOpts {
+		opt(targetInfo)
+	}
 	targetNS := namespace.NewGlobalNamespaceForTest(
-		&persistencespb.NamespaceInfo{Id: syncTestTargetID, Name: syncTestTargetNamespace},
+		targetInfo,
 		nil,
 		&persistencespb.NamespaceReplicationConfig{
 			ActiveClusterName: activeCluster,
@@ -101,8 +151,10 @@ func newSyncTestEnv(t *testing.T, enabled bool, targetActive bool) *syncTestEnv 
 		AnyTimes()
 
 	env := &syncTestEnv{
-		matching:    matchingservicemock.NewMockMatchingServiceClient(ctrl),
-		rateLimiter: &fakeSyncRateLimiter{},
+		matching:     matchingservicemock.NewMockMatchingServiceClient(ctrl),
+		rateLimiter:  &fakeSyncRateLimiter{},
+		authorizer:   &fakeSyncAuthorizer{},
+		countLimiter: &fakeSyncCountLimiter{},
 	}
 	registry := nexustest.FakeEndpointRegistry{
 		OnGetByName: func(
@@ -166,6 +218,16 @@ func newSyncTestEnv(t *testing.T, enabled bool, targetActive bool) *syncTestEnv 
 		matchingClient:       env.matching,
 		endpointRegistry:     registry,
 		namespaceRateLimiter: env.rateLimiter,
+		syncNexusChecks: SyncNexusChecks{
+			Authorizer: env.authorizer,
+			StateChecker: interceptor.NewNamespaceValidatorInterceptor(
+				nsRegistry,
+				dynamicconfig.GetBoolPropertyFn(false),
+				dynamicconfig.GetIntPropertyFn(1000),
+				nil,
+			),
+			CountLimiter: env.countLimiter,
+		},
 		nexusOperationConfig: &chasmnexus.Config{
 			RequestTimeout:             chasmnexus.RequestTimeout.Get(dc),
 			MaxServiceNameLength:       chasmnexus.MaxServiceNameLength.Get(dc),
@@ -472,4 +534,39 @@ func TestExecuteSyncNexusOperation_RefusedBeforeDispatch(t *testing.T) {
 			tc.check(t, err)
 		})
 	}
+}
+
+func TestExecuteSyncNexusOperation_AuthorizesTheEndpoint(t *testing.T) {
+	env := newSyncTestEnv(t, true, true)
+	env.authorizer.err = serviceerror.NewPermissionDenied("endpoint not allowed", "")
+	_, err := env.handler.ExecuteSyncNexusOperation(context.Background(), syncTestRequest())
+	var denied *serviceerror.PermissionDenied
+	require.ErrorAs(t, err, &denied)
+	require.Len(t, env.authorizer.targets, 1)
+	require.Equal(t, syncTestCallerNamespace, env.authorizer.targets[0].Namespace)
+	require.Equal(t, syncTestEndpoint, env.authorizer.targets[0].NexusEndpointName)
+	require.Empty(t, env.endpointCalls, "a denied caller learns nothing about the endpoint")
+}
+
+func TestExecuteSyncNexusOperation_RefusesATargetThatTakesNoTasks(t *testing.T) {
+	env := newSyncTestEnv(t, true, true, func(info *persistencespb.NamespaceInfo) {
+		info.State = enumspb.NAMESPACE_STATE_DELETED
+	})
+	_, err := env.handler.ExecuteSyncNexusOperation(context.Background(), syncTestRequest())
+	var invalidState *serviceerror.NamespaceInvalidState
+	require.ErrorAs(t, err, &invalidState, "the same answer as on the Nexus HTTP route")
+	require.Empty(t, env.countLimiter.calls)
+}
+
+func TestExecuteSyncNexusOperation_TakesTheTargetConcurrencyLimit(t *testing.T) {
+	env := newSyncTestEnv(t, true, true)
+	env.countLimiter.err = serviceerror.NewResourceExhausted(
+		enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT, "too many")
+	_, err := env.handler.ExecuteSyncNexusOperation(context.Background(), syncTestRequest())
+	var exhausted *serviceerror.ResourceExhausted
+	require.ErrorAs(t, err, &exhausted)
+	require.Equal(t,
+		[]string{syncTestTargetNamespace + " " + configs.DispatchNexusTaskByEndpointAPIName},
+		env.countLimiter.calls)
+	require.Empty(t, env.rateLimiter.calls)
 }

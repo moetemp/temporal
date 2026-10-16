@@ -12,6 +12,8 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/api/matchingservice/v1"
 	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
+	"go.temporal.io/server/common/api"
+	"go.temporal.io/server/common/authorization"
 	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/namespace"
@@ -60,6 +62,18 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 		return nil, err
 	}
 
+	// The gRPC interceptor authorized the caller namespace without the endpoint. An authorizer that
+	// limits endpoints by name on the Nexus HTTP route gets the name here too.
+	claims, _ := ctx.Value(authorization.MappedClaims).(*authorization.Claims)
+	if _, err := wh.syncNexusChecks.Authorizer.Authorize(ctx, claims, &authorization.CallTarget{
+		APIName:           api.WorkflowServicePrefix + "ExecuteSyncNexusOperation",
+		Namespace:         callerNamespace.Name().String(),
+		NexusEndpointName: request.GetEndpoint(),
+		Request:           request,
+	}); err != nil {
+		return nil, err
+	}
+
 	// The registry is the allowlist seam. It answers NotFound for an endpoint that the caller
 	// namespace can't reach, so a caller can't probe endpoint names.
 	entry, err := wh.endpointRegistry.GetByName(ctx, callerNamespace.ID(), request.GetEndpoint())
@@ -79,6 +93,15 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 	if err != nil {
 		return nil, err
 	}
+	// A target that is deleted or in a handover takes no task, as on the Nexus HTTP route.
+	err = wh.syncNexusChecks.StateChecker.ValidateState(
+		targetNamespace,
+		configs.DispatchNexusTaskByEndpointAPIName,
+		namespace.EmptyBusinessID,
+	)
+	if err != nil {
+		return nil, err
+	}
 	currentCluster := wh.clusterMetadata.GetCurrentClusterName()
 	//nolint:forbidigo // Nexus requests are not tied to a business ID, as on the Nexus HTTP route.
 	if !targetNamespace.ActiveInCluster(currentCluster) {
@@ -88,6 +111,16 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 			targetNamespace.ActiveClusterName(namespace.RoutingKey{}),
 		)
 	}
+	release, err := wh.syncNexusChecks.CountLimiter.Allow(
+		targetNamespace.Name(),
+		configs.DispatchNexusTaskByEndpointAPIName,
+		wh.metricsScope(ctx),
+		request,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	// The target namespace pays for the dispatch as it does for a call on the Nexus HTTP route.
 	if err := wh.namespaceRateLimiter.Allow(
 		ctx,

@@ -1007,6 +1007,9 @@ func HandlerProvider(
 	endpointRegistry commonnexus.EndpointRegistry,
 	namespaceRateLimiter interceptor.NamespaceRateLimitInterceptor,
 	nexusOperationConfig *chasmnexus.Config,
+	authInterceptor *authorization.Interceptor,
+	namespaceValidator *interceptor.NamespaceValidatorInterceptor,
+	namespaceCountLimiter *interceptor.ConcurrentRequestLimitInterceptor,
 ) Handler {
 	workerDeploymentReadRateLimiter := configs.NewGlobalNamespaceRateLimiter(
 		frontendServiceResolver,
@@ -1057,6 +1060,11 @@ func HandlerProvider(
 		endpointRegistry,
 		namespaceRateLimiter,
 		nexusOperationConfig,
+		SyncNexusChecks{
+			Authorizer:   authInterceptor,
+			StateChecker: namespaceValidator,
+			CountLimiter: namespaceCountLimiter,
+		},
 	)
 	return wfHandler
 }
