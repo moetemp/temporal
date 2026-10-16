@@ -688,6 +688,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 		return nil
 	case *workflowservice.ValidateWorkerDeploymentVersionComputeConfigResponse:
 		return nil
+	case *workflowservice.WaitStreamCallbackRequest:
+		return nil
+	case *workflowservice.WaitStreamCallbackResponse:
+		return nil
 	default:
 		return nil
 	}

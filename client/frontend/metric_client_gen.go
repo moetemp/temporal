@@ -1814,3 +1814,17 @@ func (c *metricClient) ValidateWorkerDeploymentVersionComputeConfig(
 
 	return c.client.ValidateWorkerDeploymentVersionComputeConfig(ctx, request, opts...)
 }
+
+func (c *metricClient) WaitStreamCallback(
+	ctx context.Context,
+	request *workflowservice.WaitStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (_ *workflowservice.WaitStreamCallbackResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "FrontendClientWaitStreamCallback")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.WaitStreamCallback(ctx, request, opts...)
+}
