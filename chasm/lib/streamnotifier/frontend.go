@@ -351,71 +351,97 @@ func validateNotification(position string, counter int64, metadata map[string]st
 	return nil
 }
 
-// NotifyStreams checks every entry before it applies any, so a bad entry fails the request and
-// leaves no notifier changed. Then it applies each entry as a NotifyStream on the notifier of its
-// stream. The first failure fails the request, and the entries already applied stay applied.
+// NotifyStreams checks and applies each entry on its own, as a NotifyStream on the notifier of its
+// stream, and answers each in its result, so a bad entry holds up no other stream of the batch.
+// Only a fault of the request as a whole fails the call.
 func (h *frontendHandler) NotifyStreams(
 	ctx context.Context,
 	req *workflowservice.NotifyStreamsRequest,
 ) (*workflowservice.NotifyStreamsResponse, error) {
+	ns := req.GetNamespace()
 	entries := req.GetNotifications()
 	if len(entries) == 0 {
 		return nil, serviceerror.NewInvalidArgument("notifications is empty")
 	}
-	if limit := h.config.MaxNotifyBatch(req.GetNamespace()); len(entries) > limit {
+	if limit := h.config.MaxNotifyBatch(ns); len(entries) > limit {
 		return nil, serviceerror.NewInvalidArgumentf(
 			"notifications has %d entries, more than the %d allowed",
 			len(entries),
 			limit,
 		)
 	}
+	if !h.config.Enabled(ns) || !h.config.ChasmEnabled(ns) {
+		// resolve gives the error that a NotifyStream in this namespace gets.
+		_, _, err := h.resolve(ns, nil)
+		return nil, err
+	}
+	if _, err := h.namespaceRegistry.GetNamespaceID(namespace.Name(ns)); err != nil {
+		return nil, err
+	}
+	errs := make([]error, len(entries))
 	requests := make([]*streamnotifierpb.NotifyStreamRequest, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for i, entry := range entries {
-		namespaceID, businessID, err := h.resolve(req.GetNamespace(), entry.GetStreamRef())
-		if err != nil {
-			return nil, err
-		}
-		if err := validateNotification(
-			entry.GetPosition(),
-			entry.GetCounter(),
-			entry.GetMetadata(),
-		); err != nil {
-			return nil, err
-		}
-		// Two entries for one stream would race on its notifier, and a driver folds them anyway.
-		if _, ok := seen[businessID]; ok {
-			return nil, serviceerror.NewInvalidArgumentf(
-				"notifications has two entries for the stream %q",
-				businessID,
-			)
-		}
-		seen[businessID] = struct{}{}
-		requests[i] = &streamnotifierpb.NotifyStreamRequest{
-			NamespaceId: namespaceID,
-			BusinessId:  businessID,
-			FrontendRequest: &workflowservice.NotifyStreamRequest{
-				Namespace: req.GetNamespace(),
-				StreamRef: entry.GetStreamRef(),
-				Position:  entry.GetPosition(),
-				Counter:   entry.GetCounter(),
-				Metadata:  entry.GetMetadata(),
-				Identity:  req.GetIdentity(),
-			},
-		}
+		requests[i], errs[i] = h.notifyStreamsEntry(ns, req.GetIdentity(), entry, seen)
 	}
-	group, groupCtx := errgroup.WithContext(ctx)
+	var group errgroup.Group
 	group.SetLimit(notifyBatchParallelism)
-	for _, request := range requests {
+	for i, request := range requests {
+		if request == nil {
+			continue
+		}
 		group.Go(func() error {
-			_, err := h.client.NotifyStream(groupCtx, request)
-			return err
+			_, errs[i] = h.client.NotifyStream(ctx, request)
+			return nil
 		})
 	}
-	if err := group.Wait(); err != nil {
+	_ = group.Wait()
+	results := make([]*streampb.StreamNotificationResult, len(entries))
+	for i, err := range errs {
+		results[i] = &streampb.StreamNotificationResult{}
+		if err != nil {
+			st := serviceerror.ToStatus(err)
+			results[i].Code = int32(st.Code())
+			results[i].Message = st.Message()
+		}
+	}
+	return &workflowservice.NotifyStreamsResponse{Results: results}, nil
+}
+
+// notifyStreamsEntry checks one entry of a NotifyStreams request and builds its NotifyStream.
+func (h *frontendHandler) notifyStreamsEntry(
+	ns, identity string,
+	entry *streampb.StreamNotification,
+	seen map[string]struct{},
+) (*streamnotifierpb.NotifyStreamRequest, error) {
+	namespaceID, businessID, err := h.resolve(ns, entry.GetStreamRef())
+	if err != nil {
 		return nil, err
 	}
-	return &workflowservice.NotifyStreamsResponse{}, nil
+	err = validateNotification(entry.GetPosition(), entry.GetCounter(), entry.GetMetadata())
+	if err != nil {
+		return nil, err
+	}
+	// Two entries for one stream would race on its notifier, and a driver folds them anyway.
+	if _, ok := seen[businessID]; ok {
+		return nil, serviceerror.NewInvalidArgumentf(
+			"notifications has two entries for the stream %q",
+			businessID,
+		)
+	}
+	seen[businessID] = struct{}{}
+	return &streamnotifierpb.NotifyStreamRequest{
+		NamespaceId: namespaceID,
+		BusinessId:  businessID,
+		FrontendRequest: &workflowservice.NotifyStreamRequest{
+			Namespace: ns,
+			StreamRef: entry.GetStreamRef(),
+			Position:  entry.GetPosition(),
+			Counter:   entry.GetCounter(),
+			Metadata:  entry.GetMetadata(),
+			Identity:  identity,
+		},
+	}, nil
 }
 
 func (h *frontendHandler) DescribeStreamNotifier(
