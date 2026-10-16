@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.streamnotifier.proto.v1;
+
+import "google/protobuf/timestamp.proto";
+import "temporal/api/common/v1/message.proto";
+import "temporal/api/failure/v1/message.proto";
+import "temporal/api/stream/v1/message.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpb";
+
+// The state of one stream's notifier: the latest notification and whether the stream closed.
+message NotifierState {
+  // The stream, without a run ID: one notifier serves the stream across the owner's runs.
+  temporal.api.stream.v1.StreamReference stream_ref = 1;
+  // The highest counter notified so far, and the position and metadata that came with it.
+  int64 counter = 2;
+  string position = 3;
+  map<string, string> metadata = 4;
+  // Set once the stream closed. Callbacks attached afterwards complete right away.
+  bool closed = 5;
+  // The completion result the stream closed with, if any.
+  temporal.api.common.v1.Payload close_result = 6;
+  // When the stream closed.
+  google.protobuf.Timestamp close_time = 7;
+  // When the notifier last saw an attach or a notification. An open notifier that sees neither
+  // for the idle timeout closes, so an abandoned stream does not hold callbacks forever.
+  google.protobuf.Timestamp last_activity_time = 8;
+  reserved 9, 11;
+  // Set once the notifier's execution ends: a closed one after its closed retention, an open one
+  // that went idle with no callbacks left.
+  bool expired = 10;
+  // The callbacks an idle timeout failed while the stream stayed open. Their completion is a
+  // failure; the other callbacks still get the stream's close.
+  repeated string idle_failed_request_ids = 12;
+  // When the armed owner check fires, or unset when none is armed. While callbacks are attached,
+  // the notifier checks now and then whether its owner Workflow ended.
+  google.protobuf.Timestamp owner_check_time = 13;
+  // The start each callback's caller was answered with, by request ID. Progress deliveries and the
+  // completion carry it, so a caller that hears from the notifier before the start response still
+  // learns the operation token.
+  map<string, CallerStart> caller_starts = 14;
+  // The callbacks whose caller canceled its operation. Their completion is a cancellation.
+  repeated string canceled_request_ids = 15;
+  // Set when the stream closed with a failure instead of a result, such as when its owner
+  // Workflow failed. The callbacks complete as failed with it, or as canceled when it has
+  // canceled info.
+  temporal.api.failure.v1.Failure close_failure = 16;
+}
+
+// What the handler's start answered a caller with.
+message CallerStart {
+  string operation_token = 1;
+  google.protobuf.Timestamp start_time = 2;
+}
