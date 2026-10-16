@@ -1265,6 +1265,21 @@ func TestWorkflowTargets(t *testing.T) {
 		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
 	})
 
+	t.Run("ARepeatedAttachFreesTheReserveNoCallbackHolds", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 1)
+		// The reader's close was taken, so its place was freed, and the attach comes again.
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 3)
+		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, "sub-a", nt.reserved[2].GetWake().GetSubscriptionId())
+
+		nt.counted = true
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
+	})
+
 	t.Run("DescribeShowsTheTarget", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))

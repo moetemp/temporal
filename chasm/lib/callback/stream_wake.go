@@ -41,6 +41,9 @@ func streamWakeRequest(
 			RunId:      target.GetRunId(),
 		},
 		Wake: wake,
+		// The reader's place may be gone, after a close it took or a detach, by the time a wake
+		// lands.
+		OnlyIfReserved: true,
 	}
 }
 

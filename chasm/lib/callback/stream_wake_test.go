@@ -102,6 +102,7 @@ func TestStreamWakeProgressDelivery(t *testing.T) {
 			require.Equal(t, "ns-id", got[0].GetNamespaceId(), "the reader is in the namespace")
 			require.Equal(t, "reader", got[0].GetExecution().GetWorkflowId())
 			require.Equal(t, "run", got[0].GetExecution().GetRunId())
+			require.True(t, got[0].GetOnlyIfReserved(), "a wake takes no place it lost")
 			require.True(t, proto.Equal(&streampb.StreamWake{
 				SubscriptionId: "sub",
 				Position:       "p",
@@ -189,6 +190,7 @@ func TestStreamWakeCompletion(t *testing.T) {
 			if tc.calls > 0 {
 				require.Equal(t, "sub", got[0].GetWake().GetSubscriptionId())
 				require.Equal(t, tc.wake == nil, got[0].GetRelease())
+				require.True(t, got[0].GetOnlyIfReserved(), "a wake takes no place it lost")
 			}
 			if tc.calls > 0 && tc.wake != nil {
 				require.True(t, got[0].GetWake().GetClosed())
