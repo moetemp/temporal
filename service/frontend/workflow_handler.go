@@ -173,6 +173,7 @@ type (
 		endpointRegistry                commonnexus.EndpointRegistry
 		namespaceRateLimiter            interceptor.NamespaceRateLimitInterceptor
 		nexusOperationConfig            *chasmnexus.Config
+		syncNexusChecks                 SyncNexusChecks
 	}
 )
 
@@ -357,6 +358,7 @@ func NewWorkflowHandler(
 	endpointRegistry commonnexus.EndpointRegistry,
 	namespaceRateLimiter interceptor.NamespaceRateLimitInterceptor,
 	nexusOperationConfig *chasmnexus.Config,
+	syncNexusChecks SyncNexusChecks,
 ) *WorkflowHandler {
 	handler := &WorkflowHandler{
 		ActivityHandler:       activityHandler,
@@ -416,6 +418,7 @@ func NewWorkflowHandler(
 		endpointRegistry:                endpointRegistry,
 		namespaceRateLimiter:            namespaceRateLimiter,
 		nexusOperationConfig:            nexusOperationConfig,
+		syncNexusChecks:                 syncNexusChecks,
 	}
 
 	return handler
