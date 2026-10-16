@@ -46,6 +46,10 @@ type FrontendHandler interface {
 		context.Context,
 		*workflowservice.NotifyStreamRequest,
 	) (*workflowservice.NotifyStreamResponse, error)
+	WaitStreamCallback(
+		context.Context,
+		*workflowservice.WaitStreamCallbackRequest,
+	) (*workflowservice.WaitStreamCallbackResponse, error)
 	DescribeStreamNotifier(
 		context.Context,
 		*workflowservice.DescribeStreamNotifierRequest,
@@ -273,6 +277,31 @@ func (h *frontendHandler) DetachStreamCallback(
 		return nil, serviceerror.NewInvalidArgument("request_id is too long")
 	}
 	resp, err := h.client.DetachStreamCallback(ctx, &streamnotifierpb.DetachStreamCallbackRequest{
+		NamespaceId:     namespaceID,
+		BusinessId:      businessID,
+		FrontendRequest: req,
+	})
+	return resp.GetFrontendResponse(), err
+}
+
+func (h *frontendHandler) WaitStreamCallback(
+	ctx context.Context,
+	req *workflowservice.WaitStreamCallbackRequest,
+) (*workflowservice.WaitStreamCallbackResponse, error) {
+	namespaceID, businessID, err := h.resolve(req.GetNamespace(), req.GetStreamRef())
+	if err != nil {
+		return nil, err
+	}
+	if req.GetRequestId() == "" {
+		return nil, serviceerror.NewInvalidArgument("request_id is required")
+	}
+	if len(req.GetRequestId()) > h.config.MaxIDLength() {
+		return nil, serviceerror.NewInvalidArgument("request_id is too long")
+	}
+	if req.GetAfterCounter() < 0 {
+		return nil, serviceerror.NewInvalidArgument("after_counter must not be negative")
+	}
+	resp, err := h.client.WaitStreamCallback(ctx, &streamnotifierpb.WaitStreamCallbackRequest{
 		NamespaceId:     namespaceID,
 		BusinessId:      businessID,
 		FrontendRequest: req,
