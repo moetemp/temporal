@@ -27,15 +27,24 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// BusinessID is the notifier's execution ID for a stream: its owner kind, owner, the first run of
-// the owner's run chain, and topic, escaped so that no two streams map to one ID. One notifier
-// serves the stream across the chain's runs, and a later chain that reuses the Workflow ID and
-// topic gets a notifier of its own.
+// BusinessID is the notifier's execution ID for a stream: its owner kind, owner, the run that keys
+// the owner, and topic, escaped so that no two streams map to one ID. For a Workflow the run is the
+// first run of its chain, so one notifier serves the stream across the chain's runs, and a later
+// chain that reuses the Workflow ID and topic gets a notifier of its own. For an Activity it is the
+// Activity run. For a Workflow Activity the owner is the Workflow ID and the Activity ID, and the
+// run is the run that scheduled the Activity.
 func BusinessID(ref *streampb.StreamReference) string {
 	kind := strings.ToLower(strings.TrimPrefix(ref.GetOwnerKind().String(), "STREAM_OWNER_KIND_"))
-	return kind + "/" + url.PathEscape(
-		ref.GetWorkflowId(),
-	) + "/" + url.PathEscape(
+	ownerID := url.PathEscape(ref.GetWorkflowId())
+	switch ref.GetOwnerKind() {
+	case enumspb.STREAM_OWNER_KIND_ACTIVITY:
+		ownerID = url.PathEscape(ref.GetActivityId())
+	case enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY:
+		kind = "workflow_activity"
+		ownerID += "/" + url.PathEscape(ref.GetActivityId())
+	default:
+	}
+	return kind + "/" + ownerID + "/" + url.PathEscape(
 		ref.GetRunId(),
 	) + "/" + url.PathEscape(
 		ref.GetTopic(),
@@ -67,6 +76,7 @@ func newStreamNotifier(ref *streampb.StreamReference) *StreamNotifier {
 				WorkflowId: ref.GetWorkflowId(),
 				RunId:      ref.GetRunId(),
 				Topic:      ref.GetTopic(),
+				ActivityId: ref.GetActivityId(),
 			},
 		},
 	}

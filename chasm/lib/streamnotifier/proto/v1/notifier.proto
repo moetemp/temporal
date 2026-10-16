@@ -64,6 +64,12 @@ message NotifierState {
   google.protobuf.Timestamp debounce_until = 20;
   // Set when a notification came inside the open window and was not delivered yet.
   bool debounce_held = 21;
+  // The idle callbacks of the Bridge notifier use these fields.
+  reserved 22, 23;
+  // When an owner check first found a Workflow Activity owner no longer pending in its running
+  // run, or unset when the last check found it pending. The check gives the Workflow's Worker
+  // streamnotifier.ownerCloseGrace from this time to close the stream with the Activity's outcome.
+  google.protobuf.Timestamp owner_end_seen_time = 24;
 }
 
 // What the handler's start answered a caller with.

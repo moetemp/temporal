@@ -2,14 +2,18 @@ package streamnotifier
 
 import (
 	"go.temporal.io/server/chasm"
+	"go.temporal.io/server/chasm/lib/activity/gen/activitypb/v1"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.uber.org/fx"
 )
 
 var HistoryModule = fx.Module(
 	"streamnotifier-history",
+	// The owner check describes an owner Activity on whichever history host owns it.
+	fx.Provide(fx.Private, activitypb.NewActivityServiceLayeredClient),
 	fx.Provide(
 		configProvider,
+		newOwnerDescriber,
 		newHandler,
 		newExpiryTaskHandler,
 		newOwnerCheckTaskHandler,

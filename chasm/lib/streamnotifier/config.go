@@ -3,6 +3,7 @@ package streamnotifier
 import (
 	"time"
 
+	"go.temporal.io/server/chasm/lib/activity"
 	"go.temporal.io/server/common/dynamicconfig"
 )
 
@@ -99,7 +100,8 @@ var OwnerCloseGrace = dynamicconfig.NewNamespaceDurationSetting(
 canceled. The Worker that ran the final task closes the stream with the Workflow's own result, and
 the notifier keeps the first close, so the check closes it only once this passed. The default
 matches how long Core retries its notifier close. A terminated or timed-out owner has no Worker
-close, so the check closes its stream at once.`,
+close, so the check closes its stream at once. For a stream that a Workflow Activity owns, the grace
+starts at the first check that found the Activity no longer pending in its run.`,
 )
 
 var OwnerStartGrace = dynamicconfig.NewNamespaceDurationSetting(
@@ -143,6 +145,7 @@ still holds the records it would read. The default matches the default store ret
 type Config struct {
 	Enabled                dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	ChasmEnabled           dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	ActivityEnabled        dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	MaxCallbacks           dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxCallbackBytes       dynamicconfig.IntPropertyFnWithNamespaceFilter
 	IdleTimeout            dynamicconfig.DurationPropertyFnWithNamespaceFilter
@@ -166,6 +169,7 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 	return &Config{
 		Enabled:                Enabled.Get(dc),
 		ChasmEnabled:           dynamicconfig.EnableChasm.Get(dc),
+		ActivityEnabled:        activity.Enabled.Get(dc),
 		MaxCallbacks:           MaxCallbacks.Get(dc),
 		MaxCallbackBytes:       MaxCallbackBytes.Get(dc),
 		IdleTimeout:            IdleTimeout.Get(dc),

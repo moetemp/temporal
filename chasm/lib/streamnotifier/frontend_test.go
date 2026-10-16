@@ -315,6 +315,8 @@ func TestNotifyStreamsAppliesEachEntry(t *testing.T) {
 		ChasmEnabled:   dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
 		MaxIDLength:    dynamicconfig.GetIntPropertyFn(1000),
 		MaxNotifyBatch: dynamicconfig.GetIntPropertyFnFilteredByNamespace(3),
+		// Standalone Activities are off, so an Activity owner's entry is refused.
+		ActivityEnabled: dynamicconfig.GetBoolPropertyFnFilteredByNamespace(false),
 	}
 	h := NewFrontendHandler(client, config, registry, nil, metrics.NoopMetricsHandler,
 		log.NewTestLogger())
@@ -377,6 +379,22 @@ func TestNotifyStreamsAppliesEachEntry(t *testing.T) {
 	require.EqualValues(t, 5, byTopic["a"].GetFrontendRequest().GetCounter())
 	require.EqualValues(t, 7, byTopic["b"].GetFrontendRequest().GetCounter())
 
+	activityEntry := &streampb.StreamNotification{
+		StreamRef: &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_ACTIVITY,
+			ActivityId: "act",
+			RunId:      "act-run",
+			Topic:      "a",
+		},
+		Counter: 1,
+	}
+	client.notified = nil
+	got, err = notify(entry("a", 8), activityEntry)
+	require.NoError(t, err)
+	require.Equal(t, []codes.Code{codes.OK, codes.FailedPrecondition}, got,
+		"an owner kind that is off fails only its entry")
+	require.Len(t, client.notified, 1)
+
 	config.Enabled = dynamicconfig.GetBoolPropertyFnFilteredByNamespace(false)
 	_, err = notify(entry("a", 6))
 	var unimplemented *serviceerror.Unimplemented
@@ -387,4 +405,136 @@ func TestNotifyStreamsAppliesEachEntry(t *testing.T) {
 	got, err = notify(entry("a", 6))
 	require.NoError(t, err)
 	require.Equal(t, []codes.Code{codes.Unavailable}, got, "a failed entry fails only itself")
+}
+
+func TestOwnerKindsTakeTheirOwnFields(t *testing.T) {
+	registry := namespace.NewMockRegistry(gomock.NewController(t))
+	registry.EXPECT().
+		GetNamespaceID(gomock.Any()).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
+	client := &fakeNotifierClient{}
+	h := NewFrontendHandler(client, &Config{
+		Enabled:      dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ChasmEnabled: dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ActivityEnabled: func(ns string) bool {
+			return ns != "no-standalone"
+		},
+		BlobSizeLimitError: dynamicconfig.GetIntPropertyFnFilteredByNamespace(1 << 20),
+		BlobSizeLimitWarn:  dynamicconfig.GetIntPropertyFnFilteredByNamespace(1 << 20),
+		MaxIDLength:        dynamicconfig.GetIntPropertyFn(10),
+	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
+	notify := func(ns string, stream *streampb.StreamReference) error {
+		_, err := h.NotifyStream(context.Background(), &workflowservice.NotifyStreamRequest{
+			Namespace: ns, StreamRef: stream, Counter: 1,
+		})
+		return err
+	}
+	activity := func() *streampb.StreamReference {
+		return &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_ACTIVITY,
+			ActivityId: "act",
+			RunId:      "run",
+			Topic:      "t",
+		}
+	}
+	require.NoError(t, notify("ns", activity()))
+
+	for name, change := range map[string]func(*streampb.StreamReference){
+		"no activity_id": func(r *streampb.StreamReference) { r.ActivityId = "" },
+		"a workflow_id":  func(r *streampb.StreamReference) { r.WorkflowId = "wf" },
+		"no run_id":      func(r *streampb.StreamReference) { r.RunId = "" },
+		"no topic":       func(r *streampb.StreamReference) { r.Topic = "" },
+		"a long activity_id": func(r *streampb.StreamReference) {
+			r.ActivityId = strings.Repeat("a", 11)
+		},
+		"an unknown kind": func(r *streampb.StreamReference) {
+			r.OwnerKind = enumspb.StreamOwnerKind(4)
+		},
+		"no kind": func(r *streampb.StreamReference) {
+			r.OwnerKind = enumspb.STREAM_OWNER_KIND_UNSPECIFIED
+		},
+		"a workflow ref with an activity_id": func(r *streampb.StreamReference) {
+			r.OwnerKind = enumspb.STREAM_OWNER_KIND_WORKFLOW
+			r.WorkflowId = "wf"
+		},
+		"a workflow ref with no workflow_id": func(r *streampb.StreamReference) {
+			r.OwnerKind = enumspb.STREAM_OWNER_KIND_WORKFLOW
+			r.ActivityId = ""
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ref := activity()
+			change(ref)
+			var invalid *serviceerror.InvalidArgument
+			require.ErrorAs(t, notify("ns", ref), &invalid)
+		})
+	}
+
+	// Core takes Unimplemented as a server with no notifier, and stops notifying for every stream.
+	err := notify("no-standalone", activity())
+	var precondition *serviceerror.FailedPrecondition
+	require.ErrorAs(t, err, &precondition)
+	require.NoError(t, notify("no-standalone", &streampb.StreamReference{
+		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+		WorkflowId: "wf",
+		RunId:      "run",
+		Topic:      "t",
+	}), "Workflow streams do not need standalone Activities")
+	require.Equal(t, 2, client.notified)
+}
+
+func TestWorkflowActivityRefsTakeTheirOwnFields(t *testing.T) {
+	registry := namespace.NewMockRegistry(gomock.NewController(t))
+	registry.EXPECT().
+		GetNamespaceID(gomock.Any()).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
+	client := &fakeNotifierClient{}
+	h := NewFrontendHandler(client, &Config{
+		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ChasmEnabled:       dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ActivityEnabled:    dynamicconfig.GetBoolPropertyFnFilteredByNamespace(false),
+		BlobSizeLimitError: dynamicconfig.GetIntPropertyFnFilteredByNamespace(1 << 20),
+		BlobSizeLimitWarn:  dynamicconfig.GetIntPropertyFnFilteredByNamespace(1 << 20),
+		MaxIDLength:        dynamicconfig.GetIntPropertyFn(10),
+	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
+	notify := func(stream *streampb.StreamReference) error {
+		_, err := h.NotifyStream(context.Background(), &workflowservice.NotifyStreamRequest{
+			Namespace: "ns", StreamRef: stream, Counter: 1,
+		})
+		return err
+	}
+	workflowActivity := func() *streampb.StreamReference {
+		return &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY,
+			WorkflowId: "wf",
+			RunId:      "run",
+			ActivityId: "act",
+			Topic:      "t",
+		}
+	}
+	// Standalone Activities are off here, and Workflow Activities do not need them.
+	require.NoError(t, notify(workflowActivity()))
+	require.Equal(t, 1, client.notified)
+
+	for name, change := range map[string]func(*streampb.StreamReference){
+		"no workflow_id": func(r *streampb.StreamReference) { r.WorkflowId = "" },
+		"no run_id":      func(r *streampb.StreamReference) { r.RunId = "" },
+		"no activity_id": func(r *streampb.StreamReference) { r.ActivityId = "" },
+		"no topic":       func(r *streampb.StreamReference) { r.Topic = "" },
+		"a long workflow_id": func(r *streampb.StreamReference) {
+			r.WorkflowId = strings.Repeat("w", 11)
+		},
+		"a long activity_id": func(r *streampb.StreamReference) {
+			r.ActivityId = strings.Repeat("a", 11)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ref := workflowActivity()
+			change(ref)
+			var invalid *serviceerror.InvalidArgument
+			require.ErrorAs(t, notify(ref), &invalid)
+		})
+	}
 }
