@@ -502,7 +502,19 @@ func TestWorkflowActivityRefsTakeTheirOwnFields(t *testing.T) {
 
 type waitNotifierClient struct {
 	streamnotifierpb.StreamNotifierServiceClient
-	waited int
+	attached int
+	waited   int
+}
+
+func (c *waitNotifierClient) AttachStreamCallback(
+	context.Context,
+	*streamnotifierpb.AttachStreamCallbackRequest,
+	...grpc.CallOption,
+) (*streamnotifierpb.AttachStreamCallbackResponse, error) {
+	c.attached++
+	return &streamnotifierpb.AttachStreamCallbackResponse{
+		FrontendResponse: &workflowservice.AttachStreamCallbackResponse{},
+	}, nil
 }
 
 func (c *waitNotifierClient) WaitStreamCallback(
@@ -547,7 +559,8 @@ func TestIdleAttachAndWaitAreChecked(t *testing.T) {
 		Idle: true,
 	}
 	_, err := h.AttachStreamCallback(context.Background(), attach)
-	require.ErrorAs(t, err, &invalid, "a Workflow reader cannot attach idle")
+	require.NoError(t, err, "a Workflow reader attaches idle")
+	require.Equal(t, 1, client.attached)
 
 	wait := func(requestID string, after int64) error {
 		_, err := h.WaitStreamCallback(context.Background(), &workflowservice.WaitStreamCallbackRequest{
