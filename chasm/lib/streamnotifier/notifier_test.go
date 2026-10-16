@@ -27,6 +27,7 @@ import (
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/metrics/metricstest"
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/service/history/tasks"
@@ -37,6 +38,7 @@ import (
 
 type notifierTest struct {
 	t          *testing.T
+	metrics    *metricstest.CaptureHandler
 	ctx        context.Context
 	engine     *chasmtest.Engine
 	handler    *handler
@@ -142,9 +144,11 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	recheck := newRecheckTaskHandler(recheckTaskHandlerOptions{Config: config})
 	debounce := newDebounceTaskHandler(debounceTaskHandlerOptions{Config: config})
 	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck, recheck, debounce)))
-	engine := chasmtest.NewEngine(t, registry)
+	metricsHandler := metricstest.NewCaptureHandler()
+	engine := chasmtest.NewEngine(t, registry, chasmtest.WithMetricsHandler(metricsHandler))
 	*nt = notifierTest{
 		t:          t,
+		metrics:    metricsHandler,
 		ctx:        chasm.NewEngineContext(context.Background(), engine),
 		engine:     engine,
 		handler:    h,
@@ -1626,6 +1630,26 @@ func TestIdleWorkflowReaders(t *testing.T) {
 		nt.read(func(n *StreamNotifier, _ chasm.Context) {
 			require.Empty(t, n.GetWaits())
 		})
+	})
+
+	t.Run("AWaitBelowADeliveredCounterIsCounted", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		capture := nt.metrics.StartCapture()
+		defer nt.metrics.StopCapture(capture)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.notify(3, false))
+		require.NoError(t, nt.waitForReader("idle", 2))
+		require.Empty(t, capture.SnapshotMetric(WaitBelowDelivered.Name()),
+			"the reader did not get the counter yet")
+		nt.updateCallback("idle", func(cb *callback.Callback) {
+			cb.PendingProgress = nil
+			cb.DeliveredProgressCounter = 3
+		})
+		// The reader's read found the store below the counter it was woken for.
+		require.NoError(t, nt.waitForReader("idle", 2))
+		require.Len(t, capture.SnapshotMetric(WaitBelowDelivered.Name()), 1)
+		require.NoError(t, nt.waitForReader("idle", 3))
+		require.Len(t, capture.SnapshotMetric(WaitBelowDelivered.Name()), 1)
 	})
 
 	t.Run("ANewerWaitReplacesAnOlderOne", func(t *testing.T) {

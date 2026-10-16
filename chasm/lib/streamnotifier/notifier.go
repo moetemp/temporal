@@ -20,6 +20,7 @@ import (
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/log/tag"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"google.golang.org/protobuf/proto"
@@ -528,8 +529,18 @@ func (n *StreamNotifier) wait(
 	}
 	n.touch(ctx, idleTimeout)
 	if n.Counter > after {
+		cb := field.Get(ctx)
+		if cb.GetDeliveredProgressCounter() >= n.Counter {
+			// The reader read below a counter it was woken for, so the store lost records or a
+			// writer sent a counter past the store's head. Rechecks alone wake this reader then.
+			ctx.MetricsHandler().Counter(WaitBelowDelivered.Name()).Record(1)
+			ctx.Logger().Warn("A stream reader waits below a counter it already got",
+				tag.NewStringTag("request-id", requestID),
+				tag.NewInt64("after-counter", after),
+				tag.NewInt64("counter", n.Counter))
+		}
 		delete(n.Waits, requestID)
-		return field.Get(ctx).DeliverProgress(ctx, n.progress())
+		return cb.DeliverProgress(ctx, n.progress())
 	}
 	if n.Waits == nil {
 		n.Waits = map[string]int64{}
