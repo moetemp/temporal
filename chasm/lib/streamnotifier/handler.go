@@ -92,6 +92,7 @@ func (h *handler) AttachStreamCallback(
 				startTime:          r.GetStartTime(),
 				maxCallbacks:       h.config.MaxCallbacks(ns),
 				maxCallbackBytes:   h.config.MaxCallbackBytes(ns),
+				maxCloseBytes:      h.config.BlobSizeLimitError(ns),
 				idleTimeout:        h.config.IdleTimeout(ns),
 				ownerCheckInterval: h.config.OwnerCheckInterval(ns),
 			})
