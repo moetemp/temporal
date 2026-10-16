@@ -273,18 +273,18 @@ func TestProgressDelivery(t *testing.T) {
 	})
 }
 
-func TestOnlyStreamWakesTakeProgress(t *testing.T) {
+func TestWhichVariantsTakeProgress(t *testing.T) {
+	require.Nil(t, variantProgressDelivery(&callbackspb.Callback{
+		Variant: &callbackspb.Callback_NexusHandler_{
+			NexusHandler: &callbackspb.Callback_NexusHandler{TaskQueueName: "tq"},
+		},
+	}), "a worker-hosted handler would need OnProgress, which is not delivered yet")
 	for _, cb := range []*callbackspb.Callback{
 		newNexusCallback("http://localhost/callback", nil).GetCallback(),
-		{Variant: &callbackspb.Callback_NexusHandler_{
-			NexusHandler: &callbackspb.Callback_NexusHandler{TaskQueueName: "tq"},
-		}},
+		{Variant: &callbackspb.Callback_StreamWake_{StreamWake: &callbackspb.Callback_StreamWake{}}},
 	} {
-		require.Nil(t, variantProgressDelivery(cb))
+		require.NotNil(t, variantProgressDelivery(cb))
 	}
-	require.NotNil(t, variantProgressDelivery(&callbackspb.Callback{
-		Variant: &callbackspb.Callback_StreamWake_{StreamWake: &callbackspb.Callback_StreamWake{}},
-	}))
 }
 
 func TestProgressRecheck(t *testing.T) {

@@ -2,21 +2,46 @@ package callback
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
+	"net/http"
 	"time"
 
+	"github.com/nexus-rpc/sdk-go/nexus"
+	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/server/api/historyservice/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
+	tokenspb "go.temporal.io/server/api/token/v1"
 	"go.temporal.io/server/chasm"
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/namespace"
+	commonnexus "go.temporal.io/server/common/nexus"
+	"go.temporal.io/server/common/nexus/nexusrpc"
+	queuescommon "go.temporal.io/server/service/history/queues/common"
 	"go.uber.org/fx"
 )
+
+// ProgressSource is implemented by a parent whose Nexus progress deliveries carry the operation's
+// token, start time and links, the way its completion does. A parent without it sends progress
+// without them. A receiver only needs them for a completion that arrives before the start.
+type ProgressSource interface {
+	GetNexusProgressOptions(
+		ctx chasm.Context,
+		requestID string,
+	) (nexusrpc.CompleteOperationOptions, error)
+}
 
 // progressInvocation is what a progress task needs to make one delivery.
 type progressInvocation struct {
 	callback *callbackspb.Callback
 	progress *callbackspb.Progress
+	// options carries the ProgressSource's token, start time and links, for a Nexus delivery.
+	options nexusrpc.CompleteOperationOptions
 }
 
 // progressResult is how a progress delivery ended.
@@ -44,6 +69,8 @@ type progressDelivery func(
 // variant takes only the completion. Each variant that takes progress adds its case here.
 func variantProgressDelivery(cb *callbackspb.Callback) progressDelivery {
 	switch cb.GetVariant().(type) {
+	case *callbackspb.Callback_Nexus_:
+		return deliverNexusProgress
 	case *callbackspb.Callback_StreamWake_:
 		return deliverStreamWakeProgress
 	default:
@@ -129,13 +156,24 @@ func (c *Callback) stopProgress() {
 // nolint:revive // context.Context is an input parameter for chasm.ReadComponent, not a function
 // parameter
 func (c *Callback) loadProgressArgs(
-	_ chasm.Context,
+	ctx chasm.Context,
 	_ chasm.NoValue,
 ) (progressInvocation, error) {
-	return progressInvocation{
+	invocation := progressInvocation{
 		callback: common.CloneProto(c.GetCallback()),
 		progress: common.CloneProto(c.GetPendingProgress()),
-	}, nil
+	}
+	if c.GetCallback().GetNexus() == nil {
+		return invocation, nil
+	}
+	if source, ok := c.CompletionSource.Get(ctx).(ProgressSource); ok {
+		options, err := source.GetNexusProgressOptions(ctx, c.RequestId)
+		if err != nil {
+			return progressInvocation{}, err
+		}
+		invocation.options = options
+	}
+	return invocation, nil
 }
 
 type saveProgressInput struct {
@@ -303,4 +341,174 @@ func (h *progressBackoffTaskHandler) Execute(
 		Attempt:  task.Attempt,
 	})
 	return nil
+}
+
+// progressBody is the OperationProgress object of the Nexus HTTP spec. The counter goes as a
+// decimal string, since counters reach past 2^53 and many JSON parsers read numbers as doubles.
+func progressBody(progress *callbackspb.Progress) ([]byte, error) {
+	body := struct {
+		Position string            `json:"position,omitempty"`
+		Counter  int64             `json:"counter,string"`
+		Metadata map[string]string `json:"metadata,omitempty"`
+	}{
+		Position: progress.GetPosition(),
+		Counter:  progress.GetCounter(),
+		Metadata: progress.GetMetadata(),
+	}
+	return json.Marshal(body)
+}
+
+// progressFoundCallerClosed reports whether an outbound delivery got a 404, which says the caller's
+// operation is no longer open.
+func progressFoundCallerClosed(err error) bool {
+	if handlerErr, ok := errors.AsType[*nexus.HandlerError](err); ok {
+		return handlerErr.Type == nexus.HandlerErrorTypeNotFound
+	}
+	return false
+}
+
+// progressRefusedByHandler reports whether an outbound delivery got a 4xx other than one that asks
+// to try again later, which tells the handler to stop sending progress.
+func progressRefusedByHandler(err error) bool {
+	// A status with no handler error type, such as 405 or 422, arrives with the response itself.
+	if unexpected, ok := errors.AsType[*nexusrpc.UnexpectedResponseError](err); ok {
+		response, ok := unexpected.Details.(*http.Response)
+		return ok && response.StatusCode >= 400 && response.StatusCode < 500 &&
+			response.StatusCode != http.StatusRequestTimeout &&
+			response.StatusCode != http.StatusTooManyRequests
+	}
+	handlerErr, ok := errors.AsType[*nexus.HandlerError](err)
+	if !ok {
+		return false
+	}
+	switch handlerErr.Type { // nolint:exhaustive
+	case nexus.HandlerErrorTypeBadRequest,
+		nexus.HandlerErrorTypeUnauthenticated,
+		nexus.HandlerErrorTypeUnauthorized,
+		nexus.HandlerErrorTypeNotFound,
+		nexus.HandlerErrorTypeConflict:
+		return true
+	default:
+		return false
+	}
+}
+
+// deliverNexusProgress hands progress to the caller of a Nexus operation: through History for a
+// caller on this cluster reached through the internal completion handler, else over HTTP.
+func deliverNexusProgress(
+	ctx context.Context,
+	h *progressTaskHandler,
+	ref chasm.ComponentRef,
+	invocation progressInvocation,
+) (progressResult, error) {
+	if invocation.callback.GetNexus().GetUrl() == chasm.NexusCompletionHandlerURL {
+		return h.deliverInternal(ctx, invocation)
+	}
+	return h.deliverOutbound(ctx, ref, invocation)
+}
+
+// deliverOutbound posts the progress to the callback URL with the running state. A system URL is
+// routed to the caller's frontend by the HTTP caller, the same way a completion is.
+func (h *progressTaskHandler) deliverOutbound(
+	ctx context.Context,
+	ref chasm.ComponentRef,
+	invocation progressInvocation,
+) (progressResult, error) {
+	body, err := progressBody(invocation.progress)
+	if err != nil {
+		return progressRefused, err
+	}
+	destination, err := callbackDestination(invocation.callback)
+	if err != nil {
+		return progressRefused, err
+	}
+	target := invocation.callback.GetNexus()
+	client := nexusrpc.NewCompletionHTTPClient(nexusrpc.CompletionHTTPClientOptions{
+		HTTPCaller: h.invocation.httpCallerProvider(queuescommon.NamespaceIDAndDestination{
+			NamespaceID: ref.NamespaceID,
+			Destination: destination,
+		}),
+		Serializer: commonnexus.PayloadSerializer,
+	})
+	options := invocation.options
+	options.Header = target.GetHeader()
+	options.Result = &nexus.Content{Header: nexus.Header{"type": "application/json"}, Data: body}
+	options.Progress = true
+	options.Error = nil
+	options.CloseTime = time.Time{}
+	err = client.CompleteOperation(ctx, target.GetUrl(), options)
+	switch {
+	case err == nil:
+		return progressDelivered, nil
+	case progressFoundCallerClosed(err):
+		return progressReceiverClosed, err
+	case progressRefusedByHandler(err):
+		return progressRefused, err
+	default:
+		return progressRetry, err
+	}
+}
+
+// deliverInternal hands the progress to the caller's operation in History, for a caller on this
+// cluster reached through the internal completion handler.
+func (h *progressTaskHandler) deliverInternal(
+	ctx context.Context,
+	invocation progressInvocation,
+) (progressResult, error) {
+	encodedToken := nexus.Header(invocation.callback.GetNexus().GetHeader()).
+		Get(commonnexus.CallbackTokenHeader)
+	if encodedToken == "" {
+		return progressRefused, errors.New("callback has no token")
+	}
+	ref, requestID, err := chasm.UnpackNexusCallbackToken(encodedToken)
+	if err != nil {
+		return progressRefused, err
+	}
+	// The frontend checks the caller's flag for a delivery from outside. This one skips it.
+	componentRef := &persistencespb.ChasmComponentRef{}
+	if err := componentRef.Unmarshal(ref); err != nil {
+		return progressRefused, err
+	}
+	callerNamespace, err := h.invocation.namespaceRegistry.GetNamespaceByID(
+		namespace.ID(componentRef.GetNamespaceId()),
+	)
+	if err != nil {
+		return progressRetry, err
+	}
+	if !h.invocation.config.EnableProgress(callerNamespace.Name().String()) {
+		return progressRefused, errors.New(
+			"operation progress is not enabled for the caller's namespace",
+		)
+	}
+	progress := invocation.progress
+	_, err = h.invocation.historyClient.CompleteNexusOperationChasm(
+		ctx,
+		&historyservice.CompleteNexusOperationChasmRequest{
+			Completion: &tokenspb.NexusOperationCompletion{ComponentRef: ref, RequestId: requestID},
+			Outcome: &historyservice.CompleteNexusOperationChasmRequest_Progress{
+				Progress: &nexuspb.NexusOperationProgress{
+					Position: progress.GetPosition(),
+					Counter:  progress.GetCounter(),
+					Metadata: maps.Clone(progress.GetMetadata()),
+				},
+			},
+		},
+	)
+	if err == nil {
+		return progressDelivered, nil
+	}
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return progressReceiverClosed, err
+	}
+	// A refusal turns progress off for good, so only an answer a retry won't change is one. This
+	// matches the frontend's answer to a delivery from outside. NamespaceNotActive and an older
+	// History's Unimplemented pass with the failover or the upgrade, and NamespaceNotActive is its
+	// own error type, so the FailedPrecondition match doesn't catch it.
+	if _, ok := errors.AsType[*serviceerror.InvalidArgument](err); ok {
+		return progressRefused, err
+	}
+	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
+		return progressRefused, err
+	}
+	return progressRetry, err
 }

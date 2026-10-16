@@ -471,7 +471,7 @@ func (nt *notifierTest) runArmedOwnerCheck() {
 }
 
 func TestStreamNotifier(t *testing.T) {
-	t.Run("ANexusCallbackGetsOnlyTheCompletion", func(t *testing.T) {
+	t.Run("NotificationsReachEveryCallbackAsFoldedProgress", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attach("a"))
 		require.NoError(t, nt.attach("a"), "attaching again with the request ID changes nothing")
@@ -482,10 +482,21 @@ func TestStreamNotifier(t *testing.T) {
 
 		cbs := nt.callbacks()
 		require.Len(t, cbs, 2)
-		for _, id := range []string{"a", "b"} {
-			require.Zero(t, cbs[id].GetProgressInFlight(), "the Nexus variant takes no progress")
-			require.Nil(t, cbs[id].GetPendingProgress())
-		}
+		require.Equal(t, int64(1), cbs["a"].GetProgressInFlightCounter(), "one delivery in flight")
+		require.Equal(
+			t,
+			int64(3),
+			cbs["a"].GetPendingProgress().GetCounter(),
+			"later progress folds into the next one",
+		)
+		require.Equal(
+			t,
+			int64(3),
+			cbs["b"].GetPendingProgress().GetCounter(),
+			"a late callback starts from the latest notification",
+		)
+		require.Equal(t, "p", cbs["b"].GetPendingProgress().GetPosition())
+		require.Equal(t, map[string]string{"k": "v"}, cbs["b"].GetPendingProgress().GetMetadata())
 
 		desc := nt.describe()
 		require.Equal(t, int64(3), desc.GetCounter())
@@ -578,12 +589,16 @@ func TestStreamNotifier(t *testing.T) {
 		require.NoError(t, err, "detaching from a stream with no notifier changes nothing")
 	})
 
-	t.Run("TheCallersStartRidesItsCompletion", func(t *testing.T) {
+	t.Run("TheCallersStartRidesItsProgressAndCompletion", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		start := time.Unix(1700000000, 0).UTC()
 		require.NoError(t, nt.attachStarted("a", "token-a", start))
 		require.NoError(t, nt.notify(1, true))
 		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			progress, err := n.GetNexusProgressOptions(ctx, "a")
+			require.NoError(t, err)
+			require.Equal(t, "token-a", progress.OperationToken)
+			require.Equal(t, start, progress.StartTime)
 			completion, err := n.GetNexusCompletion(ctx, "a")
 			require.NoError(t, err)
 			require.Equal(

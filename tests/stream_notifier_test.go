@@ -18,6 +18,7 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"go.temporal.io/server/chasm/lib/callback"
+	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/nexus/nexustest"
@@ -26,11 +27,13 @@ import (
 )
 
 // TestStreamNotifierEndToEnd runs a stream-returning Nexus operation through the stream notifier:
-// the handler attaches the caller's callback, the notifier keeps the producer's notifications, and
-// closing the stream completes the operation with the close result, for CHASM and HSM callers.
+// the handler attaches the caller's callback, the producer's notifications reach the caller as
+// progress, and closing the stream completes the operation with the close result. An HSM caller
+// refuses progress and still gets the completion.
 func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 	env := s.newTestEnv(
 		chasmEnabled,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
 		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
 		testcore.WithDynamicConfig(
 			callback.AllowedAddresses,
@@ -136,16 +139,34 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 	notify(2, false)
 	notify(3, false)
 
-	// The notifier keeps the latest notification. A Nexus callback takes only the completion.
-	s.Await(func(s *NexusWorkflowTestSuite) {
-		desc := describe()
-		s.Equal(int64(3), desc.GetCounter())
-		s.Equal("cursor", desc.GetPosition())
-		s.Zero(desc.GetCallbacks()[0].GetDeliveredCounter())
-	}, 10*time.Second, 50*time.Millisecond)
-	for _, event := range env.GetHistory(env.Namespace().String(), wfExec)[len(started):] {
-		s.NotEqual(enumspb.EVENT_TYPE_NEXUS_OPERATION_COMPLETED, event.GetEventType(),
-			"a notification does not complete the operation")
+	if chasmEnabled {
+		// The notifier's callback delivers the latest progress, and the caller folds it onto a
+		// Workflow Task with no event of its own.
+		s.Await(func(s *NexusWorkflowTestSuite) {
+			s.Equal(int64(3), describe().GetCallbacks()[0].GetDeliveredCounter())
+			s.NotEmpty(
+				carriedNexusProgress(
+					env.GetHistory(env.Namespace().String(), wfExec)[len(started):],
+				),
+			)
+		}, 10*time.Second, 50*time.Millisecond)
+		hist := env.GetHistory(env.Namespace().String(), wfExec)
+		carried := carriedNexusProgress(hist[len(started):])
+		s.Equal(s.scheduledEventID(started), carried[0].GetScheduledEventId())
+		s.Equal("cursor", carried[0].GetPosition())
+		s.Equal("tokens", carried[0].GetMetadata()["topic"])
+		for _, event := range hist[len(started):] {
+			s.Contains([]enumspb.EventType{
+				enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED,
+				enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED,
+				enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED,
+			}, event.GetEventType(), "progress must add no event of its own")
+		}
+	} else {
+		// The HSM caller answers 400, so progress turns off for its callback.
+		s.Await(func(s *NexusWorkflowTestSuite) {
+			s.True(describe().GetCallbacks()[0].GetProgressDisabled())
+		}, 10*time.Second, 50*time.Millisecond)
 	}
 
 	notify(4, true)
@@ -165,6 +186,7 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 func (s *NexusWorkflowTestSuite) TestStreamNotifierFailedCloseFailsTheCaller(chasmEnabled bool) {
 	env := s.newTestEnv(
 		chasmEnabled,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
 		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
 		testcore.WithDynamicConfig(
 			callback.AllowedAddresses,
@@ -286,6 +308,7 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierOwnerCheckLeavesAJustComplete
 ) {
 	env := s.newTestEnv(
 		chasmEnabled,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
 		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
 		testcore.WithDynamicConfig(streamnotifier.OwnerCheckInterval, 100*time.Millisecond),
 		testcore.WithDynamicConfig(
@@ -510,6 +533,7 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierOwnerStartGrace(chasmEnabled 
 func (s *NexusWorkflowTestSuite) newStreamNotifierEnv() *NexusTestEnv {
 	return s.newTestEnv(
 		true,
+		testcore.WithDynamicConfig(chasmnexus.EnableProgress, true),
 		testcore.WithDynamicConfig(streamnotifier.Enabled, true),
 		testcore.WithDynamicConfig(
 			callback.AllowedAddresses,
