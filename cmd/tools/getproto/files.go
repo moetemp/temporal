@@ -28,6 +28,7 @@ import (
 	rules "go.temporal.io/api/rules/v1"
 	schedule "go.temporal.io/api/schedule/v1"
 	sdk "go.temporal.io/api/sdk/v1"
+	stream "go.temporal.io/api/stream/v1"
 	taskqueue "go.temporal.io/api/taskqueue/v1"
 	update "go.temporal.io/api/update/v1"
 	version "go.temporal.io/api/version/v1"
@@ -74,6 +75,7 @@ func init() {
 	importMap["temporal/api/enums/v1/query.proto"] = enums.File_temporal_api_enums_v1_query_proto
 	importMap["temporal/api/enums/v1/reset.proto"] = enums.File_temporal_api_enums_v1_reset_proto
 	importMap["temporal/api/enums/v1/schedule.proto"] = enums.File_temporal_api_enums_v1_schedule_proto
+	importMap["temporal/api/enums/v1/stream.proto"] = enums.File_temporal_api_enums_v1_stream_proto
 	importMap["temporal/api/enums/v1/task_queue.proto"] = enums.File_temporal_api_enums_v1_task_queue_proto
 	importMap["temporal/api/enums/v1/time_skipping.proto"] = enums.File_temporal_api_enums_v1_time_skipping_proto
 	importMap["temporal/api/enums/v1/update.proto"] = enums.File_temporal_api_enums_v1_update_proto
@@ -93,6 +95,7 @@ func init() {
 	importMap["temporal/api/sdk/v1/task_complete_metadata.proto"] = sdk.File_temporal_api_sdk_v1_task_complete_metadata_proto
 	importMap["temporal/api/sdk/v1/user_metadata.proto"] = sdk.File_temporal_api_sdk_v1_user_metadata_proto
 	importMap["temporal/api/sdk/v1/worker_config.proto"] = sdk.File_temporal_api_sdk_v1_worker_config_proto
+	importMap["temporal/api/stream/v1/message.proto"] = stream.File_temporal_api_stream_v1_message_proto
 	importMap["temporal/api/taskqueue/v1/message.proto"] = taskqueue.File_temporal_api_taskqueue_v1_message_proto
 	importMap["temporal/api/update/v1/message.proto"] = update.File_temporal_api_update_v1_message_proto
 	importMap["temporal/api/version/v1/message.proto"] = version.File_temporal_api_version_v1_message_proto

@@ -13,3 +13,17 @@ message BackoffTask {
   // The attempt number for this invocation.
   int32 attempt = 1;
 }
+
+// Delivers the callback's pending progress while the source runs.
+message ProgressTask {
+  // The counter of the delivery in flight when the task was scheduled.
+  int64 counter = 1;
+  // The attempt of that delivery.
+  int32 attempt = 2;
+}
+
+// Retries a progress delivery that failed with a retryable error.
+message ProgressBackoffTask {
+  int64 counter = 1;
+  int32 attempt = 2;
+}

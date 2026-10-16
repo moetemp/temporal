@@ -37,6 +37,34 @@ message CallbackState {
   // request ID (to serve as an idempotency key). As well as the source request ID, to identify
   // when the callback was added (for buffered workflow event scenarios).
   string request_id = 9;
+
+  // Progress of the source that no delivery carried yet: the latest one, so progress reported while
+  // a delivery is in flight folds into the next delivery.
+  Progress pending_progress = 10;
+  // The counter of the progress delivery in flight, or zero when none is. At most one is in flight.
+  int64 progress_in_flight = 11;
+  // The highest counter a progress delivery carried.
+  int64 delivered_progress_counter = 12;
+  // The receiver refused progress, so the callback only delivers the completion.
+  bool progress_disabled = 13;
+  // The number of failed attempts of the progress delivery in flight.
+  int32 progress_attempt = 14;
+  // Set when a progress delivery found the receiver closed, so nothing will read this callback's
+  // progress or completion and its parent may drop it. Dropping it drops its pending completion
+  // too, which a closed receiver wouldn't take.
+  bool receiver_closed = 15;
+}
+
+// Non-terminal progress of a callback's source, delivered while the source runs. It says that the
+// source moved, not what it holds.
+message Progress {
+  // Where the source stands, in the source's terms, such as a stream cursor.
+  string position = 1;
+  // Orders the progress of one source. Among progress folded together, the highest counter is
+  // kept. Positive.
+  int64 counter = 2;
+  // Small details for the receiver.
+  map<string, string> metadata = 3;
 }
 
 // Status of a callback.

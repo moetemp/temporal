@@ -78,3 +78,77 @@ func (this *BackoffTask) Equal(that interface{}) bool {
 
 	return proto.Equal(this, that1)
 }
+
+// Marshal an object of type ProgressTask to the protobuf v3 wire format
+func (val *ProgressTask) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type ProgressTask from the protobuf v3 wire format
+func (val *ProgressTask) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *ProgressTask) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two ProgressTask values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *ProgressTask) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *ProgressTask
+	switch t := that.(type) {
+	case *ProgressTask:
+		that1 = t
+	case ProgressTask:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}
+
+// Marshal an object of type ProgressBackoffTask to the protobuf v3 wire format
+func (val *ProgressBackoffTask) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type ProgressBackoffTask from the protobuf v3 wire format
+func (val *ProgressBackoffTask) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *ProgressBackoffTask) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two ProgressBackoffTask values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *ProgressBackoffTask) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *ProgressBackoffTask
+	switch t := that.(type) {
+	case *ProgressBackoffTask:
+		that1 = t
+	case ProgressBackoffTask:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}

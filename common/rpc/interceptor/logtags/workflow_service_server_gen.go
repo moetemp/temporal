@@ -9,6 +9,10 @@ import (
 
 func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []tag.Tag {
 	switch r := message.(type) {
+	case *workflowservice.AttachStreamCallbackRequest:
+		return nil
+	case *workflowservice.AttachStreamCallbackResponse:
+		return nil
 	case *workflowservice.CountActivityExecutionsRequest:
 		return nil
 	case *workflowservice.CountActivityExecutionsResponse:
@@ -120,6 +124,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 		return nil
 	case *workflowservice.DescribeScheduleResponse:
 		return nil
+	case *workflowservice.DescribeStreamNotifierRequest:
+		return nil
+	case *workflowservice.DescribeStreamNotifierResponse:
+		return nil
 	case *workflowservice.DescribeTaskQueueRequest:
 		return nil
 	case *workflowservice.DescribeTaskQueueResponse:
@@ -146,6 +154,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 	case *workflowservice.DescribeWorkflowRuleRequest:
 		return nil
 	case *workflowservice.DescribeWorkflowRuleResponse:
+		return nil
+	case *workflowservice.DetachStreamCallbackRequest:
+		return nil
+	case *workflowservice.DetachStreamCallbackResponse:
 		return nil
 	case *workflowservice.ExecuteMultiOperationRequest:
 		return nil
@@ -261,6 +273,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 		return nil
 	case *workflowservice.ListWorkflowRulesResponse:
 		return nil
+	case *workflowservice.NotifyStreamRequest:
+		return nil
+	case *workflowservice.NotifyStreamResponse:
+		return nil
 	case *workflowservice.PatchScheduleRequest:
 		return nil
 	case *workflowservice.PatchScheduleResponse:
@@ -316,6 +332,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 		return nil
 	case *workflowservice.PollNexusTaskQueueResponse:
 		return wt.fromTaskToken(r.GetTaskToken())
+	case *workflowservice.PollStreamNotifierRequest:
+		return nil
+	case *workflowservice.PollStreamNotifierResponse:
+		return nil
 	case *workflowservice.PollWorkflowExecutionTimeSkippingRequest:
 		return []tag.Tag{
 			tag.WorkflowID(r.GetWorkflowExecution().GetWorkflowId()),

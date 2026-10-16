@@ -44,6 +44,7 @@ var TransitionScheduled = chasm.NewTransition(
 	[]callbackspb.CallbackStatus{callbackspb.CALLBACK_STATUS_STANDBY},
 	callbackspb.CALLBACK_STATUS_SCHEDULED,
 	func(cb *Callback, ctx chasm.MutableContext, event EventScheduled) error {
+		cb.stopProgress()
 		destination, err := callbackDestination(cb.GetCallback())
 		if err != nil {
 			return err

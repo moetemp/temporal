@@ -43,6 +43,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/PollNexusTaskQueue":                1,
 		"/temporal.api.workflowservice.v1.WorkflowService/PollNexusOperationExecution":       1,
 		"/temporal.api.workflowservice.v1.WorkflowService/PollWorkflowExecutionTimeSkipping": 1,
+		"/temporal.api.workflowservice.v1.WorkflowService/PollStreamNotifier":                1,
 
 		// Long-running if activity outcome is not already available
 		"/temporal.api.workflowservice.v1.WorkflowService/PollActivityExecution": 1,
@@ -95,6 +96,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/StartBatchOperation":              1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartActivityExecution":           1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartNexusOperationExecution":     1,
+		"/temporal.api.workflowservice.v1.WorkflowService/AttachStreamCallback":             1,
 		DispatchNexusTaskByNamespaceAndTaskQueueAPIName:                                     1,
 		DispatchNexusTaskByEndpointAPIName:                                                  1,
 
@@ -151,6 +153,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/RequestCancelNexusOperationExecution":       2,
 		"/temporal.api.workflowservice.v1.WorkflowService/TerminateNexusOperationExecution":           2,
 		"/temporal.api.workflowservice.v1.WorkflowService/DeleteNexusOperationExecution":              2,
+		"/temporal.api.workflowservice.v1.WorkflowService/DetachStreamCallback":                       2,
 		"/temporal.api.workflowservice.v1.WorkflowService/PauseWorkflowExecution":                     2,
 		"/temporal.api.workflowservice.v1.WorkflowService/UnpauseWorkflowExecution":                   2,
 
@@ -170,10 +173,15 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeWorkerDeploymentVersion":              3,
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeWorkerDeployment":                     3,
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeNexusOperationExecution":              3,
+		"/temporal.api.workflowservice.v1.WorkflowService/DescribeStreamNotifier":                       3,
 		"/temporal.api.workflowservice.v1.WorkflowService/ValidateWorkerDeploymentVersionComputeConfig": 3,
 		"/temporal.api.workflowservice.v1.WorkflowService/ListWorkers":                                  3,
 		"/temporal.api.workflowservice.v1.WorkflowService/DescribeWorker":                               3,
 		"/temporal.api.workflowservice.v1.WorkflowService/CountWorkers":                                 3,
+
+		// P3: A stream notification is a hint the next append repeats, so it yields to starts and
+		// signals under namespace rate limiting.
+		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStream": 3,
 
 		// P3: Progress APIs for reporting cancellations and failures.
 		// They are relatively low priority as the tasks need to be retried anyway.
@@ -191,6 +199,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/PollActivityTaskQueue":              4,
 		"/temporal.api.workflowservice.v1.WorkflowService/PollWorkflowExecutionUpdate":        4,
 		"/temporal.api.workflowservice.v1.WorkflowService/PollNexusTaskQueue":                 4,
+		"/temporal.api.workflowservice.v1.WorkflowService/PollStreamNotifier":                 4,
 		"/temporal.api.workflowservice.v1.WorkflowService/ResetStickyTaskQueue":               4,
 		"/temporal.api.workflowservice.v1.WorkflowService/ShutdownWorker":                     4,
 		"/temporal.api.workflowservice.v1.WorkflowService/GetWorkflowExecutionHistoryReverse": 4,
