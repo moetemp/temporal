@@ -64,12 +64,32 @@ records whose notification was lost, so this also bounds how long a client sleep
 producer stopped before it notified.`,
 )
 
+var RecheckInitial = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.recheckInitial",
+	time.Minute,
+	`How long a stream notifier with Workflow readers waits with no notification before it asks
+them to read the stream again. A producer that appended and stopped before it notified leaves a
+record that this read finds. Each recheck doubles the wait up to streamnotifier.recheckMax, and a
+notification sets it back. Zero turns rechecks off.`,
+)
+
+var RecheckMax = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.recheckMax",
+	5*time.Minute,
+	`The longest wait between two rechecks of a stream notifier's Workflow readers. It bounds how
+late a reader wakes when a notification is lost or never sent, such as in a deployment with
+notifications off. An idle reader gets about 290 rechecks a day with the defaults, each one Workflow
+Task and one read.`,
+)
+
 var OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.ownerCheckInterval",
-	5*time.Minute,
+	30*time.Second,
 	`How often a stream notifier with callbacks attached checks whether the stream's owner Workflow
 ended. If its run chain closed without closing the stream, the notifier closes it and fails the
-callbacks.`,
+callbacks. No Worker closes a stream when its owner's chain ends, so this interval plus
+streamnotifier.ownerCloseGrace bounds how long waiting callbacks wait for an implicit close. Each
+check costs one describe of the owner per interval for each notifier with callbacks attached.`,
 )
 
 var OwnerCloseGrace = dynamicconfig.NewNamespaceDurationSetting(
@@ -100,6 +120,8 @@ type Config struct {
 	IdleTimeout            dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	IdleTimeoutNoCallbacks dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	PollMaxWait            dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	RecheckInitial         dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	RecheckMax             dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	ClosedRetention        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCheckInterval     dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	OwnerCloseGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
@@ -118,6 +140,8 @@ func configProvider(dc *dynamicconfig.Collection) *Config {
 		IdleTimeout:            IdleTimeout.Get(dc),
 		IdleTimeoutNoCallbacks: IdleTimeoutNoCallbacks.Get(dc),
 		PollMaxWait:            PollMaxWait.Get(dc),
+		RecheckInitial:         RecheckInitial.Get(dc),
+		RecheckMax:             RecheckMax.Get(dc),
 		ClosedRetention:        ClosedRetention.Get(dc),
 		OwnerCheckInterval:     OwnerCheckInterval.Get(dc),
 		OwnerCloseGrace:        OwnerCloseGrace.Get(dc),

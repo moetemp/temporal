@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package temporal.server.chasm.lib.streamnotifier.proto.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "temporal/api/common/v1/message.proto";
 import "temporal/api/failure/v1/message.proto";
@@ -46,6 +47,13 @@ message NotifierState {
   // Workflow failed. The callbacks complete as failed with it, or as canceled when it has
   // canceled info.
   temporal.api.failure.v1.Failure close_failure = 16;
+  // When the armed recheck fires, or unset when none is armed. While Workflow readers wait, the
+  // notifier asks them to read again after a quiet period, so a notification that a producer
+  // never sent delays them by at most the period.
+  google.protobuf.Timestamp recheck_time = 17;
+  // The quiet period before the armed recheck. It doubles after each recheck up to
+  // streamnotifier.recheckMax, and a notification sets it back to streamnotifier.recheckInitial.
+  google.protobuf.Duration recheck_gap = 18;
 }
 
 // What the handler's start answered a caller with.

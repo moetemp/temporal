@@ -92,12 +92,29 @@ func (c *Callback) loadInvocationArgs(
 ) (invocable, error) {
 	// Reject unknown/unsupported callback variants.
 	switch c.GetCallback().GetVariant().(type) {
-	case *callbackspb.Callback_Nexus_, *callbackspb.Callback_NexusHandler_:
+	case *callbackspb.Callback_Nexus_, *callbackspb.Callback_NexusHandler_,
+		*callbackspb.Callback_StreamWake_:
 		// OK
 	default:
 		return nil, queueserrors.NewUnprocessableTaskError(
 			fmt.Sprintf("unprocessable callback variant: %T", c.GetCallback().GetVariant()),
 		)
+	}
+
+	if streamWake := c.GetCallback().GetStreamWake(); streamWake != nil {
+		source, ok := c.CompletionSource.Get(ctx).(StreamWakeSource)
+		if !ok {
+			return nil, errors.New("the callback's source sends no stream wakes")
+		}
+		wake, err := source.GetStreamWakeCompletion(ctx, c.RequestId)
+		if err != nil {
+			return nil, err
+		}
+		return invocableStreamWake{
+			namespaceID: ctx.ExecutionKey().NamespaceID,
+			target:      streamWake,
+			wake:        wake,
+		}, nil
 	}
 
 	// Get the parent CHASM object's Nexus result to be delivered.

@@ -119,8 +119,8 @@ func (pt *progressTest) runInFlight() error {
 	pt.t.Helper()
 	state := pt.state()
 	task := &callbackspb.ProgressTask{
-		Counter: state.GetProgressInFlight(),
-		Attempt: state.GetProgressAttempt(),
+		Delivery: state.GetProgressInFlight(),
+		Attempt:  state.GetProgressAttempt(),
 	}
 	var valid bool
 	readCallbackState(pt.ctx, pt.t, pt.ref, func(ctx chasm.Context, c *Callback) {
@@ -159,7 +159,7 @@ func TestProgressDelivery(t *testing.T) {
 		pt.report(3)
 		pt.report(2) // stale behind 3
 		state := pt.state()
-		require.Equal(t, int64(1), state.GetProgressInFlight(), "one delivery in flight")
+		require.Equal(t, int64(1), state.GetProgressInFlightCounter(), "one delivery in flight")
 		require.Equal(t, int64(3), state.GetPendingProgress().GetCounter(),
 			"later progress waits, folded")
 
@@ -186,7 +186,7 @@ func TestProgressDelivery(t *testing.T) {
 		require.NoError(t, pt.runInFlight())
 		state := pt.state()
 		require.Equal(t, int64(1), state.GetDeliveredProgressCounter())
-		require.Equal(t, int64(5), state.GetProgressInFlight(),
+		require.Equal(t, int64(5), state.GetProgressInFlightCounter(),
 			"the newer progress is the next delivery")
 		require.NoError(t, pt.runInFlight())
 		require.Equal(t, int64(5), pt.sent[1].GetCounter())
@@ -225,7 +225,7 @@ func TestProgressDelivery(t *testing.T) {
 		require.NoError(t, pt.runInFlight())
 		state := pt.state()
 		require.False(t, state.GetProgressDisabled())
-		require.Equal(t, int64(1), state.GetProgressInFlight())
+		require.Equal(t, int64(1), state.GetProgressInFlightCounter())
 		require.Equal(t, int32(1), state.GetProgressAttempt())
 
 		pt.report(2)
@@ -249,7 +249,7 @@ func TestProgressDelivery(t *testing.T) {
 			)
 			require.NoError(t, err)
 		}
-		task := &callbackspb.ProgressTask{Counter: pt.state().GetProgressInFlight()}
+		task := &callbackspb.ProgressTask{Delivery: pt.state().GetProgressInFlight()}
 		require.NoError(t, pt.handler.Execute(
 			pt.ctx, pt.ref, chasm.TaskAttributes{Destination: "http://localhost"}, task))
 		state := pt.state()
@@ -273,7 +273,7 @@ func TestProgressDelivery(t *testing.T) {
 	})
 }
 
-func TestNoVariantTakesProgressYet(t *testing.T) {
+func TestOnlyStreamWakesTakeProgress(t *testing.T) {
 	for _, cb := range []*callbackspb.Callback{
 		newNexusCallback("http://localhost/callback", nil).GetCallback(),
 		{Variant: &callbackspb.Callback_NexusHandler_{
@@ -282,4 +282,71 @@ func TestNoVariantTakesProgressYet(t *testing.T) {
 	} {
 		require.Nil(t, variantProgressDelivery(cb))
 	}
+	require.NotNil(t, variantProgressDelivery(&callbackspb.Callback{
+		Variant: &callbackspb.Callback_StreamWake_{StreamWake: &callbackspb.Callback_StreamWake{}},
+	}))
+}
+
+func TestProgressRecheck(t *testing.T) {
+	recheck := func(pt *progressTest, counter int64) {
+		pt.t.Helper()
+		_, _, err := chasm.UpdateComponent(
+			pt.ctx,
+			pt.ref,
+			func(c *Callback, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				return struct{}{}, c.DeliverProgress(ctx, &callbackspb.Progress{
+					Counter: counter,
+					Recheck: true,
+				})
+			},
+			struct{}{},
+		)
+		require.NoError(pt.t, err)
+	}
+
+	t.Run("ARecheckGoesOutWithNoNewCounter", func(t *testing.T) {
+		pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil))
+		pt.report(3)
+		require.NoError(t, pt.runInFlight())
+		recheck(pt, 3)
+		require.NotZero(t, pt.state().GetProgressInFlight())
+		require.NoError(t, pt.runInFlight())
+		require.Len(t, pt.sent, 2)
+		require.True(t, pt.sent[1].GetRecheck())
+		require.Equal(t, int64(3), pt.sent[1].GetCounter())
+		require.Zero(t, pt.state().GetProgressInFlight(), "the recheck asks for nothing more")
+	})
+
+	t.Run("ARecheckOnAnEmptyStreamIsDelivered", func(t *testing.T) {
+		pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil))
+		recheck(pt, 0)
+		require.NotZero(t, pt.state().GetProgressInFlight(),
+			"a delivery in flight is told apart from none even at counter zero")
+		require.NoError(t, pt.runInFlight())
+		require.True(t, pt.sent[0].GetRecheck())
+		require.Zero(t, pt.state().GetProgressInFlight())
+	})
+
+	t.Run("ARecheckDuringADeliveryGetsAnotherOne", func(t *testing.T) {
+		pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil))
+		pt.report(1)
+		pt.during = func() { recheck(pt, 1) }
+		require.NoError(t, pt.runInFlight())
+		require.NotZero(t, pt.state().GetProgressInFlight())
+		require.NoError(t, pt.runInFlight())
+		require.True(t, pt.sent[1].GetRecheck())
+		require.Zero(t, pt.state().GetProgressInFlight())
+	})
+
+	t.Run("ARecheckFoldsIntoNewerProgress", func(t *testing.T) {
+		pt := newProgressTest(t, newNexusCallback("http://localhost/callback", nil))
+		pt.report(1)
+		recheck(pt, 1)
+		pt.report(2)
+		require.NoError(t, pt.runInFlight())
+		require.Len(t, pt.sent, 1)
+		require.Equal(t, int64(2), pt.sent[0].GetCounter())
+		require.True(t, pt.sent[0].GetRecheck(), "one delivery carries both")
+		require.Zero(t, pt.state().GetProgressInFlight())
+	})
 }

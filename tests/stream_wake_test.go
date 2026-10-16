@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	commandpb "go.temporal.io/api/command/v1"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -14,6 +15,7 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/server/api/historyservice/v1"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/testing/parallelsuite"
 	"go.temporal.io/server/tests/testcore"
@@ -273,4 +275,233 @@ func (s *StreamWakeSuite) TestTheReadersPerRunAreBounded() {
 	r.wakeAt("reader-1", 2)
 	var failed *serviceerror.FailedPrecondition
 	s.ErrorAs(r.wake(&streampb.StreamWake{SubscriptionId: "reader-3", Counter: 1}), &failed)
+}
+
+// notifierReader is a wake reader with the stream notifier on, and the stream it reads.
+type notifierReader struct {
+	*wakeReader
+	stream *streampb.StreamReference
+}
+
+func (s *StreamWakeSuite) newNotifierReader(opts ...testcore.TestOption) *notifierReader {
+	opts = append(opts, testcore.WithDynamicConfig(streamnotifier.Enabled, true))
+	return &notifierReader{
+		wakeReader: s.newWakeReader(opts...),
+		stream: &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+			WorkflowId: "producer-" + uuid.NewString(),
+			RunId:      "first-run",
+			Topic:      "tokens",
+		},
+	}
+}
+
+func (r *notifierReader) attach(requestID, subscription string) error {
+	_, err := r.env.FrontendClient().AttachStreamCallback(
+		r.s.Context(),
+		&workflowservice.AttachStreamCallbackRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+			RequestId: requestID,
+			WorkflowTarget: &streampb.WorkflowWakeTarget{
+				WorkflowId:     r.run.GetID(),
+				RunId:          r.run.GetRunID(),
+				SubscriptionId: subscription,
+			},
+		},
+	)
+	return err
+}
+
+func (r *notifierReader) notify(counter int64, closeResult *commonpb.Payload) {
+	_, err := r.env.FrontendClient().NotifyStream(
+		r.s.Context(),
+		&workflowservice.NotifyStreamRequest{
+			Namespace:   r.env.Namespace().String(),
+			StreamRef:   r.stream,
+			Position:    "cursor",
+			Counter:     counter,
+			Close:       closeResult != nil,
+			CloseResult: closeResult,
+		},
+	)
+	r.s.NoError(err)
+}
+
+func (r *notifierReader) describe() *workflowservice.DescribeStreamNotifierResponse {
+	resp, err := r.env.FrontendClient().DescribeStreamNotifier(
+		r.s.Context(),
+		&workflowservice.DescribeStreamNotifierRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+		},
+	)
+	r.s.NoError(err)
+	return resp
+}
+
+func (s *StreamWakeSuite) TestTheNotifierWakesAWorkflowReader() {
+	r := s.newNotifierReader()
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, nil)
+	task := r.poll()
+	wakes := lastScheduledWakes(task)
+	s.Len(wakes, 1)
+	s.Equal("sub-1", wakes[0].GetSubscriptionId())
+	s.Equal(int64(1), wakes[0].GetCounter())
+	s.Equal("cursor", wakes[0].GetPosition())
+	r.respond(task)
+
+	s.Await(func(s *StreamWakeSuite) {
+		callbacks := r.describe().GetCallbacks()
+		s.Len(callbacks, 1)
+		s.Equal("sub-1", callbacks[0].GetWorkflowTarget().GetSubscriptionId())
+		s.Equal(int64(1), callbacks[0].GetDeliveredCounter())
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestAnAttachAfterNotificationsWakesAtOnce() {
+	r := s.newNotifierReader()
+	r.notify(5, nil)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	task := r.poll()
+	s.Equal(int64(5), lastScheduledWakes(task)[0].GetCounter(),
+		"a notification before the attach is not lost")
+	r.respond(task)
+}
+
+func (s *StreamWakeSuite) TestTheCloseWakesTheReader() {
+	r := s.newNotifierReader()
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(3, testcore.MustToPayload(s.T(), "summary"))
+	var wakes []*streampb.StreamWake
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes = append(wakes, lastScheduledWakes(task)...)
+		s.NotEmpty(wakes)
+		s.True(wakes[len(wakes)-1].GetClosed())
+	}, 10*time.Second, 50*time.Millisecond)
+	closed := wakes[len(wakes)-1]
+	s.Nil(closed.GetCloseResult(), "the reader reads the result from the store")
+	s.Equal(int64(3), closed.GetCounter())
+}
+
+func (s *StreamWakeSuite) TestARecheckWakesAnIdleReader() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(streamnotifier.RecheckInitial, time.Second),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	// No producer notifies. The notifier asks the reader to read again after the quiet period.
+	task := r.poll()
+	wakes := lastScheduledWakes(task)
+	s.Len(wakes, 1)
+	s.True(wakes[0].GetRecheck())
+	s.Zero(wakes[0].GetCounter())
+	r.respond(task)
+}
+
+func (s *StreamWakeSuite) TestAReaderOfAClosedRunIsDropped() {
+	r := s.newNotifierReader()
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	s.NoError(r.env.SdkClient().TerminateWorkflow(
+		s.Context(), r.run.GetID(), r.run.GetRunID(), "the reader is done"))
+	r.notify(1, nil)
+	// The delivery finds the run closed, and the next notification drops the callback.
+	s.Await(func(s *StreamWakeSuite) {
+		r.notify(2, nil)
+		s.Empty(r.describe().GetCallbacks())
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestTheReaderLimitFailsTheAttach() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	s.NoError(r.attach("jetty/run/1", "sub-1"), "attaching again changes nothing")
+	var failed *serviceerror.FailedPrecondition
+	s.ErrorAs(r.attach("jetty/run/2", "sub-2"), &failed)
+}
+
+func (s *StreamWakeSuite) TestADetachedReaderFreesItsPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	_, err := r.env.FrontendClient().DetachStreamCallback(
+		s.Context(),
+		&workflowservice.DetachStreamCallbackRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+			RequestId: "jetty/run/1",
+		},
+	)
+	s.NoError(err)
+	// The detach frees the place when the callback's completion runs.
+	s.Await(func(s *StreamWakeSuite) {
+		s.NoError(r.attach("jetty/run/2", "sub-2"))
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestATakenCloseFreesTheReadersPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, testcore.MustToPayload(s.T(), "summary"))
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes := lastScheduledWakes(task)
+		s.NotEmpty(wakes)
+		s.True(wakes[len(wakes)-1].GetClosed())
+	}, 10*time.Second, 50*time.Millisecond)
+	r.stream.Topic = "another"
+	s.NoError(r.attach("jetty/run/2", "sub-2"))
+}
+
+// takeClose polls and answers Workflow Tasks until one carries the close wake.
+func (r *notifierReader) takeClose() {
+	r.s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes := lastScheduledWakes(task)
+		s.NotEmpty(wakes)
+		s.True(wakes[len(wakes)-1].GetClosed())
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestALateWakeTakesNoPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, testcore.MustToPayload(s.T(), "summary"))
+	r.takeClose()
+	// A progress wake that was in flight when the close was taken.
+	_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
+		s.Context(),
+		&historyservice.RecordStreamWakeRequest{
+			NamespaceId:    r.env.NamespaceID().String(),
+			Execution:      r.execution(),
+			Wake:           &streampb.StreamWake{SubscriptionId: "sub-1", Counter: 1},
+			OnlyIfReserved: true,
+		},
+	)
+	s.NoError(err)
+	r.stream.Topic = "another"
+	s.NoError(r.attach("jetty/run/2", "sub-2"))
+}
+
+func (s *StreamWakeSuite) TestARepeatedAttachAfterTheCloseTakesNoPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, testcore.MustToPayload(s.T(), "summary"))
+	r.takeClose()
+	s.NoError(r.attach("jetty/run/1", "sub-1"), "the repeat finds its callback")
+	r.stream.Topic = "another"
+	s.NoError(r.attach("jetty/run/2", "sub-2"))
 }

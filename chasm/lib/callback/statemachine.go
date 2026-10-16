@@ -27,6 +27,8 @@ func callbackDestination(cb *callbackspb.Callback) (string, error) {
 	case *callbackspb.Callback_NexusHandler_:
 		// Use a new "nexus-handler" scheme to avoid colliding with any other type of callback variant.
 		return "nexus-handler://" + variant.NexusHandler.GetTaskQueueName(), nil
+	case *callbackspb.Callback_StreamWake_:
+		return streamWakeDestination, nil
 	default:
 		// Only reachable if a newer server persisted a variant this build doesn't know about.
 		// Returning an error would fail the whole transaction that completed the execution,

@@ -35,6 +35,11 @@ func Invoke(
 	if len(wake.GetSubscriptionId()) > maxSubscriptionIDBytes {
 		return nil, serviceerror.NewInvalidArgument("wake.subscription_id is too long")
 	}
+	if req.GetReserveOnly() && (req.GetRelease() || req.GetOnlyIfReserved()) {
+		return nil, serviceerror.NewInvalidArgument(
+			"reserve_only can't be set with release or only_if_reserved",
+		)
+	}
 	namespaceEntry, err := api.GetActiveNamespace(
 		shard,
 		namespace.ID(req.GetNamespaceId()),
@@ -44,6 +49,7 @@ func Invoke(
 		return nil, err
 	}
 	maxSources := shard.GetConfig().MaximumStreamWakeSources(namespaceEntry.Name().String())
+	resp := &historyservice.RecordStreamWakeResponse{}
 
 	err = api.GetAndUpdateWorkflowWithNew(
 		ctx,
@@ -54,12 +60,22 @@ func Invoke(
 			execution.GetRunId(),
 		),
 		func(workflowLease api.WorkflowLease) (*api.UpdateWorkflowAction, error) {
+			resp.Reserved = false
 			mutableState := workflowLease.GetMutableState()
 			releaseFn := workflowLease.GetReleaseFn()
 			if !mutableState.IsWorkflowExecutionRunning() {
 				// A closed run reads no stream, so the callback stops sending it wakes.
 				releaseFn(nil)
 				return nil, consts.ErrWorkflowCompleted
+			}
+			if req.GetReserveOnly() || req.GetRelease() || req.GetOnlyIfReserved() {
+				view, viewCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
+				if err == nil {
+					counted := view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId())
+					if counted == req.GetReserveOnly() {
+						return &api.UpdateWorkflowAction{Noop: true, CreateWorkflowTask: false}, nil
+					}
+				}
 			}
 			// An error from here on returns without releasing, so the cache drops the mutable
 			// state that resolving the CHASM Workflow may have touched.
@@ -69,7 +85,16 @@ func Invoke(
 					"stream wakes need the CHASM Workflow, which this execution does not have",
 				)
 			}
-			if err := wf.RecordStreamWake(chasmCtx, wake, maxSources); err != nil {
+			switch {
+			case req.GetReserveOnly():
+				err = wf.ReserveStreamWakeSource(chasmCtx, wake.GetSubscriptionId(), maxSources)
+				resp.Reserved = err == nil
+			case req.GetRelease():
+				wf.ReleaseStreamWakeSource(chasmCtx, wake.GetSubscriptionId())
+			default:
+				err = wf.RecordStreamWake(chasmCtx, wake, maxSources)
+			}
+			if err != nil {
 				return nil, err
 			}
 			return &api.UpdateWorkflowAction{Noop: false, CreateWorkflowTask: false}, nil
@@ -81,5 +106,5 @@ func Invoke(
 	if err != nil {
 		return nil, err
 	}
-	return &historyservice.RecordStreamWakeResponse{}, nil
+	return resp, nil
 }

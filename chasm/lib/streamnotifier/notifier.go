@@ -23,6 +23,7 @@ import (
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -43,6 +44,7 @@ func BusinessID(ref *streampb.StreamReference) string {
 
 var _ chasm.RootComponent = (*StreamNotifier)(nil)
 var _ callback.CompletionSource = (*StreamNotifier)(nil)
+var _ callback.StreamWakeSource = (*StreamNotifier)(nil)
 
 // StreamNotifier holds the Nexus callbacks attached to one stream. It hands each notification to
 // them as progress, folded, and completes them when the stream closes.
@@ -117,8 +119,11 @@ func (n *StreamNotifier) touch(ctx chasm.MutableContext, after time.Duration) {
 }
 
 type attachInput struct {
-	requestID          string
+	requestID string
+	// Exactly one of callback and workflowTarget is set.
 	callback           *commonpb.Callback_Nexus
+	workflowTarget     *streampb.WorkflowWakeTarget
+	recheckInitial     time.Duration
 	operationToken     string
 	startTime          *timestamppb.Timestamp
 	maxCallbacks       int
@@ -141,14 +146,7 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 		return nil
 	}
 	n.dropClosedCallers(ctx)
-	cb := callback.NewCallback(in.requestID, timestamppb.New(ctx.Now(n)), &callbackspb.Callback{
-		Variant: &callbackspb.Callback_Nexus_{
-			Nexus: &callbackspb.Callback_Nexus{
-				Url:    in.callback.GetUrl(),
-				Header: maps.Clone(in.callback.GetHeader()),
-			},
-		},
-	})
+	cb := callback.NewCallback(in.requestID, timestamppb.New(ctx.Now(n)), callbackOf(in))
 	var start *streamnotifierpb.CallerStart
 	if in.operationToken != "" || in.startTime != nil {
 		start = &streamnotifierpb.CallerStart{
@@ -201,7 +199,78 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 		}
 	}
 	n.armOwnerCheck(ctx, in.ownerCheckInterval)
+	if n.RecheckTime == nil {
+		n.armRecheck(ctx, in.recheckInitial)
+	}
 	n.touch(ctx, in.idleTimeout)
+	return nil
+}
+
+// callbackOf builds the callback an attach asked for.
+func callbackOf(in attachInput) *callbackspb.Callback {
+	if target := in.workflowTarget; target != nil {
+		return &callbackspb.Callback{
+			Variant: &callbackspb.Callback_StreamWake_{
+				StreamWake: &callbackspb.Callback_StreamWake{
+					WorkflowId:     target.GetWorkflowId(),
+					RunId:          target.GetRunId(),
+					SubscriptionId: target.GetSubscriptionId(),
+				},
+			},
+		}
+	}
+	return &callbackspb.Callback{
+		Variant: &callbackspb.Callback_Nexus_{
+			Nexus: &callbackspb.Callback_Nexus{
+				Url:    in.callback.GetUrl(),
+				Header: maps.Clone(in.callback.GetHeader()),
+			},
+		},
+	}
+}
+
+// waitingWorkflowTargets answers the Workflow readers that still take wakes.
+func (n *StreamNotifier) waitingWorkflowTargets(ctx chasm.Context) []*callback.Callback {
+	var waiting []*callback.Callback
+	for _, field := range n.Callbacks {
+		cb := field.Get(ctx)
+		if cb.GetCallback().GetStreamWake() != nil &&
+			cb.Status == callbackspb.CALLBACK_STATUS_STANDBY &&
+			!cb.GetProgressDisabled() && !cb.GetReceiverClosed() {
+			waiting = append(waiting, cb)
+		}
+	}
+	return waiting
+}
+
+// armRecheck arms a recheck gap from now while Workflow readers wait, and disarms it otherwise.
+func (n *StreamNotifier) armRecheck(ctx chasm.MutableContext, gap time.Duration) {
+	if n.Closed || gap <= 0 || len(n.waitingWorkflowTargets(ctx)) == 0 {
+		n.RecheckTime = nil
+		n.RecheckGap = nil
+		return
+	}
+	at := timestamppb.New(ctx.Now(n).Add(gap))
+	n.RecheckTime = at
+	n.RecheckGap = durationpb.New(gap)
+	ctx.AddTask(
+		n,
+		chasm.TaskAttributes{ScheduledTime: at.AsTime()},
+		&streamnotifierpb.RecheckTask{ScheduledTime: at},
+	)
+}
+
+// recheck asks every waiting Workflow reader to read again, since no notification came for the
+// gap, and arms the next recheck after twice the gap, up to maxGap.
+func (n *StreamNotifier) recheck(ctx chasm.MutableContext, maxGap time.Duration) error {
+	progress := n.progress()
+	progress.Recheck = true
+	for _, cb := range n.waitingWorkflowTargets(ctx) {
+		if err := cb.DeliverProgress(ctx, progress); err != nil {
+			return err
+		}
+	}
+	n.armRecheck(ctx, min(2*n.GetRecheckGap().AsDuration(), maxGap))
 	return nil
 }
 
@@ -348,6 +417,7 @@ type notifyInput struct {
 	// The idle timeout when no callback waits, such as for a notifier only clients poll.
 	idleTimeoutNoCallbacks time.Duration
 	retention              time.Duration
+	recheckInitial         time.Duration
 }
 
 // notify keeps the highest counter and hands it to every callback as progress. A close completes
@@ -366,6 +436,10 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 			if err := field.Get(ctx).DeliverProgress(ctx, progress); err != nil {
 				return err
 			}
+		}
+		// A notification shows the producer reaches the notifier, so the quiet period starts over.
+		if n.RecheckTime != nil {
+			n.armRecheck(ctx, in.recheckInitial)
 		}
 	}
 	if in.close {
@@ -423,6 +497,8 @@ func (n *StreamNotifier) close(
 	n.CloseResult = result
 	n.CloseTime = timestamppb.New(ctx.Now(n))
 	n.OwnerCheckTime = nil
+	n.RecheckTime = nil
+	n.RecheckGap = nil
 	return callback.ScheduleStandbyCallbacks(ctx, n.Callbacks)
 }
 
@@ -486,6 +562,38 @@ func (n *StreamNotifier) GetNexusCompletion(
 	return completion, nil
 }
 
+// GetStreamWakeCompletion is the wake that completes a Workflow reader's callback: none if the
+// reader detached, a resubscribe if an idle timeout failed it, otherwise the stream's close with
+// no result.
+func (n *StreamNotifier) GetStreamWakeCompletion(
+	_ chasm.Context,
+	requestID string,
+) (*streampb.StreamWake, error) {
+	if _, canceled := slices.BinarySearch(n.CanceledRequestIds, requestID); canceled {
+		return nil, nil
+	}
+	wake := &streampb.StreamWake{
+		Position: n.Position,
+		Counter:  n.Counter,
+		Metadata: maps.Clone(n.Metadata),
+	}
+	if _, idle := slices.BinarySearch(n.IdleFailedRequestIds, requestID); idle {
+		wake.Resubscribe = true
+		return wake, nil
+	}
+	wake.Closed = true
+	// One Workflow Task scheduled event carries the wakes of all of a run's readers, so a wake
+	// leaves out a close outcome that can be large. The reader's final read of the store returns
+	// it. Only a close the owner check makes has no outcome in the store, and that one is small.
+	if proto.Size(n.CloseFailure) <= maxWakeCloseFailureBytes {
+		wake.CloseFailure = common.CloneProto(n.CloseFailure)
+	}
+	return wake, nil
+}
+
+// maxWakeCloseFailureBytes bounds the close failure a wake carries.
+const maxWakeCloseFailureBytes = 4 * 1024
+
 func (n *StreamNotifier) describeCallbacks(
 	ctx chasm.Context,
 ) ([]*streampb.StreamCallbackInfo, error) {
@@ -501,9 +609,19 @@ func (n *StreamNotifier) describeCallbacks(
 	})
 	infos := make([]*streampb.StreamCallbackInfo, 0, len(callbacks))
 	for _, cb := range callbacks {
-		apiCallback, err := cb.ToAPICallback()
-		if err != nil {
-			return nil, err
+		var apiCallback *commonpb.Callback
+		var workflowTarget *streampb.WorkflowWakeTarget
+		if target := cb.GetCallback().GetStreamWake(); target != nil {
+			workflowTarget = &streampb.WorkflowWakeTarget{
+				WorkflowId:     target.GetWorkflowId(),
+				RunId:          target.GetRunId(),
+				SubscriptionId: target.GetSubscriptionId(),
+			}
+		} else {
+			var err error
+			if apiCallback, err = cb.ToAPICallback(); err != nil {
+				return nil, err
+			}
 		}
 		// The header values hold the caller's callback token. A reader of this namespace could
 		// forge a completion with one, also for a caller in another namespace. The keys stay, so a
@@ -526,6 +644,7 @@ func (n *StreamNotifier) describeCallbacks(
 			Attempt:                 max(cb.GetAttempt(), cb.GetProgressAttempt()),
 			LastAttemptCompleteTime: common.CloneProto(cb.GetLastAttemptCompleteTime()),
 			LastAttemptFailure:      common.CloneProto(cb.GetLastAttemptFailure()),
+			WorkflowTarget:          workflowTarget,
 		})
 	}
 	return infos, nil

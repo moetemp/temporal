@@ -53,6 +53,12 @@ type notifierTest struct {
 	runChains map[string]string
 	// ownerCloseTime is when the owner's run closed, as the owner check's describe answers.
 	ownerCloseTime *timestamppb.Timestamp
+	recheck        *recheckTaskHandler
+	// reserveErr is History's answer to the reservation of a Workflow reader's attach.
+	reserveErr error
+	reserved   []*historyservice.RecordStreamWakeRequest
+	// counted makes History answer that a reserve's reader counted before.
+	counted bool
 }
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
@@ -66,6 +72,8 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 			10 * time.Minute,
 		),
 		PollMaxWait:        dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Second),
+		RecheckInitial:     dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
+		RecheckMax:         dynamicconfig.GetDurationPropertyFnFilteredByNamespace(5 * time.Minute),
 		ClosedRetention:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
 		OwnerCheckInterval: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(5 * time.Minute),
 		OwnerCloseGrace:    dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Minute),
@@ -99,6 +107,18 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 			}, nil
 		}).
 		AnyTimes()
+	attachHistory.EXPECT().RecordStreamWake(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(
+			_ context.Context,
+			req *historyservice.RecordStreamWakeRequest,
+			_ ...grpc.CallOption,
+		) (*historyservice.RecordStreamWakeResponse, error) {
+			nt.reserved = append(nt.reserved, req)
+			return &historyservice.RecordStreamWakeResponse{
+				Reserved: req.GetReserveOnly() && !nt.counted,
+			}, nt.reserveErr
+		}).
+		AnyTimes()
 	h := newHandler(config, log.NewTestLogger(), attachHistory)
 	expiry := newExpiryTaskHandler(expiryTaskHandlerOptions{Config: config})
 	ownerCheck := newOwnerCheckTaskHandler(ownerCheckTaskHandlerOptions{
@@ -109,7 +129,8 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	registry := chasm.NewRegistry(log.NewTestLogger())
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
-	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck)))
+	recheck := newRecheckTaskHandler(recheckTaskHandlerOptions{Config: config})
+	require.NoError(t, registry.Register(newLibrary(h, expiry, ownerCheck, recheck)))
 	engine := chasmtest.NewEngine(t, registry)
 	*nt = notifierTest{
 		t:          t,
@@ -118,6 +139,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		handler:    h,
 		expiry:     expiry,
 		ownerCheck: ownerCheck,
+		recheck:    recheck,
 		history:    history,
 		ref: &streampb.StreamReference{
 			OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
@@ -168,6 +190,38 @@ func (nt *notifierTest) attachWithToken(requestID, token string) error {
 		},
 	})
 	return err
+}
+
+// attachWorkflow attaches a Workflow reader's target, named by its subscription.
+func (nt *notifierTest) attachWorkflow(requestID, subscription string) error {
+	_, err := nt.handler.AttachStreamCallback(nt.ctx, &streamnotifierpb.AttachStreamCallbackRequest{
+		NamespaceId: "namespace-id",
+		BusinessId:  BusinessID(nt.ref),
+		FrontendRequest: &workflowservice.AttachStreamCallbackRequest{
+			Namespace: "ns",
+			StreamRef: nt.ref,
+			RequestId: requestID,
+			WorkflowTarget: &streampb.WorkflowWakeTarget{
+				WorkflowId:     "reader",
+				RunId:          "reader-run",
+				SubscriptionId: subscription,
+			},
+		},
+	})
+	return err
+}
+
+// runRecheck runs the armed recheck.
+func (nt *notifierTest) runRecheck() {
+	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+		func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			task := &streamnotifierpb.RecheckTask{ScheduledTime: n.GetRecheckTime()}
+			valid, err := nt.recheck.Validate(ctx, n, chasm.TaskInvocation{}, task)
+			require.NoError(nt.t, err)
+			require.True(nt.t, valid)
+			return struct{}{}, nt.recheck.Execute(ctx, n, chasm.TaskAttributes{}, task)
+		}, struct{}{})
+	require.NoError(nt.t, err)
 }
 
 func (nt *notifierTest) notify(counter int64, closeStream bool) error {
@@ -966,6 +1020,18 @@ func TestClosedRetentionCoversTheStoreRetention(t *testing.T) {
 		"a closed stream answers late attaches as long as the store keeps its records")
 }
 
+func TestARecheckComesAtMostFiveMinutesLate(t *testing.T) {
+	require.Equal(t, 5*time.Minute,
+		configProvider(dynamicconfig.NewNoopCollection()).RecheckMax("ns"),
+		"a reader with no notification wakes within the cap")
+}
+
+func TestTheOwnerCheckRunsEveryThirtySeconds(t *testing.T) {
+	require.Equal(t, 30*time.Second,
+		configProvider(dynamicconfig.NewNoopCollection()).OwnerCheckInterval("ns"),
+		"an implicit close reaches waiting callers within about 30 s plus the grace")
+}
+
 func TestTheDefaultHoldsAThousandWaitingCallers(t *testing.T) {
 	maxCallbacks := configProvider(dynamicconfig.NewNoopCollection()).MaxCallbacks("ns")
 	nt := newNotifierTest(t, maxCallbacks)
@@ -1143,5 +1209,213 @@ func TestPollStreamNotifier(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, resp.GetClosed())
 		require.Equal(t, "boom", resp.GetCloseFailure().GetMessage())
+	})
+}
+
+func TestWorkflowTargets(t *testing.T) {
+	t.Run("NotificationsReachEveryReaderAsFoldedProgress", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"),
+			"attaching again with the request ID changes nothing")
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(3, false))
+		require.NoError(t, nt.notify(2, false), "a lower counter is accepted and ignored")
+		require.NoError(t, nt.attachWorkflow("b", "sub-b"))
+
+		cbs := nt.callbacks()
+		require.Len(t, cbs, 2)
+		require.Equal(t, int64(1), cbs["a"].GetProgressInFlightCounter(), "one delivery in flight")
+		require.Equal(t, int64(3), cbs["a"].GetPendingProgress().GetCounter(),
+			"later progress folds into the next one")
+		require.Equal(t, int64(3), cbs["b"].GetPendingProgress().GetCounter(),
+			"a late reader starts from the latest notification")
+		require.Equal(t, "p", cbs["b"].GetPendingProgress().GetPosition())
+		require.Equal(t, map[string]string{"k": "v"}, cbs["b"].GetPendingProgress().GetMetadata())
+		require.Equal(t, "sub-a", cbs["a"].GetCallback().GetStreamWake().GetSubscriptionId())
+		require.Equal(t, "reader-run", cbs["a"].GetCallback().GetStreamWake().GetRunId())
+	})
+
+	t.Run("AnAttachReservesTheReader", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 1)
+		require.True(t, nt.reserved[0].GetReserveOnly())
+		require.Equal(t, "sub-a", nt.reserved[0].GetWake().GetSubscriptionId())
+		require.Equal(t, "reader", nt.reserved[0].GetExecution().GetWorkflowId())
+
+		nt.reserveErr = serviceerror.NewFailedPrecondition("too many readers")
+		var failed *serviceerror.FailedPrecondition
+		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed,
+			"an attach past the readers per run fails where user code sees it")
+		require.NotContains(t, nt.callbacks(), "b")
+	})
+
+	t.Run("AFailedAttachFreesItsReserve", func(t *testing.T) {
+		nt := newNotifierTest(t, 1)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		var failed *serviceerror.ResourceExhausted
+		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
+		require.Len(t, nt.reserved, 3)
+		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, "sub-b", nt.reserved[2].GetWake().GetSubscriptionId())
+
+		nt.counted = true
+		require.ErrorAs(t, nt.attachWorkflow("c", "sub-a"), &failed)
+		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
+	})
+
+	t.Run("ARepeatedAttachFreesTheReserveNoCallbackHolds", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 1)
+		// The reader's close was taken, so its place was freed, and the attach comes again.
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 3)
+		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, "sub-a", nt.reserved[2].GetWake().GetSubscriptionId())
+
+		nt.counted = true
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
+	})
+
+	t.Run("DescribeShowsTheTarget", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		desc := nt.describe()
+		require.Len(t, desc.GetCallbacks(), 1)
+		require.Nil(t, desc.GetCallbacks()[0].GetCallback())
+		require.Equal(t, "sub-a", desc.GetCallbacks()[0].GetWorkflowTarget().GetSubscriptionId())
+		require.Equal(t, "reader", desc.GetCallbacks()[0].GetWorkflowTarget().GetWorkflowId())
+	})
+
+	t.Run("TheCompletionWakesTheReader", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.NoError(t, nt.notify(4, true))
+		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["a"].GetStatus())
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			wake, err := n.GetStreamWakeCompletion(ctx, "a")
+			require.NoError(t, err)
+			require.True(t, wake.GetClosed())
+			require.Nil(t, wake.GetCloseResult(), "the reader reads the result from the store")
+			require.Equal(t, int64(4), wake.GetCounter())
+		})
+
+		nt = newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.NoError(t, nt.closeWithFailure(streamFailure("boom")))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			wake, err := n.GetStreamWakeCompletion(ctx, "a")
+			require.NoError(t, err)
+			require.True(t, wake.GetClosed())
+			require.Equal(t, "boom", wake.GetCloseFailure().GetMessage())
+		})
+
+		nt = newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.NoError(t, nt.closeWithFailure(streamFailure(strings.Repeat("x", 5000))))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			wake, err := n.GetStreamWakeCompletion(ctx, "a")
+			require.NoError(t, err)
+			require.True(t, wake.GetClosed())
+			require.Nil(t, wake.GetCloseFailure(), "a large failure stays in the store")
+		})
+	})
+
+	t.Run("AnIdleTimeoutAsksTheReaderToResubscribe", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		nt.expire()
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			wake, err := n.GetStreamWakeCompletion(ctx, "a")
+			require.NoError(t, err)
+			require.True(t, wake.GetResubscribe())
+			require.False(t, wake.GetClosed(), "the stream stays open")
+		})
+	})
+
+	t.Run("ADetachedReaderGetsNoWake", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		_, err := nt.handler.DetachStreamCallback(
+			nt.ctx,
+			&streamnotifierpb.DetachStreamCallbackRequest{
+				NamespaceId: "namespace-id",
+				BusinessId:  BusinessID(nt.ref),
+				FrontendRequest: &workflowservice.DetachStreamCallbackRequest{
+					Namespace: "ns", StreamRef: nt.ref, RequestId: "a",
+				},
+			},
+		)
+		require.NoError(t, err)
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			wake, err := n.GetStreamWakeCompletion(ctx, "a")
+			require.NoError(t, err)
+			require.Nil(t, wake)
+		})
+	})
+
+	t.Run("AReaderOfAClosedRunIsDroppedAndFreesItsPlace", func(t *testing.T) {
+		nt := newNotifierTest(t, 1)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		var failed *serviceerror.ResourceExhausted
+		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
+		// A delivery found the reader's run closed.
+		nt.updateCallback("a", func(cb *callback.Callback) {
+			cb.ProgressDisabled = true
+			cb.ReceiverClosed = true
+		})
+		require.NoError(t, nt.attachWorkflow("b", "sub-b"),
+			"the dead callback no longer counts toward the limit")
+		require.NotContains(t, nt.callbacks(), "a")
+	})
+}
+
+func TestRechecks(t *testing.T) {
+	t.Run("AQuietPeriodAsksWorkflowReadersToReadAgain", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.True(t, nt.now().Add(time.Minute).Equal(n.GetRecheckTime().AsTime()))
+		})
+		nt.runRecheck()
+		cb := nt.callbacks()["a"]
+		require.True(t, cb.GetPendingProgress().GetRecheck(), "the reader reads whatever the counter")
+		require.NotZero(t, cb.GetProgressInFlight(), "the recheck goes out with no new counter")
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Equal(t, 2*time.Minute, n.GetRecheckGap().AsDuration(), "the gap doubles")
+		})
+		nt.runRecheck()
+		nt.runRecheck()
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Equal(t, 5*time.Minute, n.GetRecheckGap().AsDuration(),
+				"streamnotifier.recheckMax caps the gap")
+		})
+
+		require.NoError(t, nt.notify(1, false))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Equal(t, time.Minute, n.GetRecheckGap().AsDuration(),
+				"a notification sets the gap back")
+			require.True(t, nt.now().Add(time.Minute).Equal(n.GetRecheckTime().AsTime()))
+		})
+	})
+
+	t.Run("OnlyWorkflowReadersArmARecheck", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("nexus"))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Nil(t, n.GetRecheckTime(), "a Nexus caller takes no wakes")
+		})
+	})
+
+	t.Run("TheCloseStopsRechecks", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.NoError(t, nt.notify(1, true))
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Nil(t, n.GetRecheckTime())
+		})
 	})
 }

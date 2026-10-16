@@ -2679,9 +2679,10 @@ system.transactionSizeLimit, since each batch is persisted within a single trans
 	MaximumStreamWakeSources = NewNamespaceIntSetting(
 		"history.maximumStreamWakeSources",
 		32,
-		`The maximum number of stream readers in one Workflow run that take wakes. A wake for one
-more reader is refused with FailedPrecondition, which turns progress off for its callback, so
-the reader's attach fails and user code sees the limit.`,
+		`The maximum number of stream readers in one Workflow run that take wakes at once. A wake for
+one more reader is refused with FailedPrecondition, which turns progress off for its callback, so
+the reader's attach fails and user code sees the limit. A reader stops counting when it detaches,
+when its attach fails, and when the run takes its close or resubscribe wake.`,
 	)
 	StreamWakeMinInterval = NewNamespaceDurationSetting(
 		"streamwake.minInterval",

@@ -208,3 +208,72 @@ func TestNotifierRequestsAreBounded(t *testing.T) {
 	require.ErrorAs(t, err, &invalid, "a detach without the chain's first run is refused")
 	require.Equal(t, 1, client.notified, "only the notification within bounds reached History")
 }
+
+type fakeAttachClient struct {
+	streamnotifierpb.StreamNotifierServiceClient
+	attached int
+}
+
+func (c *fakeAttachClient) AttachStreamCallback(
+	context.Context,
+	*streamnotifierpb.AttachStreamCallbackRequest,
+	...grpc.CallOption,
+) (*streamnotifierpb.AttachStreamCallbackResponse, error) {
+	c.attached++
+	return &streamnotifierpb.AttachStreamCallbackResponse{
+		FrontendResponse: &workflowservice.AttachStreamCallbackResponse{},
+	}, nil
+}
+
+func TestAttachTakesExactlyOneTarget(t *testing.T) {
+	registry := namespace.NewMockRegistry(gomock.NewController(t))
+	registry.EXPECT().
+		GetNamespaceID(namespace.Name("ns")).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
+	client := &fakeAttachClient{}
+	h := NewFrontendHandler(client, &Config{
+		Enabled:      dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ChasmEnabled: dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		MaxIDLength:  dynamicconfig.GetIntPropertyFn(1000),
+	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
+	attach := func(
+		callback *commonpb.Callback_Nexus,
+		target *streampb.WorkflowWakeTarget,
+	) error {
+		req := &workflowservice.AttachStreamCallbackRequest{
+			Namespace: "ns",
+			StreamRef: &streampb.StreamReference{
+				OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+				WorkflowId: "wf",
+				RunId:      "first-run",
+				Topic:      "tokens",
+			},
+			RequestId:      "request",
+			Callback:       callback,
+			WorkflowTarget: target,
+		}
+		_, err := h.AttachStreamCallback(context.Background(), req)
+		return err
+	}
+	target := func(subscription string) *streampb.WorkflowWakeTarget {
+		return &streampb.WorkflowWakeTarget{
+			WorkflowId:     "reader",
+			RunId:          "run",
+			SubscriptionId: subscription,
+		}
+	}
+
+	var invalid *serviceerror.InvalidArgument
+	require.ErrorAs(t, attach(nil, nil), &invalid, "an attach names a target")
+	require.ErrorAs(t, attach(&commonpb.Callback_Nexus{Url: "http://caller"}, target("s")), &invalid,
+		"an attach names one target")
+	require.ErrorAs(t, attach(nil, target("")), &invalid, "a reader names its subscription")
+	require.ErrorAs(t, attach(nil, target(strings.Repeat("s", 257))), &invalid,
+		"a subscription ID is at most 256 bytes")
+	require.ErrorAs(t, attach(nil, &streampb.WorkflowWakeTarget{SubscriptionId: "s"}), &invalid,
+		"a reader names its run")
+	require.Zero(t, client.attached)
+	require.NoError(t, attach(nil, target(strings.Repeat("s", 256))))
+	require.Equal(t, 1, client.attached)
+}

@@ -3,6 +3,7 @@ package streamnotifier
 import (
 	"context"
 	"errors"
+	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
@@ -14,6 +15,7 @@ import (
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/contextutil"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/resource"
 )
 
@@ -24,6 +26,10 @@ type handler struct {
 	logger        log.Logger
 	historyClient resource.HistoryClient
 }
+
+// releaseTimeout bounds freeing a reader's place after an attach, which runs apart from the
+// attach's own deadline, since a failed attach has often used it up.
+const releaseTimeout = 5 * time.Second
 
 func newHandler(config *Config, logger log.Logger, historyClient resource.HistoryClient) *handler {
 	return &handler{config: config, logger: logger, historyClient: historyClient}
@@ -75,6 +81,33 @@ func (h *handler) AttachStreamCallback(
 	if err := h.checkFirstRun(ctx, req.GetNamespaceId(), ns, fe.GetStreamRef()); err != nil {
 		return nil, err
 	}
+	target := fe.GetWorkflowTarget()
+	sourceRequest := func(release bool) *historyservice.RecordStreamWakeRequest {
+		return &historyservice.RecordStreamWakeRequest{
+			NamespaceId: req.GetNamespaceId(),
+			Execution: &commonpb.WorkflowExecution{
+				WorkflowId: target.GetWorkflowId(),
+				RunId:      target.GetRunId(),
+			},
+			Wake:        &streampb.StreamWake{SubscriptionId: target.GetSubscriptionId()},
+			ReserveOnly: !release,
+			Release:     release,
+		}
+	}
+	reserved := false
+	if target != nil {
+		// The reader counts toward its run's readers now, so an attach past the limit fails, and a
+		// run that already closed refuses it.
+		resp, err := h.historyClient.RecordStreamWake(ctx, sourceRequest(false))
+		if err != nil {
+			return nil, err
+		}
+		reserved = resp.GetReserved()
+	}
+	// created and refused tell what the update did. Its error alone can't, since a timeout may
+	// come after the attach landed. A new notifier runs the update twice, and the second run finds
+	// the callback the first one made, so created stays set.
+	created, refused := false, false
 	err := startOrUpdate(
 		ctx,
 		req.GetNamespaceId(),
@@ -85,9 +118,12 @@ func (h *handler) AttachStreamCallback(
 			mctx chasm.MutableContext,
 			r *workflowservice.AttachStreamCallbackRequest,
 		) (struct{}, error) {
-			return struct{}{}, n.attach(mctx, attachInput{
+			_, attached := n.Callbacks[r.GetRequestId()]
+			err := n.attach(mctx, attachInput{
 				requestID:          r.GetRequestId(),
 				callback:           r.GetCallback(),
+				workflowTarget:     r.GetWorkflowTarget(),
+				recheckInitial:     h.config.RecheckInitial(ns),
 				operationToken:     r.GetOperationToken(),
 				startTime:          r.GetStartTime(),
 				maxCallbacks:       h.config.MaxCallbacks(ns),
@@ -96,9 +132,29 @@ func (h *handler) AttachStreamCallback(
 				idleTimeout:        h.config.IdleTimeout(ns),
 				ownerCheckInterval: h.config.OwnerCheckInterval(ns),
 			})
+			created = created || err == nil && !attached
+			refused = err != nil
+			return struct{}{}, err
 		},
 		fe,
 	)
+	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
+		// The stream's notifier ended, so nothing was attached.
+		refused = true
+	}
+	// The place this attach took is free when no new callback holds it: the attach was refused,
+	// or it found the callback of an earlier attach. A reader that counted before this attach
+	// keeps its place. An attach that failed in another way may have landed, so it keeps the
+	// place for the caller's retry.
+	if reserved && (refused || err == nil && !created) {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+		_, releaseErr := h.historyClient.RecordStreamWake(releaseCtx, sourceRequest(true))
+		cancel()
+		if releaseErr != nil {
+			h.logger.Warn("Failed to free a stream reader's place after an attach",
+				tag.Error(releaseErr))
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +186,7 @@ func (h *handler) NotifyStream(
 			retention:    h.config.ClosedRetention(ns),
 
 			idleTimeoutNoCallbacks: h.config.IdleTimeoutNoCallbacks(ns),
+			recheckInitial:         h.config.RecheckInitial(ns),
 		})
 	}
 	// A notification starts a notifier when the stream has none. A reader that armed the store
