@@ -1188,6 +1188,13 @@ so forwarding by endpoint ID will not work out of the box.`,
 		`FrontendEnableBatchOperationsForStandaloneActivities controls whether the frontend accepts the batch cancel, terminate, and delete standalone activity operation fields`,
 	)
 
+	FrontendEnableExecuteSyncNexusOperation = NewNamespaceBoolSetting(
+		"frontend.enableExecuteSyncNexusOperation",
+		false,
+		`FrontendEnableExecuteSyncNexusOperation enables the ExecuteSyncNexusOperation API in the
+frontend for callers in the namespace.`,
+	)
+
 	FrontendEnableUpdateWorkflowExecution = NewNamespaceBoolSetting(
 		"frontend.enableUpdateWorkflowExecution",
 		true,

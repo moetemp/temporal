@@ -33,6 +33,7 @@ import (
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/namespace/nsreplication"
+	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
 	"go.temporal.io/server/common/persistence/visibility"
@@ -1003,6 +1004,12 @@ func HandlerProvider(
 	streamNotifierHandler streamnotifier.FrontendHandler,
 	registry *chasm.Registry,
 	frontendServiceResolver membership.ServiceResolver,
+	endpointRegistry commonnexus.EndpointRegistry,
+	namespaceRateLimiter interceptor.NamespaceRateLimitInterceptor,
+	nexusOperationConfig *chasmnexus.Config,
+	authInterceptor *authorization.Interceptor,
+	namespaceValidator *interceptor.NamespaceValidatorInterceptor,
+	namespaceCountLimiter *interceptor.ConcurrentRequestLimitInterceptor,
 ) Handler {
 	workerDeploymentReadRateLimiter := configs.NewGlobalNamespaceRateLimiter(
 		frontendServiceResolver,
@@ -1050,6 +1057,14 @@ func HandlerProvider(
 			saMapperProvider,
 			saValidator,
 		),
+		endpointRegistry,
+		namespaceRateLimiter,
+		nexusOperationConfig,
+		SyncNexusChecks{
+			Authorizer:   authInterceptor,
+			StateChecker: namespaceValidator,
+			CountLimiter: namespaceCountLimiter,
+		},
 	)
 	return wfHandler
 }

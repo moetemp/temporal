@@ -339,6 +339,16 @@ func (c *clientImpl) ExecuteMultiOperation(
 	return c.client.ExecuteMultiOperation(ctx, request, opts...)
 }
 
+func (c *clientImpl) ExecuteSyncNexusOperation(
+	ctx context.Context,
+	request *workflowservice.ExecuteSyncNexusOperationRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.ExecuteSyncNexusOperationResponse, error) {
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return c.client.ExecuteSyncNexusOperation(ctx, request, opts...)
+}
+
 func (c *clientImpl) FetchWorkerConfig(
 	ctx context.Context,
 	request *workflowservice.FetchWorkerConfigRequest,

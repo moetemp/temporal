@@ -43,6 +43,10 @@ var (
 		"GetSearchAttributes": func() any { return &workflowservice.GetSearchAttributesResponse{} },
 		"GetClusterInfo":      func() any { return &workflowservice.GetClusterInfoResponse{} },
 		"GetSystemInfo":       func() any { return &workflowservice.GetSystemInfoResponse{} },
+
+		// The handler checks the target namespace, which can be active in another cluster than the
+		// caller namespace.
+		"ExecuteSyncNexusOperation": func() any { return &workflowservice.ExecuteSyncNexusOperationResponse{} },
 	}
 
 	globalAPIResponses = map[string]responseConstructorFn{

@@ -25,6 +25,7 @@ import (
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/metrics/metricstest"
 	"go.temporal.io/server/common/namespace"
+	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/primitives/timestamp"
 	"go.temporal.io/server/common/quotas"
 	"go.temporal.io/server/common/rpc/interceptor"
@@ -384,5 +385,28 @@ func TestNexusInterceptRequest_HeadersSanitization(t *testing.T) {
 	err = oc.interceptRequest(ctx, request, header)
 	require.NoError(t, err)
 	require.Equal(t, initialHeader, header)
+	require.Equal(t, map[string]string{"ok-header": "ok"}, request.Request.Header)
+}
+
+func TestNexusInterceptRequest_RemovesCallerNamespaceHeader(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	oc := newOperationContext(contextOptions{
+		namespaceState:          enumspb.NAMESPACE_STATE_REGISTERED,
+		namespacePassive:        false,
+		quota:                   1,
+		namespaceRateLimitAllow: true,
+		rateLimitAllow:          true,
+	})
+	header := nexus.Header{
+		"ok-header":                           "ok",
+		commonnexus.CallerNamespaceHeaderName: "forged-namespace",
+	}
+	ctx = oc.augmentContext(ctx, header)
+	request := &matchingservice.DispatchNexusTaskRequest{
+		Request: &nexuspb.Request{Header: util.CloneMapNonNil(header)},
+	}
+	err := oc.interceptRequest(ctx, request, header)
+	require.NoError(t, err)
 	require.Equal(t, map[string]string{"ok-header": "ok"}, request.Request.Header)
 }

@@ -95,6 +95,8 @@ func (s *redirectionInterceptorSuite) TestLocalAPI() {
 		"GetSearchAttributes": {},
 		"GetClusterInfo":      {},
 		"GetSystemInfo":       {},
+
+		"ExecuteSyncNexusOperation": {},
 	}, apis)
 }
 

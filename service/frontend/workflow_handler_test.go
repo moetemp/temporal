@@ -246,6 +246,10 @@ func (s *WorkflowHandlerSuite) getWorkflowHandler(config *Config) *WorkflowHandl
 			s.mockSearchAttributesMapperProvider,
 			saValidator,
 		),
+		nil, // Not testing ExecuteSyncNexusOperation here
+		nil,
+		nil,
+		SyncNexusChecks{},
 	)
 }
 
