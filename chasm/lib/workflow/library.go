@@ -85,6 +85,7 @@ func (l *library) Components() []*chasm.RegistrableComponent {
 func (l *library) Tasks() []*chasm.RegistrableTask {
 	return []*chasm.RegistrableTask{
 		chasm.NewRegistrablePureTask("streamWakeRelease", streamWakeReleaseTaskHandler{}),
+		chasm.NewRegistrablePureTask("nexusProgressRelease", nexusProgressReleaseTaskHandler{}),
 	}
 }
 

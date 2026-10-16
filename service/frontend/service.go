@@ -234,6 +234,7 @@ type Config struct {
 	NexusRequestHeadersBlacklist   dynamicconfig.TypedPropertyFn[*regexp.Regexp]
 	NexusForwardRequestUseEndpoint dynamicconfig.BoolPropertyFn
 	NexusOperationsMetricTagConfig dynamicconfig.TypedPropertyFn[chasmnexus.NexusMetricTagConfig]
+	EnableNexusOperationProgress   dynamicconfig.BoolPropertyFnWithNamespaceFilter
 
 	LinkMaxSize        dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxLinksPerRequest dynamicconfig.IntPropertyFnWithNamespaceFilter
@@ -457,6 +458,7 @@ func NewConfig(
 		WorkflowTimeSkippingEnabled:             dynamicconfig.WorkflowTimeSkippingEnabled.Get(dc),
 		WorkflowTimeSkippingMaxSkipPerSession:   dynamicconfig.WorkflowTimeSkippingMaxSkipPerSession.Get(dc),
 		StandaloneNexusOperationsEnabled:        chasmnexus.Enabled.Get(dc),
+		EnableNexusOperationProgress:            chasmnexus.EnableProgress.Get(dc),
 		EnableWorkflowTaskCompletionPagination:  dynamicconfig.EnableWorkflowTaskCompletionPagination.Get(dc),
 		WorkflowTaskCompletionBufferSizeLimit:   dynamicconfig.WorkflowTaskCompletionBufferSizeLimit.Get(dc),
 

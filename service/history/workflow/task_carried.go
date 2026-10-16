@@ -32,7 +32,7 @@ type taskCarrier interface {
 }
 
 // taskCarriers lists every kind of state that rides Workflow Task scheduled events.
-var taskCarriers = []taskCarrier{streamWakeCarrier{}}
+var taskCarriers = []taskCarrier{streamWakeCarrier{}, nexusProgressCarrier{}}
 
 type streamWakeCarrier struct{}
 
