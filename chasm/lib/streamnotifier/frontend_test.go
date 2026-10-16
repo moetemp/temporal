@@ -315,6 +315,8 @@ func TestNotifyStreamsAppliesEachEntry(t *testing.T) {
 		ChasmEnabled:   dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
 		MaxIDLength:    dynamicconfig.GetIntPropertyFn(1000),
 		MaxNotifyBatch: dynamicconfig.GetIntPropertyFnFilteredByNamespace(3),
+		// Standalone Activities are off, so an Activity owner's entry is refused.
+		ActivityEnabled: dynamicconfig.GetBoolPropertyFnFilteredByNamespace(false),
 	}
 	h := NewFrontendHandler(client, config, registry, nil, metrics.NoopMetricsHandler,
 		log.NewTestLogger())
@@ -376,6 +378,22 @@ func TestNotifyStreamsAppliesEachEntry(t *testing.T) {
 	}
 	require.EqualValues(t, 5, byTopic["a"].GetFrontendRequest().GetCounter())
 	require.EqualValues(t, 7, byTopic["b"].GetFrontendRequest().GetCounter())
+
+	activityEntry := &streampb.StreamNotification{
+		StreamRef: &streampb.StreamReference{
+			OwnerKind:  enumspb.STREAM_OWNER_KIND_ACTIVITY,
+			ActivityId: "act",
+			RunId:      "act-run",
+			Topic:      "a",
+		},
+		Counter: 1,
+	}
+	client.notified = nil
+	got, err = notify(entry("a", 8), activityEntry)
+	require.NoError(t, err)
+	require.Equal(t, []codes.Code{codes.OK, codes.FailedPrecondition}, got,
+		"an owner kind that is off fails only its entry")
+	require.Len(t, client.notified, 1)
 
 	config.Enabled = dynamicconfig.GetBoolPropertyFnFilteredByNamespace(false)
 	_, err = notify(entry("a", 6))
