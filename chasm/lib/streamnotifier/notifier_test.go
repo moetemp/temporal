@@ -1020,6 +1020,12 @@ func TestClosedRetentionCoversTheStoreRetention(t *testing.T) {
 		"a closed stream answers late attaches as long as the store keeps its records")
 }
 
+func TestARecheckComesAtMostFiveMinutesLate(t *testing.T) {
+	require.Equal(t, 5*time.Minute,
+		configProvider(dynamicconfig.NewNoopCollection()).RecheckMax("ns"),
+		"a reader with no notification wakes within the cap")
+}
+
 func TestTheOwnerCheckRunsEveryThirtySeconds(t *testing.T) {
 	require.Equal(t, 30*time.Second,
 		configProvider(dynamicconfig.NewNoopCollection()).OwnerCheckInterval("ns"),

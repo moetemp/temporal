@@ -75,9 +75,11 @@ notification sets it back. Zero turns rechecks off.`,
 
 var RecheckMax = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.recheckMax",
-	time.Hour,
-	`The longest wait between two rechecks of a stream notifier's Workflow readers. An idle reader
-gets about 30 rechecks a day with the defaults, each one Workflow Task and one read.`,
+	5*time.Minute,
+	`The longest wait between two rechecks of a stream notifier's Workflow readers. It bounds how
+late a reader wakes when a notification is lost or never sent, such as in a deployment with
+notifications off. An idle reader gets about 290 rechecks a day with the defaults, each one Workflow
+Task and one read.`,
 )
 
 var OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
