@@ -231,6 +231,110 @@ func (x *DetachStreamCallbackResponse) GetFrontendResponse() *v1.DetachStreamCal
 	return nil
 }
 
+type WaitStreamCallbackRequest struct {
+	state           protoimpl.MessageState        `protogen:"open.v1"`
+	NamespaceId     string                        `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
+	BusinessId      string                        `protobuf:"bytes,2,opt,name=business_id,json=businessId,proto3" json:"business_id,omitempty"`
+	FrontendRequest *v1.WaitStreamCallbackRequest `protobuf:"bytes,3,opt,name=frontend_request,json=frontendRequest,proto3" json:"frontend_request,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *WaitStreamCallbackRequest) Reset() {
+	*x = WaitStreamCallbackRequest{}
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitStreamCallbackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitStreamCallbackRequest) ProtoMessage() {}
+
+func (x *WaitStreamCallbackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitStreamCallbackRequest.ProtoReflect.Descriptor instead.
+func (*WaitStreamCallbackRequest) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *WaitStreamCallbackRequest) GetNamespaceId() string {
+	if x != nil {
+		return x.NamespaceId
+	}
+	return ""
+}
+
+func (x *WaitStreamCallbackRequest) GetBusinessId() string {
+	if x != nil {
+		return x.BusinessId
+	}
+	return ""
+}
+
+func (x *WaitStreamCallbackRequest) GetFrontendRequest() *v1.WaitStreamCallbackRequest {
+	if x != nil {
+		return x.FrontendRequest
+	}
+	return nil
+}
+
+type WaitStreamCallbackResponse struct {
+	state            protoimpl.MessageState         `protogen:"open.v1"`
+	FrontendResponse *v1.WaitStreamCallbackResponse `protobuf:"bytes,1,opt,name=frontend_response,json=frontendResponse,proto3" json:"frontend_response,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *WaitStreamCallbackResponse) Reset() {
+	*x = WaitStreamCallbackResponse{}
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitStreamCallbackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitStreamCallbackResponse) ProtoMessage() {}
+
+func (x *WaitStreamCallbackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitStreamCallbackResponse.ProtoReflect.Descriptor instead.
+func (*WaitStreamCallbackResponse) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *WaitStreamCallbackResponse) GetFrontendResponse() *v1.WaitStreamCallbackResponse {
+	if x != nil {
+		return x.FrontendResponse
+	}
+	return nil
+}
+
 type NotifyStreamRequest struct {
 	state           protoimpl.MessageState  `protogen:"open.v1"`
 	NamespaceId     string                  `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
@@ -242,7 +346,7 @@ type NotifyStreamRequest struct {
 
 func (x *NotifyStreamRequest) Reset() {
 	*x = NotifyStreamRequest{}
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[4]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -254,7 +358,7 @@ func (x *NotifyStreamRequest) String() string {
 func (*NotifyStreamRequest) ProtoMessage() {}
 
 func (x *NotifyStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[4]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -267,7 +371,7 @@ func (x *NotifyStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyStreamRequest.ProtoReflect.Descriptor instead.
 func (*NotifyStreamRequest) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{4}
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *NotifyStreamRequest) GetNamespaceId() string {
@@ -300,7 +404,7 @@ type NotifyStreamResponse struct {
 
 func (x *NotifyStreamResponse) Reset() {
 	*x = NotifyStreamResponse{}
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[5]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -312,7 +416,7 @@ func (x *NotifyStreamResponse) String() string {
 func (*NotifyStreamResponse) ProtoMessage() {}
 
 func (x *NotifyStreamResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[5]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -325,7 +429,7 @@ func (x *NotifyStreamResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyStreamResponse.ProtoReflect.Descriptor instead.
 func (*NotifyStreamResponse) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{5}
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *NotifyStreamResponse) GetFrontendResponse() *v1.NotifyStreamResponse {
@@ -346,7 +450,7 @@ type DescribeStreamNotifierRequest struct {
 
 func (x *DescribeStreamNotifierRequest) Reset() {
 	*x = DescribeStreamNotifierRequest{}
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[6]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -358,7 +462,7 @@ func (x *DescribeStreamNotifierRequest) String() string {
 func (*DescribeStreamNotifierRequest) ProtoMessage() {}
 
 func (x *DescribeStreamNotifierRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[6]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -371,7 +475,7 @@ func (x *DescribeStreamNotifierRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeStreamNotifierRequest.ProtoReflect.Descriptor instead.
 func (*DescribeStreamNotifierRequest) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{6}
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DescribeStreamNotifierRequest) GetNamespaceId() string {
@@ -404,7 +508,7 @@ type DescribeStreamNotifierResponse struct {
 
 func (x *DescribeStreamNotifierResponse) Reset() {
 	*x = DescribeStreamNotifierResponse{}
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[7]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -416,7 +520,7 @@ func (x *DescribeStreamNotifierResponse) String() string {
 func (*DescribeStreamNotifierResponse) ProtoMessage() {}
 
 func (x *DescribeStreamNotifierResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[7]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -429,7 +533,7 @@ func (x *DescribeStreamNotifierResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeStreamNotifierResponse.ProtoReflect.Descriptor instead.
 func (*DescribeStreamNotifierResponse) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{7}
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DescribeStreamNotifierResponse) GetFrontendResponse() *v1.DescribeStreamNotifierResponse {
@@ -450,7 +554,7 @@ type PollStreamNotifierRequest struct {
 
 func (x *PollStreamNotifierRequest) Reset() {
 	*x = PollStreamNotifierRequest{}
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[8]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -462,7 +566,7 @@ func (x *PollStreamNotifierRequest) String() string {
 func (*PollStreamNotifierRequest) ProtoMessage() {}
 
 func (x *PollStreamNotifierRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[8]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -475,7 +579,7 @@ func (x *PollStreamNotifierRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollStreamNotifierRequest.ProtoReflect.Descriptor instead.
 func (*PollStreamNotifierRequest) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{8}
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PollStreamNotifierRequest) GetNamespaceId() string {
@@ -508,7 +612,7 @@ type PollStreamNotifierResponse struct {
 
 func (x *PollStreamNotifierResponse) Reset() {
 	*x = PollStreamNotifierResponse{}
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[9]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -520,7 +624,7 @@ func (x *PollStreamNotifierResponse) String() string {
 func (*PollStreamNotifierResponse) ProtoMessage() {}
 
 func (x *PollStreamNotifierResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[9]
+	mi := &file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -533,7 +637,7 @@ func (x *PollStreamNotifierResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollStreamNotifierResponse.ProtoReflect.Descriptor instead.
 func (*PollStreamNotifierResponse) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{9}
+	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PollStreamNotifierResponse) GetFrontendResponse() *v1.PollStreamNotifierResponse {
@@ -561,7 +665,14 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_pr
 	"businessId\x12g\n" +
 	"\x10frontend_request\x18\x03 \x01(\v2<.temporal.api.workflowservice.v1.DetachStreamCallbackRequestR\x0ffrontendRequest\"\x8a\x01\n" +
 	"\x1cDetachStreamCallbackResponse\x12j\n" +
-	"\x11frontend_response\x18\x01 \x01(\v2=.temporal.api.workflowservice.v1.DetachStreamCallbackResponseR\x10frontendResponse\"\xba\x01\n" +
+	"\x11frontend_response\x18\x01 \x01(\v2=.temporal.api.workflowservice.v1.DetachStreamCallbackResponseR\x10frontendResponse\"\xc6\x01\n" +
+	"\x19WaitStreamCallbackRequest\x12!\n" +
+	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12\x1f\n" +
+	"\vbusiness_id\x18\x02 \x01(\tR\n" +
+	"businessId\x12e\n" +
+	"\x10frontend_request\x18\x03 \x01(\v2:.temporal.api.workflowservice.v1.WaitStreamCallbackRequestR\x0ffrontendRequest\"\x86\x01\n" +
+	"\x1aWaitStreamCallbackResponse\x12h\n" +
+	"\x11frontend_response\x18\x01 \x01(\v2;.temporal.api.workflowservice.v1.WaitStreamCallbackResponseR\x10frontendResponse\"\xba\x01\n" +
 	"\x13NotifyStreamRequest\x12!\n" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12\x1f\n" +
 	"\vbusiness_id\x18\x02 \x01(\tR\n" +
@@ -596,45 +707,51 @@ func file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_pro
 	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDescData
 }
 
-var file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_goTypes = []any{
 	(*AttachStreamCallbackRequest)(nil),       // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackRequest
 	(*AttachStreamCallbackResponse)(nil),      // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse
 	(*DetachStreamCallbackRequest)(nil),       // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest
 	(*DetachStreamCallbackResponse)(nil),      // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse
-	(*NotifyStreamRequest)(nil),               // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest
-	(*NotifyStreamResponse)(nil),              // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse
-	(*DescribeStreamNotifierRequest)(nil),     // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest
-	(*DescribeStreamNotifierResponse)(nil),    // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse
-	(*PollStreamNotifierRequest)(nil),         // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest
-	(*PollStreamNotifierResponse)(nil),        // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse
-	(*v1.AttachStreamCallbackRequest)(nil),    // 10: temporal.api.workflowservice.v1.AttachStreamCallbackRequest
-	(*v1.AttachStreamCallbackResponse)(nil),   // 11: temporal.api.workflowservice.v1.AttachStreamCallbackResponse
-	(*v1.DetachStreamCallbackRequest)(nil),    // 12: temporal.api.workflowservice.v1.DetachStreamCallbackRequest
-	(*v1.DetachStreamCallbackResponse)(nil),   // 13: temporal.api.workflowservice.v1.DetachStreamCallbackResponse
-	(*v1.NotifyStreamRequest)(nil),            // 14: temporal.api.workflowservice.v1.NotifyStreamRequest
-	(*v1.NotifyStreamResponse)(nil),           // 15: temporal.api.workflowservice.v1.NotifyStreamResponse
-	(*v1.DescribeStreamNotifierRequest)(nil),  // 16: temporal.api.workflowservice.v1.DescribeStreamNotifierRequest
-	(*v1.DescribeStreamNotifierResponse)(nil), // 17: temporal.api.workflowservice.v1.DescribeStreamNotifierResponse
-	(*v1.PollStreamNotifierRequest)(nil),      // 18: temporal.api.workflowservice.v1.PollStreamNotifierRequest
-	(*v1.PollStreamNotifierResponse)(nil),     // 19: temporal.api.workflowservice.v1.PollStreamNotifierResponse
+	(*WaitStreamCallbackRequest)(nil),         // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackRequest
+	(*WaitStreamCallbackResponse)(nil),        // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackResponse
+	(*NotifyStreamRequest)(nil),               // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest
+	(*NotifyStreamResponse)(nil),              // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse
+	(*DescribeStreamNotifierRequest)(nil),     // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest
+	(*DescribeStreamNotifierResponse)(nil),    // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse
+	(*PollStreamNotifierRequest)(nil),         // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest
+	(*PollStreamNotifierResponse)(nil),        // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse
+	(*v1.AttachStreamCallbackRequest)(nil),    // 12: temporal.api.workflowservice.v1.AttachStreamCallbackRequest
+	(*v1.AttachStreamCallbackResponse)(nil),   // 13: temporal.api.workflowservice.v1.AttachStreamCallbackResponse
+	(*v1.DetachStreamCallbackRequest)(nil),    // 14: temporal.api.workflowservice.v1.DetachStreamCallbackRequest
+	(*v1.DetachStreamCallbackResponse)(nil),   // 15: temporal.api.workflowservice.v1.DetachStreamCallbackResponse
+	(*v1.WaitStreamCallbackRequest)(nil),      // 16: temporal.api.workflowservice.v1.WaitStreamCallbackRequest
+	(*v1.WaitStreamCallbackResponse)(nil),     // 17: temporal.api.workflowservice.v1.WaitStreamCallbackResponse
+	(*v1.NotifyStreamRequest)(nil),            // 18: temporal.api.workflowservice.v1.NotifyStreamRequest
+	(*v1.NotifyStreamResponse)(nil),           // 19: temporal.api.workflowservice.v1.NotifyStreamResponse
+	(*v1.DescribeStreamNotifierRequest)(nil),  // 20: temporal.api.workflowservice.v1.DescribeStreamNotifierRequest
+	(*v1.DescribeStreamNotifierResponse)(nil), // 21: temporal.api.workflowservice.v1.DescribeStreamNotifierResponse
+	(*v1.PollStreamNotifierRequest)(nil),      // 22: temporal.api.workflowservice.v1.PollStreamNotifierRequest
+	(*v1.PollStreamNotifierResponse)(nil),     // 23: temporal.api.workflowservice.v1.PollStreamNotifierResponse
 }
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_depIdxs = []int32{
-	10, // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.AttachStreamCallbackRequest
-	11, // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.AttachStreamCallbackResponse
-	12, // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.DetachStreamCallbackRequest
-	13, // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.DetachStreamCallbackResponse
-	14, // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.NotifyStreamRequest
-	15, // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.NotifyStreamResponse
-	16, // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.DescribeStreamNotifierRequest
-	17, // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.DescribeStreamNotifierResponse
-	18, // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.PollStreamNotifierRequest
-	19, // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.PollStreamNotifierResponse
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	12, // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.AttachStreamCallbackRequest
+	13, // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.AttachStreamCallbackResponse
+	14, // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.DetachStreamCallbackRequest
+	15, // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.DetachStreamCallbackResponse
+	16, // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.WaitStreamCallbackRequest
+	17, // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.WaitStreamCallbackResponse
+	18, // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.NotifyStreamRequest
+	19, // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.NotifyStreamResponse
+	20, // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.DescribeStreamNotifierRequest
+	21, // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.DescribeStreamNotifierResponse
+	22, // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest.frontend_request:type_name -> temporal.api.workflowservice.v1.PollStreamNotifierRequest
+	23, // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse.frontend_response:type_name -> temporal.api.workflowservice.v1.PollStreamNotifierResponse
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_init() }
@@ -648,7 +765,7 @@ func file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_pro
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDesc), len(file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
