@@ -62,6 +62,14 @@ func (c localClient) NotifyStream(
 	return c.handler.NotifyStream(ctx, in)
 }
 
+func (c localClient) WaitStreamCallback(
+	ctx context.Context,
+	in *streamnotifierpb.WaitStreamCallbackRequest,
+	_ ...grpc.CallOption,
+) (*streamnotifierpb.WaitStreamCallbackResponse, error) {
+	return c.handler.WaitStreamCallback(ctx, in)
+}
+
 func (c localClient) DescribeStreamNotifier(
 	ctx context.Context,
 	in *streamnotifierpb.DescribeStreamNotifierRequest,

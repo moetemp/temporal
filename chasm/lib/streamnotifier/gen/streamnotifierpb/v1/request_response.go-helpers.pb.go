@@ -153,6 +153,80 @@ func (this *DetachStreamCallbackResponse) Equal(that interface{}) bool {
 	return proto.Equal(this, that1)
 }
 
+// Marshal an object of type WaitStreamCallbackRequest to the protobuf v3 wire format
+func (val *WaitStreamCallbackRequest) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type WaitStreamCallbackRequest from the protobuf v3 wire format
+func (val *WaitStreamCallbackRequest) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *WaitStreamCallbackRequest) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two WaitStreamCallbackRequest values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *WaitStreamCallbackRequest) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *WaitStreamCallbackRequest
+	switch t := that.(type) {
+	case *WaitStreamCallbackRequest:
+		that1 = t
+	case WaitStreamCallbackRequest:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}
+
+// Marshal an object of type WaitStreamCallbackResponse to the protobuf v3 wire format
+func (val *WaitStreamCallbackResponse) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type WaitStreamCallbackResponse from the protobuf v3 wire format
+func (val *WaitStreamCallbackResponse) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *WaitStreamCallbackResponse) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two WaitStreamCallbackResponse values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *WaitStreamCallbackResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *WaitStreamCallbackResponse
+	switch t := that.(type) {
+	case *WaitStreamCallbackResponse:
+		that1 = t
+	case WaitStreamCallbackResponse:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}
+
 // Marshal an object of type NotifyStreamRequest to the protobuf v3 wire format
 func (val *NotifyStreamRequest) Marshal() ([]byte, error) {
 	return proto.Marshal(val)

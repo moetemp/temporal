@@ -2641,3 +2641,23 @@ func (mr *MockWorkflowServiceClientMockRecorder) ValidateWorkerDeploymentVersion
 	varargs := append([]any{ctx, in}, opts...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidateWorkerDeploymentVersionComputeConfig", reflect.TypeOf((*MockWorkflowServiceClient)(nil).ValidateWorkerDeploymentVersionComputeConfig), varargs...)
 }
+
+// WaitStreamCallback mocks base method.
+func (m *MockWorkflowServiceClient) WaitStreamCallback(ctx context.Context, in *workflowservice.WaitStreamCallbackRequest, opts ...grpc.CallOption) (*workflowservice.WaitStreamCallbackResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "WaitStreamCallback", varargs...)
+	ret0, _ := ret[0].(*workflowservice.WaitStreamCallbackResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// WaitStreamCallback indicates an expected call of WaitStreamCallback.
+func (mr *MockWorkflowServiceClientMockRecorder) WaitStreamCallback(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WaitStreamCallback", reflect.TypeOf((*MockWorkflowServiceClient)(nil).WaitStreamCallback), varargs...)
+}
