@@ -3,6 +3,7 @@ package streamnotifier
 import (
 	"context"
 	"errors"
+	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
@@ -27,6 +28,10 @@ type handler struct {
 	historyClient resource.HistoryClient
 	owners        *ownerDescriber
 }
+
+// releaseTimeout bounds freeing a reader's place after an attach, which runs apart from the
+// attach's own deadline, since a failed attach has often used it up.
+const releaseTimeout = 5 * time.Second
 
 func newHandler(
 	config *Config,
@@ -107,6 +112,10 @@ func (h *handler) AttachStreamCallback(
 		}
 		reserved = resp.GetReserved()
 	}
+	// created and refused tell what the update did. Its error alone can't, since a timeout may
+	// come after the attach landed. A new notifier runs the update twice, and the second run finds
+	// the callback the first one made, so created stays set.
+	created, refused := false, false
 	err := startOrUpdate(
 		ctx,
 		req.GetNamespaceId(),
@@ -117,7 +126,8 @@ func (h *handler) AttachStreamCallback(
 			mctx chasm.MutableContext,
 			r *workflowservice.AttachStreamCallbackRequest,
 		) (struct{}, error) {
-			return struct{}{}, n.attach(mctx, attachInput{
+			_, attached := n.Callbacks[r.GetRequestId()]
+			err := n.attach(mctx, attachInput{
 				requestID:          r.GetRequestId(),
 				callback:           r.GetCallback(),
 				workflowTarget:     r.GetWorkflowTarget(),
@@ -127,22 +137,34 @@ func (h *handler) AttachStreamCallback(
 				startTime:          r.GetStartTime(),
 				maxCallbacks:       h.config.MaxCallbacks(ns),
 				maxCallbackBytes:   h.config.MaxCallbackBytes(ns),
+				maxCloseBytes:      h.config.BlobSizeLimitError(ns),
 				idleTimeout:        h.config.IdleTimeout(ns),
 				ownerCheckInterval: h.config.OwnerCheckInterval(ns),
 			})
+			created = created || err == nil && !attached
+			refused = err != nil
+			return struct{}{}, err
 		},
 		fe,
 	)
-	if err != nil {
-		if reserved {
-			// No callback holds the place this attach took. A reader that already counted before
-			// this attach keeps its place, since a callback of an earlier attach may hold it.
-			_, releaseErr := h.historyClient.RecordStreamWake(ctx, sourceRequest(true))
-			if releaseErr != nil {
-				h.logger.Warn("Failed to free a stream reader's place after a failed attach",
-					tag.Error(releaseErr))
-			}
+	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
+		// The stream's notifier ended, so nothing was attached.
+		refused = true
+	}
+	// The place this attach took is free when no new callback holds it: the attach was refused,
+	// or it found the callback of an earlier attach. A reader that counted before this attach
+	// keeps its place. An attach that failed in another way may have landed, so it keeps the
+	// place for the caller's retry.
+	if reserved && (refused || err == nil && !created) {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+		_, releaseErr := h.historyClient.RecordStreamWake(releaseCtx, sourceRequest(true))
+		cancel()
+		if releaseErr != nil {
+			h.logger.Warn("Failed to free a stream reader's place after an attach",
+				tag.Error(releaseErr))
 		}
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &streamnotifierpb.AttachStreamCallbackResponse{

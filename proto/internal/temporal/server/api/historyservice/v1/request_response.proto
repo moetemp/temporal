@@ -1494,6 +1494,9 @@ message RecordStreamWakeRequest {
   // Stops counting the wake's reader toward history.maximumStreamWakeSources and records no wake.
   // A reader that detached, or whose attach failed after its reserve, frees its place this way.
   bool release = 5;
+  // Drops the wake when its reader holds no place, instead of giving it one. A callback's wake can
+  // land after the reader's place was freed, and it must not take the place again.
+  bool only_if_reserved = 6;
 }
 
 message RecordStreamWakeResponse {
