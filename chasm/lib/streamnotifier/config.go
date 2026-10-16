@@ -16,8 +16,25 @@ callbacks attached to it.`,
 
 var MaxCallbacks = dynamicconfig.NewNamespaceIntSetting(
 	"streamnotifier.maxCallbacks",
-	100,
-	`The maximum number of callbacks one stream notifier holds. An attach beyond it is refused.`,
+	2000,
+	`The maximum number of callbacks one stream notifier holds. A notifier is full when it holds
+this many callbacks or when an attach would take its callbacks past
+streamnotifier.maxCallbackBytes. A full notifier makes room for an attach by dropping the oldest
+callbacks that already completed, and refuses the attach if that is not enough. The default matches
+callback.maxPerExecution. With the default byte limit, the byte limit is reached first, at about
+1,000 callbacks that carry a Temporal callback token.`,
+)
+
+var MaxCallbackBytes = dynamicconfig.NewNamespaceIntSetting(
+	"streamnotifier.maxCallbackBytes",
+	6*1024*1024,
+	`The maximum size, in bytes, of what one stream notifier holds for its callbacks. It works next
+to streamnotifier.maxCallbacks: an attach that would take the notifier past it is refused the same
+way, after the notifier drops the oldest callbacks that already completed. Each callback counts its
+state plus the largest progress a notification can give it, and the notifier also counts the
+largest close outcome, limit.blobSize.error. Both arrive after the attach, so the attach counts
+them in advance. Keep this under limit.mutableStateSize.error, which ends the notifier and fails
+every caller when the notifier passes it.`,
 )
 
 var IdleTimeout = dynamicconfig.NewNamespaceDurationSetting(
@@ -27,6 +44,24 @@ var IdleTimeout = dynamicconfig.NewNamespaceDurationSetting(
 callbacks attached to it, so an abandoned stream does not hold callers forever. The stream stays
 open: later notifications and attaches work as before. A notifier that goes idle with no callbacks
 ends, and the next attach or notification starts a new one.`,
+)
+
+var IdleTimeoutNoCallbacks = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.idleTimeoutNoCallbacks",
+	time.Hour,
+	`How long an open stream notifier with no callbacks waiting waits for an attach or a
+notification before it ends. A notification or a poll starts a notifier when the stream has none,
+so a sleeping reader has a notifier to wake it. A notification that names the wrong first run
+starts one that nobody attaches to, and this ends it soon.`,
+)
+
+var PollMaxWait = dynamicconfig.NewNamespaceDurationSetting(
+	"streamnotifier.pollMaxWait",
+	time.Minute,
+	`The longest PollStreamNotifier waits for a counter above the one it names, or for the close.
+At the limit it returns with no change, and the client reads the stream again. That read finds
+records whose notification was lost, so this also bounds how long a client sleeps after a
+producer stopped before it notified.`,
 )
 
 var OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
@@ -58,14 +93,17 @@ still holds the records it would read. The default matches the default store ret
 
 // Config holds the stream notifier settings.
 type Config struct {
-	Enabled            dynamicconfig.BoolPropertyFnWithNamespaceFilter
-	ChasmEnabled       dynamicconfig.BoolPropertyFnWithNamespaceFilter
-	MaxCallbacks       dynamicconfig.IntPropertyFnWithNamespaceFilter
-	IdleTimeout        dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	ClosedRetention    dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	OwnerCheckInterval dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	OwnerCloseGrace    dynamicconfig.DurationPropertyFnWithNamespaceFilter
-	MaxIDLength        dynamicconfig.IntPropertyFn
+	Enabled                dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	ChasmEnabled           dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	MaxCallbacks           dynamicconfig.IntPropertyFnWithNamespaceFilter
+	MaxCallbackBytes       dynamicconfig.IntPropertyFnWithNamespaceFilter
+	IdleTimeout            dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	IdleTimeoutNoCallbacks dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	PollMaxWait            dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	ClosedRetention        dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	OwnerCheckInterval     dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	OwnerCloseGrace        dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	MaxIDLength            dynamicconfig.IntPropertyFn
 	// The close result becomes the operation's result, so it takes the payload blob limits.
 	BlobSizeLimitError dynamicconfig.IntPropertyFnWithNamespaceFilter
 	BlobSizeLimitWarn  dynamicconfig.IntPropertyFnWithNamespaceFilter
@@ -73,15 +111,18 @@ type Config struct {
 
 func configProvider(dc *dynamicconfig.Collection) *Config {
 	return &Config{
-		Enabled:            Enabled.Get(dc),
-		ChasmEnabled:       dynamicconfig.EnableChasm.Get(dc),
-		MaxCallbacks:       MaxCallbacks.Get(dc),
-		IdleTimeout:        IdleTimeout.Get(dc),
-		ClosedRetention:    ClosedRetention.Get(dc),
-		OwnerCheckInterval: OwnerCheckInterval.Get(dc),
-		OwnerCloseGrace:    OwnerCloseGrace.Get(dc),
-		MaxIDLength:        dynamicconfig.MaxIDLengthLimit.Get(dc),
-		BlobSizeLimitError: dynamicconfig.BlobSizeLimitError.Get(dc),
-		BlobSizeLimitWarn:  dynamicconfig.BlobSizeLimitWarn.Get(dc),
+		Enabled:                Enabled.Get(dc),
+		ChasmEnabled:           dynamicconfig.EnableChasm.Get(dc),
+		MaxCallbacks:           MaxCallbacks.Get(dc),
+		MaxCallbackBytes:       MaxCallbackBytes.Get(dc),
+		IdleTimeout:            IdleTimeout.Get(dc),
+		IdleTimeoutNoCallbacks: IdleTimeoutNoCallbacks.Get(dc),
+		PollMaxWait:            PollMaxWait.Get(dc),
+		ClosedRetention:        ClosedRetention.Get(dc),
+		OwnerCheckInterval:     OwnerCheckInterval.Get(dc),
+		OwnerCloseGrace:        OwnerCloseGrace.Get(dc),
+		MaxIDLength:            dynamicconfig.MaxIDLengthLimit.Get(dc),
+		BlobSizeLimitError:     dynamicconfig.BlobSizeLimitError.Get(dc),
+		BlobSizeLimitWarn:      dynamicconfig.BlobSizeLimitWarn.Get(dc),
 	}
 }

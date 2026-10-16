@@ -10,9 +10,11 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/callback"
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
@@ -20,6 +22,7 @@ import (
 	"go.temporal.io/server/common"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -119,6 +122,8 @@ type attachInput struct {
 	operationToken     string
 	startTime          *timestamppb.Timestamp
 	maxCallbacks       int
+	maxCallbackBytes   int
+	maxCloseBytes      int
 	idleTimeout        time.Duration
 	ownerCheckInterval time.Duration
 }
@@ -136,12 +141,6 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 		return nil
 	}
 	n.dropClosedCallers(ctx)
-	if len(n.Callbacks) >= in.maxCallbacks && !n.evictOne(ctx) {
-		return serviceerror.NewFailedPreconditionf(
-			"the stream notifier holds the maximum of %d callbacks",
-			in.maxCallbacks,
-		)
-	}
 	cb := callback.NewCallback(in.requestID, timestamppb.New(ctx.Now(n)), &callbackspb.Callback{
 		Variant: &callbackspb.Callback_Nexus_{
 			Nexus: &callbackspb.Callback_Nexus{
@@ -150,18 +149,47 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 			},
 		},
 	})
+	var start *streamnotifierpb.CallerStart
+	if in.operationToken != "" || in.startTime != nil {
+		start = &streamnotifierpb.CallerStart{
+			OperationToken: in.operationToken,
+			StartTime:      in.startTime,
+		}
+	}
+	size := callbackBytes(cb, start)
+	// The close outcome comes after the attach, so an open stream counts the largest one.
+	used := n.heldBytes(ctx) + in.maxCloseBytes
+	if n.Closed {
+		used += proto.Size(n.CloseResult) + proto.Size(n.CloseFailure) - in.maxCloseBytes
+	}
+	for len(n.Callbacks) >= in.maxCallbacks || used+size > in.maxCallbackBytes {
+		freed, ok := n.evictOne(ctx)
+		// A full notifier frees room when callbacks complete, so the caller may try again later.
+		if !ok && len(n.Callbacks) >= in.maxCallbacks {
+			return serviceerror.NewResourceExhaustedf(
+				enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT,
+				"the stream notifier holds the maximum of %d callbacks",
+				in.maxCallbacks,
+			)
+		}
+		if !ok {
+			return serviceerror.NewResourceExhaustedf(
+				enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT,
+				"the stream notifier's callbacks would pass the maximum of %d bytes",
+				in.maxCallbackBytes,
+			)
+		}
+		used -= freed
+	}
 	if n.Callbacks == nil {
 		n.Callbacks = make(chasm.Map[string, *callback.Callback])
 	}
 	n.Callbacks[in.requestID] = chasm.NewComponentField(ctx, cb)
-	if in.operationToken != "" || in.startTime != nil {
+	if start != nil {
 		if n.CallerStarts == nil {
 			n.CallerStarts = map[string]*streamnotifierpb.CallerStart{}
 		}
-		n.CallerStarts[in.requestID] = &streamnotifierpb.CallerStart{
-			OperationToken: in.operationToken,
-			StartTime:      in.startTime,
-		}
+		n.CallerStarts[in.requestID] = start
 	}
 	if n.Closed {
 		return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
@@ -187,10 +215,11 @@ func (n *StreamNotifier) dropClosedCallers(ctx chasm.MutableContext) {
 	}
 }
 
-// evictOne drops the oldest callback that is done and reports whether it dropped one. A callback
-// whose caller still waits for its completion is never dropped, even one that takes no progress,
-// such as an HSM caller's; callbacks whose caller closed are already gone (dropClosedCallers).
-func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) bool {
+// evictOne drops the oldest callback that is done and returns its size, or false if no callback
+// is done. A callback whose caller still waits for its completion is never dropped, even one that
+// takes no progress, such as an HSM caller's; callbacks whose caller closed are already gone
+// (dropClosedCallers).
+func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) (int, bool) {
 	var done *callback.Callback
 	for _, field := range n.Callbacks {
 		cb := field.Get(ctx)
@@ -204,10 +233,32 @@ func (n *StreamNotifier) evictOne(ctx chasm.MutableContext) bool {
 		}
 	}
 	if done == nil {
-		return false
+		return 0, false
 	}
+	freed := callbackBytes(done, n.CallerStarts[done.GetRequestId()])
 	n.detach(done.GetRequestId())
-	return true
+	return freed, true
+}
+
+// heldBytes is the size of the callbacks the notifier holds, as callbackBytes counts each.
+func (n *StreamNotifier) heldBytes(ctx chasm.Context) int {
+	size := 0
+	for requestID, field := range n.Callbacks {
+		size += callbackBytes(field.Get(ctx), n.CallerStarts[requestID])
+	}
+	return size
+}
+
+// progressReserve is the most a callback's pending progress takes, with room for the counter and
+// the field tags.
+const progressReserve = maxPositionBytes + maxMetadataBytes + 64
+
+// callbackBytes is the persisted size of a callback and of the start its caller saw, which is what
+// the notifier's state holds for it. Pending progress counts as the largest one, since a later
+// notification can give every callback that much while their deliveries retry.
+func callbackBytes(cb *callback.Callback, start *streamnotifierpb.CallerStart) int {
+	return proto.Size(cb.CallbackState) - proto.Size(cb.GetPendingProgress()) + progressReserve +
+		proto.Size(start)
 }
 
 // hasWaitingCallbacks reports whether a callback still waits for the stream's close.
@@ -294,7 +345,9 @@ type notifyInput struct {
 	// Set instead of closeResult when the stream closes with a failure.
 	closeFailure *failurepb.Failure
 	idleTimeout  time.Duration
-	retention    time.Duration
+	// The idle timeout when no callback waits, such as for a notifier only clients poll.
+	idleTimeoutNoCallbacks time.Duration
+	retention              time.Duration
 }
 
 // notify keeps the highest counter and hands it to every callback as progress. A close completes
@@ -322,8 +375,41 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 		n.touch(ctx, in.retention)
 		return nil
 	}
-	n.touch(ctx, in.idleTimeout)
+	if n.hasWaitingCallbacks(ctx) {
+		n.touch(ctx, in.idleTimeout)
+	} else {
+		n.touch(ctx, in.idleTimeoutNoCallbacks)
+	}
 	return nil
+}
+
+// startIdle arms the expiry of a notifier that a poll started, and changes nothing on one that
+// already saw activity.
+func (n *StreamNotifier) startIdle(ctx chasm.MutableContext, idleTimeout time.Duration) {
+	if n.LastActivityTime == nil {
+		n.touch(ctx, idleTimeout)
+	}
+}
+
+// pollResponse is what a poll answers with: the latest notification and the close outcome.
+func (n *StreamNotifier) pollResponse(
+	_ chasm.Context,
+	_ struct{},
+) (*workflowservice.PollStreamNotifierResponse, error) {
+	return &workflowservice.PollStreamNotifierResponse{
+		Counter:      n.Counter,
+		Position:     n.Position,
+		Metadata:     maps.Clone(n.Metadata),
+		Closed:       n.Closed,
+		CloseResult:  common.CloneProto(n.CloseResult),
+		CloseFailure: common.CloneProto(n.CloseFailure),
+	}, nil
+}
+
+// pollDone reports whether a poll that waits for a counter above after returns: the counter
+// passed it, the stream closed, or the notifier ended, so the client starts a new one.
+func (n *StreamNotifier) pollDone(after int64) bool {
+	return n.Counter > after || n.Closed || n.Expired
 }
 
 // close completes every callback still waiting: with the result, or with failure when it is set.

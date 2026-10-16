@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/server/chasm"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/contextutil"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/resource"
 )
@@ -90,6 +91,8 @@ func (h *handler) AttachStreamCallback(
 				operationToken:     r.GetOperationToken(),
 				startTime:          r.GetStartTime(),
 				maxCallbacks:       h.config.MaxCallbacks(ns),
+				maxCallbackBytes:   h.config.MaxCallbackBytes(ns),
+				maxCloseBytes:      h.config.BlobSizeLimitError(ns),
 				idleTimeout:        h.config.IdleTimeout(ns),
 				ownerCheckInterval: h.config.OwnerCheckInterval(ns),
 			})
@@ -125,28 +128,18 @@ func (h *handler) NotifyStream(
 			closeFailure: r.GetCloseFailure(),
 			idleTimeout:  h.config.IdleTimeout(ns),
 			retention:    h.config.ClosedRetention(ns),
+
+			idleTimeoutNoCallbacks: h.config.IdleTimeoutNoCallbacks(ns),
 		})
 	}
-	if fe.GetClose() {
-		// A late attach must find the stream closed, so a close starts a notifier if none runs.
-		if err := startOrUpdate(
-			ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(), update, fe,
-		); err != nil {
-			return nil, err
-		}
-		return &streamnotifierpb.NotifyStreamResponse{
-			FrontendResponse: &workflowservice.NotifyStreamResponse{},
-		}, nil
-	}
-	// No notifier means no caller waits, and a caller that attaches later reads from its start
-	// position. So a notification starts no notifier, and one that names the wrong run of the
-	// owner's chain leaves nothing behind.
-	ref := chasm.NewComponentRef[*StreamNotifier](chasm.ExecutionKey{
-		NamespaceID: req.GetNamespaceId(),
-		BusinessID:  req.GetBusinessId(),
-	})
-	_, _, err := chasm.UpdateComponent(ctx, ref, update, fe)
-	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+	// A notification starts a notifier when the stream has none. A reader that armed the store
+	// may not have reached the notifier yet, and the notifier keeps the counter it waits for. A
+	// late attach must also find a closed stream closed.
+	err := startOrUpdate(
+		ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(), update, fe,
+	)
+	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok && !fe.GetClose() {
+		// The stream closed and its notifier ended. Nothing waits on a notification.
 		err = nil
 	}
 	if err != nil {
@@ -221,6 +214,103 @@ func (h *handler) DescribeStreamNotifier(
 		return nil, err
 	}
 	return &streamnotifierpb.DescribeStreamNotifierResponse{FrontendResponse: resp}, nil
+}
+
+// PollStreamNotifier waits until the notifier's counter passes the request's after_counter, the
+// stream closes, or the wait limit passes. A poll writes nothing, except that it starts a notifier
+// when the stream has none, so the notification the client waits for has somewhere to land.
+func (h *handler) PollStreamNotifier(
+	ctx context.Context,
+	req *streamnotifierpb.PollStreamNotifierRequest,
+) (_ *streamnotifierpb.PollStreamNotifierResponse, retErr error) {
+	defer log.CapturePanic(h.logger, &retErr)
+	fe := req.GetFrontendRequest()
+	ns := fe.GetNamespace()
+	after := fe.GetAfterCounter()
+	ref := chasm.NewComponentRef[*StreamNotifier](chasm.ExecutionKey{
+		NamespaceID: req.GetNamespaceId(),
+		BusinessID:  req.GetBusinessId(),
+	})
+	type snapshot struct {
+		response *workflowservice.PollStreamNotifierResponse
+		done     bool
+		ended    bool
+	}
+	current, err := chasm.ReadComponent(
+		ctx,
+		ref,
+		func(n *StreamNotifier, cctx chasm.Context, _ struct{}) (snapshot, error) {
+			resp, err := n.pollResponse(cctx, struct{}{})
+			return snapshot{
+				response: resp,
+				done:     n.pollDone(after),
+				ended:    n.Expired && !n.Closed,
+			}, err
+		},
+		struct{}{},
+	)
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		current, err = snapshot{ended: true}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if current.ended {
+		// No notifier, or one that ended idle: start a new one and wait on it.
+		idle := h.config.IdleTimeoutNoCallbacks(ns)
+		if err := startOrUpdate(
+			ctx,
+			req.GetNamespaceId(),
+			req.GetBusinessId(),
+			fe.GetStreamRef(),
+			func(n *StreamNotifier, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				n.startIdle(mctx, idle)
+				return struct{}{}, nil
+			},
+			struct{}{},
+		); err != nil {
+			return nil, err
+		}
+		current = snapshot{response: &workflowservice.PollStreamNotifierResponse{}}
+	} else if current.done {
+		return &streamnotifierpb.PollStreamNotifierResponse{
+			FrontendResponse: current.response,
+		}, nil
+	}
+
+	pollCtx, cancel := contextutil.WithDeadlineBuffer(
+		ctx,
+		h.config.PollMaxWait(ns),
+		common.DefaultLongPollBuffer,
+	)
+	defer cancel()
+	resp, _, err := chasm.PollComponent(
+		pollCtx,
+		ref,
+		func(
+			n *StreamNotifier,
+			cctx chasm.Context,
+			after int64,
+		) (*workflowservice.PollStreamNotifierResponse, bool, error) {
+			if !n.pollDone(after) {
+				return nil, false, nil
+			}
+			resp, err := n.pollResponse(cctx, struct{}{})
+			return resp, true, err
+		},
+		after,
+	)
+	if err != nil && pollCtx.Err() != nil && ctx.Err() == nil {
+		// The wait limit passed. The client reads the stream again.
+		err, resp = nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		resp = current.response
+	}
+	return &streamnotifierpb.PollStreamNotifierResponse{FrontendResponse: resp}, nil
 }
 
 // checkFirstRun refuses a reference whose run ID is not the first run of its owner's chain. Such a

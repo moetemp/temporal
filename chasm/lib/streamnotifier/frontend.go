@@ -42,6 +42,10 @@ type FrontendHandler interface {
 		context.Context,
 		*workflowservice.DescribeStreamNotifierRequest,
 	) (*workflowservice.DescribeStreamNotifierResponse, error)
+	PollStreamNotifier(
+		context.Context,
+		*workflowservice.PollStreamNotifierRequest,
+	) (*workflowservice.PollStreamNotifierResponse, error)
 }
 
 type frontendHandler struct {
@@ -253,5 +257,24 @@ func (h *frontendHandler) DescribeStreamNotifier(
 			FrontendRequest: req,
 		},
 	)
+	return resp.GetFrontendResponse(), err
+}
+
+func (h *frontendHandler) PollStreamNotifier(
+	ctx context.Context,
+	req *workflowservice.PollStreamNotifierRequest,
+) (*workflowservice.PollStreamNotifierResponse, error) {
+	namespaceID, businessID, err := h.resolve(req.GetNamespace(), req.GetStreamRef())
+	if err != nil {
+		return nil, err
+	}
+	if req.GetAfterCounter() < 0 {
+		return nil, serviceerror.NewInvalidArgument("after_counter must not be negative")
+	}
+	resp, err := h.client.PollStreamNotifier(ctx, &streamnotifierpb.PollStreamNotifierRequest{
+		NamespaceId:     namespaceID,
+		BusinessId:      businessID,
+		FrontendRequest: req,
+	})
 	return resp.GetFrontendResponse(), err
 }

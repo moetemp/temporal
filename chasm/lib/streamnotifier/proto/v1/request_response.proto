@@ -48,3 +48,13 @@ message DescribeStreamNotifierRequest {
 message DescribeStreamNotifierResponse {
   temporal.api.workflowservice.v1.DescribeStreamNotifierResponse frontend_response = 1;
 }
+
+message PollStreamNotifierRequest {
+  string namespace_id = 1;
+  string business_id = 2;
+  temporal.api.workflowservice.v1.PollStreamNotifierRequest frontend_request = 3;
+}
+
+message PollStreamNotifierResponse {
+  temporal.api.workflowservice.v1.PollStreamNotifierResponse frontend_response = 1;
+}

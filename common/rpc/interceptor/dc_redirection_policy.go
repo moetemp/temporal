@@ -100,6 +100,12 @@ var selectedAPIsForwardingRedirectionPolicyAllowedAPIs = map[string]struct{}{
 	wfMethod("RequestCancelNexusOperationExecution"): {},
 	wfMethod("TerminateNexusOperationExecution"):     {},
 	wfMethod("DeleteNexusOperationExecution"):        {},
+
+	// Stream notifier APIs
+	wfMethod("AttachStreamCallback"): {},
+	wfMethod("DetachStreamCallback"): {},
+	wfMethod("NotifyStream"):         {},
+	wfMethod("PollStreamNotifier"):   {},
 }
 
 func wfMethod(name string) string { return api.WorkflowServicePrefix + name }
