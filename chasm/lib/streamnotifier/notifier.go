@@ -20,6 +20,7 @@ import (
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/log/tag"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"google.golang.org/protobuf/proto"
@@ -139,6 +140,7 @@ type attachInput struct {
 	startTime          *timestamppb.Timestamp
 	maxCallbacks       int
 	maxCallbackBytes   int
+	maxCloseBytes      int
 	idleTimeout        time.Duration
 	ownerCheckInterval time.Duration
 	// Set for a callback that gets progress only when it waits.
@@ -167,21 +169,24 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 		}
 	}
 	size := callbackBytes(cb, start)
-	if !n.Closed && n.Counter > 0 && !in.idle {
-		// The progress delivered below is kept on the callback.
-		size += proto.Size(n.progress())
+	// The close outcome comes after the attach, so an open stream counts the largest one.
+	used := n.heldBytes(ctx) + in.maxCloseBytes
+	if n.Closed {
+		used += proto.Size(n.CloseResult) + proto.Size(n.CloseFailure) - in.maxCloseBytes
 	}
-	used := n.heldBytes(ctx)
 	for len(n.Callbacks) >= in.maxCallbacks || used+size > in.maxCallbackBytes {
 		freed, ok := n.evictOne(ctx)
+		// A full notifier frees room when callbacks complete, so the caller may try again later.
 		if !ok && len(n.Callbacks) >= in.maxCallbacks {
-			return serviceerror.NewFailedPreconditionf(
+			return serviceerror.NewResourceExhaustedf(
+				enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT,
 				"the stream notifier holds the maximum of %d callbacks",
 				in.maxCallbacks,
 			)
 		}
 		if !ok {
-			return serviceerror.NewFailedPreconditionf(
+			return serviceerror.NewResourceExhaustedf(
+				enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT,
 				"the stream notifier's callbacks would pass the maximum of %d bytes",
 				in.maxCallbackBytes,
 			)
@@ -333,10 +338,16 @@ func (n *StreamNotifier) heldBytes(ctx chasm.Context) int {
 	return size
 }
 
+// progressReserve is the most a callback's pending progress takes, with room for the counter and
+// the field tags.
+const progressReserve = maxPositionBytes + maxMetadataBytes + 64
+
 // callbackBytes is the persisted size of a callback and of the start its caller saw, which is what
-// the notifier's state holds for it.
+// the notifier's state holds for it. Pending progress counts as the largest one, since a later
+// notification can give every callback that much while their deliveries retry.
 func callbackBytes(cb *callback.Callback, start *streamnotifierpb.CallerStart) int {
-	return proto.Size(cb.CallbackState) + proto.Size(start)
+	return proto.Size(cb.CallbackState) - proto.Size(cb.GetPendingProgress()) + progressReserve +
+		proto.Size(start)
 }
 
 // hasWaitingCallbacks reports whether a callback still waits for the stream's close.
@@ -529,8 +540,18 @@ func (n *StreamNotifier) wait(
 	}
 	n.touch(ctx, idleTimeout)
 	if n.Counter > after {
+		cb := field.Get(ctx)
+		if cb.GetDeliveredProgressCounter() >= n.Counter {
+			// The reader read below a counter it was woken for, so the store lost records or a
+			// writer sent a counter past the store's head. Rechecks alone wake this reader then.
+			ctx.MetricsHandler().Counter(WaitBelowDelivered.Name()).Record(1)
+			ctx.Logger().Warn("A stream reader waits below a counter it already got",
+				tag.NewStringTag("request-id", requestID),
+				tag.NewInt64("after-counter", after),
+				tag.NewInt64("counter", n.Counter))
+		}
 		delete(n.Waits, requestID)
-		return field.Get(ctx).DeliverProgress(ctx, n.progress())
+		return cb.DeliverProgress(ctx, n.progress())
 	}
 	if n.Waits == nil {
 		n.Waits = map[string]int64{}
