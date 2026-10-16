@@ -105,6 +105,7 @@ var selectedAPIsForwardingRedirectionPolicyAllowedAPIs = map[string]struct{}{
 	wfMethod("AttachStreamCallback"): {},
 	wfMethod("DetachStreamCallback"): {},
 	wfMethod("NotifyStream"):         {},
+	wfMethod("WaitStreamCallback"):   {},
 	wfMethod("NotifyStreams"):        {},
 	wfMethod("PollStreamNotifier"):   {},
 }
