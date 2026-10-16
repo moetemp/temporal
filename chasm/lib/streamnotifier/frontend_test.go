@@ -407,6 +407,84 @@ func TestNotifyStreamsAppliesEachEntry(t *testing.T) {
 	require.Equal(t, []codes.Code{codes.Unavailable}, got, "a failed entry fails only itself")
 }
 
+type waitNotifierClient struct {
+	streamnotifierpb.StreamNotifierServiceClient
+	attached int
+	waited   int
+}
+
+func (c *waitNotifierClient) AttachStreamCallback(
+	context.Context,
+	*streamnotifierpb.AttachStreamCallbackRequest,
+	...grpc.CallOption,
+) (*streamnotifierpb.AttachStreamCallbackResponse, error) {
+	c.attached++
+	return &streamnotifierpb.AttachStreamCallbackResponse{
+		FrontendResponse: &workflowservice.AttachStreamCallbackResponse{},
+	}, nil
+}
+
+func (c *waitNotifierClient) WaitStreamCallback(
+	context.Context,
+	*streamnotifierpb.WaitStreamCallbackRequest,
+	...grpc.CallOption,
+) (*streamnotifierpb.WaitStreamCallbackResponse, error) {
+	c.waited++
+	return &streamnotifierpb.WaitStreamCallbackResponse{
+		FrontendResponse: &workflowservice.WaitStreamCallbackResponse{},
+	}, nil
+}
+
+func TestIdleAttachAndWaitAreChecked(t *testing.T) {
+	registry := namespace.NewMockRegistry(gomock.NewController(t))
+	registry.EXPECT().
+		GetNamespaceID(namespace.Name("ns")).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
+	client := &waitNotifierClient{}
+	h := NewFrontendHandler(client, &Config{
+		Enabled:      dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ChasmEnabled: dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		MaxIDLength:  dynamicconfig.GetIntPropertyFn(1000),
+	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
+	ref := &streampb.StreamReference{
+		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+		WorkflowId: "wf",
+		RunId:      "first-run",
+		Topic:      "tokens",
+	}
+	var invalid *serviceerror.InvalidArgument
+	attach := &workflowservice.AttachStreamCallbackRequest{
+		Namespace: "ns",
+		StreamRef: ref,
+		RequestId: "request",
+		WorkflowTarget: &streampb.WorkflowWakeTarget{
+			WorkflowId:     "reader",
+			RunId:          "run",
+			SubscriptionId: "sub",
+		},
+		Idle: true,
+	}
+	_, err := h.AttachStreamCallback(context.Background(), attach)
+	require.NoError(t, err, "a Workflow reader attaches idle")
+	require.Equal(t, 1, client.attached)
+
+	wait := func(requestID string, after int64) error {
+		_, err := h.WaitStreamCallback(context.Background(), &workflowservice.WaitStreamCallbackRequest{
+			Namespace:    "ns",
+			StreamRef:    ref,
+			RequestId:    requestID,
+			AfterCounter: after,
+		})
+		return err
+	}
+	require.ErrorAs(t, wait("", 0), &invalid, "a wait names its callback")
+	require.ErrorAs(t, wait("request", -1), &invalid, "after_counter is not negative")
+	require.Zero(t, client.waited)
+	require.NoError(t, wait("request", 0))
+	require.Equal(t, 1, client.waited)
+}
+
 func TestOwnerKindsTakeTheirOwnFields(t *testing.T) {
 	registry := namespace.NewMockRegistry(gomock.NewController(t))
 	registry.EXPECT().
@@ -537,82 +615,4 @@ func TestWorkflowActivityRefsTakeTheirOwnFields(t *testing.T) {
 			require.ErrorAs(t, notify(ref), &invalid)
 		})
 	}
-}
-
-type waitNotifierClient struct {
-	streamnotifierpb.StreamNotifierServiceClient
-	attached int
-	waited   int
-}
-
-func (c *waitNotifierClient) AttachStreamCallback(
-	context.Context,
-	*streamnotifierpb.AttachStreamCallbackRequest,
-	...grpc.CallOption,
-) (*streamnotifierpb.AttachStreamCallbackResponse, error) {
-	c.attached++
-	return &streamnotifierpb.AttachStreamCallbackResponse{
-		FrontendResponse: &workflowservice.AttachStreamCallbackResponse{},
-	}, nil
-}
-
-func (c *waitNotifierClient) WaitStreamCallback(
-	context.Context,
-	*streamnotifierpb.WaitStreamCallbackRequest,
-	...grpc.CallOption,
-) (*streamnotifierpb.WaitStreamCallbackResponse, error) {
-	c.waited++
-	return &streamnotifierpb.WaitStreamCallbackResponse{
-		FrontendResponse: &workflowservice.WaitStreamCallbackResponse{},
-	}, nil
-}
-
-func TestIdleAttachAndWaitAreChecked(t *testing.T) {
-	registry := namespace.NewMockRegistry(gomock.NewController(t))
-	registry.EXPECT().
-		GetNamespaceID(namespace.Name("ns")).
-		Return(namespace.ID("namespace-id"), nil).
-		AnyTimes()
-	client := &waitNotifierClient{}
-	h := NewFrontendHandler(client, &Config{
-		Enabled:      dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
-		ChasmEnabled: dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
-		MaxIDLength:  dynamicconfig.GetIntPropertyFn(1000),
-	}, registry, nil, metrics.NoopMetricsHandler, log.NewTestLogger())
-	ref := &streampb.StreamReference{
-		OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
-		WorkflowId: "wf",
-		RunId:      "first-run",
-		Topic:      "tokens",
-	}
-	var invalid *serviceerror.InvalidArgument
-	attach := &workflowservice.AttachStreamCallbackRequest{
-		Namespace: "ns",
-		StreamRef: ref,
-		RequestId: "request",
-		WorkflowTarget: &streampb.WorkflowWakeTarget{
-			WorkflowId:     "reader",
-			RunId:          "run",
-			SubscriptionId: "sub",
-		},
-		Idle: true,
-	}
-	_, err := h.AttachStreamCallback(context.Background(), attach)
-	require.NoError(t, err, "a Workflow reader attaches idle")
-	require.Equal(t, 1, client.attached)
-
-	wait := func(requestID string, after int64) error {
-		_, err := h.WaitStreamCallback(context.Background(), &workflowservice.WaitStreamCallbackRequest{
-			Namespace:    "ns",
-			StreamRef:    ref,
-			RequestId:    requestID,
-			AfterCounter: after,
-		})
-		return err
-	}
-	require.ErrorAs(t, wait("", 0), &invalid, "a wait names its callback")
-	require.ErrorAs(t, wait("request", -1), &invalid, "after_counter is not negative")
-	require.Zero(t, client.waited)
-	require.NoError(t, wait("request", 0))
-	require.Equal(t, 1, client.waited)
 }

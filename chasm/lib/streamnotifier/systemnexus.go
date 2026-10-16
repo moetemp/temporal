@@ -31,6 +31,10 @@ type SystemNexusHandler interface {
 		context.Context,
 		*workflowservice.NotifyStreamRequest,
 	) (*workflowservice.NotifyStreamResponse, error)
+	WaitStreamCallback(
+		context.Context,
+		*workflowservice.WaitStreamCallbackRequest,
+	) (*workflowservice.WaitStreamCallbackResponse, error)
 }
 
 // localClient hands requests to the notifier's handler without a network hop.

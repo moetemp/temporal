@@ -1647,6 +1647,138 @@ func TestDebounce(t *testing.T) {
 	})
 }
 
+// attachIdle attaches a Nexus callback that gets progress only when it waits.
+func (nt *notifierTest) attachIdle(requestID string) error {
+	_, err := nt.handler.AttachStreamCallback(nt.ctx, &streamnotifierpb.AttachStreamCallbackRequest{
+		NamespaceId: "namespace-id",
+		BusinessId:  BusinessID(nt.ref),
+		FrontendRequest: &workflowservice.AttachStreamCallbackRequest{
+			Namespace: "ns",
+			StreamRef: nt.ref,
+			RequestId: requestID,
+			Callback:  &commonpb.Callback_Nexus{Url: "http://caller/" + requestID},
+			Idle:      true,
+		},
+	})
+	return err
+}
+
+// waitFor asks for one wake of an idle callback after the counter.
+func (nt *notifierTest) waitFor(requestID string, after int64) error {
+	_, err := nt.handler.WaitStreamCallback(nt.ctx, &streamnotifierpb.WaitStreamCallbackRequest{
+		NamespaceId: "namespace-id",
+		BusinessId:  BusinessID(nt.ref),
+		FrontendRequest: &workflowservice.WaitStreamCallbackRequest{
+			Namespace:    "ns",
+			StreamRef:    nt.ref,
+			RequestId:    requestID,
+			AfterCounter: after,
+		},
+	})
+	return err
+}
+
+// handedTo is the highest counter handed to a callback, waiting, in flight or delivered.
+func (nt *notifierTest) handedTo(requestID string) int64 {
+	var counter int64
+	nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+		cb := n.Callbacks[requestID].Get(ctx)
+		counter = max(
+			cb.GetPendingProgress().GetCounter(),
+			cb.GetProgressInFlightCounter(),
+			cb.GetDeliveredProgressCounter(),
+		)
+	})
+	return counter
+}
+
+func TestIdleCallbacks(t *testing.T) {
+	t.Run("ABusyStreamSendsAnIdleCallbackNothing", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdle("idle"))
+		require.NoError(t, nt.attach("eager"))
+		for counter := int64(1); counter <= 20; counter++ {
+			require.NoError(t, nt.notify(counter, false))
+		}
+		require.Zero(t, nt.handedTo("idle"), "a reader that keeps up gets no deliveries")
+		require.Equal(t, int64(20), nt.handedTo("eager"), "a callback that is not idle gets them")
+	})
+
+	t.Run("AnIdleCallbackAttachedLateGetsNoProgress", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.start()
+		require.NoError(t, nt.notify(5, false))
+		require.NoError(t, nt.attachIdle("idle"))
+		require.Zero(t, nt.handedTo("idle"))
+	})
+
+	t.Run("AWaitWakesOnceThenTheCallbackIsIdleAgain", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdle("idle"))
+		require.NoError(t, nt.notify(3, false))
+		require.NoError(t, nt.waitFor("idle", 3))
+		require.Zero(t, nt.handedTo("idle"), "the counter has not passed the wait")
+		require.NoError(t, nt.notify(4, false))
+		require.Equal(t, int64(4), nt.handedTo("idle"), "the next notification wakes it")
+		require.NoError(t, nt.notify(9, false))
+		require.Equal(t, int64(4), nt.handedTo("idle"), "the wake is used up")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Empty(t, n.GetWaits())
+		})
+	})
+
+	t.Run("AWaitBelowTheCounterIsAnsweredAtOnce", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.handler.config.DebounceWindow = dynamicconfig.GetDurationPropertyFnFilteredByNamespace(
+			time.Hour,
+		)
+		require.NoError(t, nt.attachIdle("idle"))
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(7, false))
+		require.NoError(t, nt.waitFor("idle", 2))
+		require.Equal(t, int64(7), nt.handedTo("idle"), "no debounce window holds it")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Empty(t, n.GetWaits())
+		})
+	})
+
+	t.Run("AWakeInsideAWindowGoesOutAtTheWindowsEnd", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.handler.config.DebounceWindow = dynamicconfig.GetDurationPropertyFnFilteredByNamespace(
+			time.Hour,
+		)
+		require.NoError(t, nt.attachIdle("idle"))
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.waitFor("idle", 1))
+		require.NoError(t, nt.notify(2, false))
+		require.Zero(t, nt.handedTo("idle"), "the window holds the notification")
+		nt.runDebounce()
+		require.Equal(t, int64(2), nt.handedTo("idle"))
+	})
+
+	t.Run("ACloseCompletesIdleCallbacks", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdle("idle"))
+		require.NoError(t, nt.notify(3, true))
+		require.Zero(t, nt.handedTo("idle"), "the close sends no progress to an idle callback")
+		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["idle"].GetStatus())
+		require.NoError(t, nt.waitFor("idle", 0), "a wait on a closed stream changes nothing")
+	})
+
+	t.Run("AWaitNamesAnAttachedCallback", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		var notFound *serviceerror.NotFound
+		require.ErrorAs(t, nt.waitFor("idle", 0), &notFound, "no notifier")
+		require.NoError(t, nt.attachIdle("idle"))
+		require.ErrorAs(t, nt.waitFor("other", 0), &notFound, "no such callback")
+		require.NoError(t, nt.attach("eager"))
+		require.NoError(t, nt.waitFor("eager", 0), "a callback that is not idle ignores a wait")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Empty(t, n.GetWaits())
+		})
+	})
+}
+
 // attachIdleReader attaches a Workflow reader's target that gets a wake only when it waits.
 func (nt *notifierTest) attachIdleReader(requestID, subscription string) error {
 	_, err := nt.handler.AttachStreamCallback(nt.ctx, &streamnotifierpb.AttachStreamCallbackRequest{
