@@ -227,6 +227,7 @@ func (s *redirectionInterceptorSuite) TestGlobalAPI() {
 		"AttachStreamCallback":   {},
 		"DetachStreamCallback":   {},
 		"NotifyStream":           {},
+		"WaitStreamCallback":     {},
 		"NotifyStreams":          {},
 		"DescribeStreamNotifier": {},
 		"PollStreamNotifier":     {},

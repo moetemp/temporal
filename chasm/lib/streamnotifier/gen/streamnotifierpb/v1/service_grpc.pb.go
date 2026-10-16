@@ -22,6 +22,7 @@ const _ = grpc.SupportPackageIsVersion7
 const (
 	StreamNotifierService_AttachStreamCallback_FullMethodName   = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/AttachStreamCallback"
 	StreamNotifierService_DetachStreamCallback_FullMethodName   = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/DetachStreamCallback"
+	StreamNotifierService_WaitStreamCallback_FullMethodName     = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/WaitStreamCallback"
 	StreamNotifierService_NotifyStream_FullMethodName           = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/NotifyStream"
 	StreamNotifierService_DescribeStreamNotifier_FullMethodName = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/DescribeStreamNotifier"
 	StreamNotifierService_PollStreamNotifier_FullMethodName     = "/temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService/PollStreamNotifier"
@@ -33,6 +34,7 @@ const (
 type StreamNotifierServiceClient interface {
 	AttachStreamCallback(ctx context.Context, in *AttachStreamCallbackRequest, opts ...grpc.CallOption) (*AttachStreamCallbackResponse, error)
 	DetachStreamCallback(ctx context.Context, in *DetachStreamCallbackRequest, opts ...grpc.CallOption) (*DetachStreamCallbackResponse, error)
+	WaitStreamCallback(ctx context.Context, in *WaitStreamCallbackRequest, opts ...grpc.CallOption) (*WaitStreamCallbackResponse, error)
 	NotifyStream(ctx context.Context, in *NotifyStreamRequest, opts ...grpc.CallOption) (*NotifyStreamResponse, error)
 	DescribeStreamNotifier(ctx context.Context, in *DescribeStreamNotifierRequest, opts ...grpc.CallOption) (*DescribeStreamNotifierResponse, error)
 	PollStreamNotifier(ctx context.Context, in *PollStreamNotifierRequest, opts ...grpc.CallOption) (*PollStreamNotifierResponse, error)
@@ -58,6 +60,15 @@ func (c *streamNotifierServiceClient) AttachStreamCallback(ctx context.Context, 
 func (c *streamNotifierServiceClient) DetachStreamCallback(ctx context.Context, in *DetachStreamCallbackRequest, opts ...grpc.CallOption) (*DetachStreamCallbackResponse, error) {
 	out := new(DetachStreamCallbackResponse)
 	err := c.cc.Invoke(ctx, StreamNotifierService_DetachStreamCallback_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *streamNotifierServiceClient) WaitStreamCallback(ctx context.Context, in *WaitStreamCallbackRequest, opts ...grpc.CallOption) (*WaitStreamCallbackResponse, error) {
+	out := new(WaitStreamCallbackResponse)
+	err := c.cc.Invoke(ctx, StreamNotifierService_WaitStreamCallback_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +108,7 @@ func (c *streamNotifierServiceClient) PollStreamNotifier(ctx context.Context, in
 type StreamNotifierServiceServer interface {
 	AttachStreamCallback(context.Context, *AttachStreamCallbackRequest) (*AttachStreamCallbackResponse, error)
 	DetachStreamCallback(context.Context, *DetachStreamCallbackRequest) (*DetachStreamCallbackResponse, error)
+	WaitStreamCallback(context.Context, *WaitStreamCallbackRequest) (*WaitStreamCallbackResponse, error)
 	NotifyStream(context.Context, *NotifyStreamRequest) (*NotifyStreamResponse, error)
 	DescribeStreamNotifier(context.Context, *DescribeStreamNotifierRequest) (*DescribeStreamNotifierResponse, error)
 	PollStreamNotifier(context.Context, *PollStreamNotifierRequest) (*PollStreamNotifierResponse, error)
@@ -112,6 +124,9 @@ func (UnimplementedStreamNotifierServiceServer) AttachStreamCallback(context.Con
 }
 func (UnimplementedStreamNotifierServiceServer) DetachStreamCallback(context.Context, *DetachStreamCallbackRequest) (*DetachStreamCallbackResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DetachStreamCallback not implemented")
+}
+func (UnimplementedStreamNotifierServiceServer) WaitStreamCallback(context.Context, *WaitStreamCallbackRequest) (*WaitStreamCallbackResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method WaitStreamCallback not implemented")
 }
 func (UnimplementedStreamNotifierServiceServer) NotifyStream(context.Context, *NotifyStreamRequest) (*NotifyStreamResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NotifyStream not implemented")
@@ -167,6 +182,24 @@ func _StreamNotifierService_DetachStreamCallback_Handler(srv interface{}, ctx co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(StreamNotifierServiceServer).DetachStreamCallback(ctx, req.(*DetachStreamCallbackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _StreamNotifierService_WaitStreamCallback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WaitStreamCallbackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StreamNotifierServiceServer).WaitStreamCallback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StreamNotifierService_WaitStreamCallback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StreamNotifierServiceServer).WaitStreamCallback(ctx, req.(*WaitStreamCallbackRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -239,6 +272,10 @@ var StreamNotifierService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DetachStreamCallback",
 			Handler:    _StreamNotifierService_DetachStreamCallback_Handler,
+		},
+		{
+			MethodName: "WaitStreamCallback",
+			Handler:    _StreamNotifierService_WaitStreamCallback_Handler,
 		},
 		{
 			MethodName: "NotifyStream",

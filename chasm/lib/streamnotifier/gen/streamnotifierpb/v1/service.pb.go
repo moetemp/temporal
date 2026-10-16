@@ -27,10 +27,11 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_service_proto protore
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"?temporal/server/chasm/lib/streamnotifier/proto/v1/service.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1aHtemporal/server/chasm/lib/streamnotifier/proto/v1/request_response.proto\x1a0temporal/server/api/common/v1/api_category.proto\x1a.temporal/server/api/routing/v1/extension.proto2\x9e\b\n" +
+	"?temporal/server/chasm/lib/streamnotifier/proto/v1/service.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1aHtemporal/server/chasm/lib/streamnotifier/proto/v1/request_response.proto\x1a0temporal/server/api/common/v1/api_category.proto\x1a.temporal/server/api/routing/v1/extension.proto2\xeb\t\n" +
 	"\x15StreamNotifierService\x12\xd0\x01\n" +
 	"\x14AttachStreamCallback\x12N.temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackRequest\x1aO.temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse\"\x17\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18\r\x1a\vbusiness_id\x12\xd0\x01\n" +
-	"\x14DetachStreamCallback\x12N.temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest\x1aO.temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse\"\x17\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18\r\x1a\vbusiness_id\x12\xb8\x01\n" +
+	"\x14DetachStreamCallback\x12N.temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest\x1aO.temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse\"\x17\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18\r\x1a\vbusiness_id\x12\xca\x01\n" +
+	"\x12WaitStreamCallback\x12L.temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackRequest\x1aM.temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackResponse\"\x17\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18\r\x1a\vbusiness_id\x12\xb8\x01\n" +
 	"\fNotifyStream\x12F.temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest\x1aG.temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse\"\x17\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18\r\x1a\vbusiness_id\x12\xd6\x01\n" +
 	"\x16DescribeStreamNotifier\x12P.temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest\x1aQ.temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse\"\x17\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18\r\x1a\vbusiness_id\x12\xca\x01\n" +
 	"\x12PollStreamNotifier\x12L.temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest\x1aM.temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse\"\x17\x8a\xb5\x18\x02\b\x02\xd2\xc3\x18\r\x1a\vbusiness_idBVZTgo.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpbb\x06proto3"
@@ -38,31 +39,35 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_service_proto_rawDe
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_service_proto_goTypes = []any{
 	(*AttachStreamCallbackRequest)(nil),    // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackRequest
 	(*DetachStreamCallbackRequest)(nil),    // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest
-	(*NotifyStreamRequest)(nil),            // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest
-	(*DescribeStreamNotifierRequest)(nil),  // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest
-	(*PollStreamNotifierRequest)(nil),      // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest
-	(*AttachStreamCallbackResponse)(nil),   // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse
-	(*DetachStreamCallbackResponse)(nil),   // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse
-	(*NotifyStreamResponse)(nil),           // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse
-	(*DescribeStreamNotifierResponse)(nil), // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse
-	(*PollStreamNotifierResponse)(nil),     // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse
+	(*WaitStreamCallbackRequest)(nil),      // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackRequest
+	(*NotifyStreamRequest)(nil),            // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest
+	(*DescribeStreamNotifierRequest)(nil),  // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest
+	(*PollStreamNotifierRequest)(nil),      // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest
+	(*AttachStreamCallbackResponse)(nil),   // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse
+	(*DetachStreamCallbackResponse)(nil),   // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse
+	(*WaitStreamCallbackResponse)(nil),     // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackResponse
+	(*NotifyStreamResponse)(nil),           // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse
+	(*DescribeStreamNotifierResponse)(nil), // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse
+	(*PollStreamNotifierResponse)(nil),     // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse
 }
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_service_proto_depIdxs = []int32{
-	0, // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.AttachStreamCallback:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackRequest
-	1, // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DetachStreamCallback:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest
-	2, // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.NotifyStream:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest
-	3, // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DescribeStreamNotifier:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest
-	4, // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.PollStreamNotifier:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest
-	5, // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.AttachStreamCallback:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse
-	6, // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DetachStreamCallback:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse
-	7, // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.NotifyStream:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse
-	8, // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DescribeStreamNotifier:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse
-	9, // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.PollStreamNotifier:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse
-	5, // [5:10] is the sub-list for method output_type
-	0, // [0:5] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0,  // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.AttachStreamCallback:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackRequest
+	1,  // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DetachStreamCallback:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackRequest
+	2,  // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.WaitStreamCallback:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackRequest
+	3,  // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.NotifyStream:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamRequest
+	4,  // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DescribeStreamNotifier:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierRequest
+	5,  // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.PollStreamNotifier:input_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierRequest
+	6,  // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.AttachStreamCallback:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.AttachStreamCallbackResponse
+	7,  // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DetachStreamCallback:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DetachStreamCallbackResponse
+	8,  // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.WaitStreamCallback:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.WaitStreamCallbackResponse
+	9,  // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.NotifyStream:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifyStreamResponse
+	10, // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.DescribeStreamNotifier:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.DescribeStreamNotifierResponse
+	11, // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.StreamNotifierService.PollStreamNotifier:output_type -> temporal.server.chasm.lib.streamnotifier.proto.v1.PollStreamNotifierResponse
+	6,  // [6:12] is the sub-list for method output_type
+	0,  // [0:6] is the sub-list for method input_type
+	0,  // [0:0] is the sub-list for extension type_name
+	0,  // [0:0] is the sub-list for extension extendee
+	0,  // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_service_proto_init() }
