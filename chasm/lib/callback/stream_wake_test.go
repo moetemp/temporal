@@ -68,6 +68,11 @@ func TestStreamWakeProgressDelivery(t *testing.T) {
 			err:    serviceerror.NewUnavailable("busy"),
 			result: progressRetry,
 		},
+		{
+			name:   "AFailoverRetries",
+			err:    serviceerror.NewNamespaceNotActive("ns", "standby", "active"),
+			result: progressRetry,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []*historyservice.RecordStreamWakeRequest
@@ -148,6 +153,26 @@ func TestStreamWakeCompletion(t *testing.T) {
 			wake:   closeWake,
 			err:    serviceerror.NewInvalidArgument("bad"),
 			result: invocationResultFail{},
+			calls:  1,
+		},
+		{
+			name:   "FailedPreconditionFails",
+			wake:   closeWake,
+			err:    serviceerror.NewFailedPrecondition("no CHASM Workflow"),
+			result: invocationResultFail{},
+			calls:  1,
+		},
+		{
+			name:   "AFailoverRetries",
+			wake:   closeWake,
+			err:    serviceerror.NewNamespaceNotActive("ns", "standby", "active"),
+			result: invocationResultRetry{},
+			calls:  1,
+		},
+		{
+			name:   "ADetachDuringAFailoverRetries",
+			err:    serviceerror.NewNamespaceNotActive("ns", "standby", "active"),
+			result: invocationResultRetry{},
 			calls:  1,
 		},
 	} {

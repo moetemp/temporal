@@ -117,8 +117,13 @@ func (c invocableStreamWake) Invoke(
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return invocationResultOK{}
 	}
-	if common.IsRetryableRPCError(err) {
-		return invocationResultRetry{err: err}
+	// Only an answer a retry won't change fails the callback. Others, such as NamespaceNotActive
+	// during a failover, come from a state that passes, and a failed callback gets no wake again.
+	if _, ok := errors.AsType[*serviceerror.InvalidArgument](err); ok {
+		return invocationResultFail{err: err}
 	}
-	return invocationResultFail{err: err}
+	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok {
+		return invocationResultFail{err: err}
+	}
+	return invocationResultRetry{err: err}
 }
