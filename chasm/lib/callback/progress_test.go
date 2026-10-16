@@ -57,6 +57,7 @@ func newProgressTest(t *testing.T, cb *Callback) *progressTest {
 			RetryPolicy: func() backoff.RetryPolicy {
 				return backoff.NewExponentialRetryPolicy(time.Second)
 			},
+			ProgressBehindInterval: func(string) time.Duration { return time.Second },
 		},
 		NamespaceRegistry: nsRegistry,
 		MetricsHandler:    metrics.NoopMetricsHandler,
@@ -278,9 +279,10 @@ func TestWhichVariantsTakeProgress(t *testing.T) {
 		Variant: &callbackspb.Callback_NexusHandler_{
 			NexusHandler: &callbackspb.Callback_NexusHandler{TaskQueueName: "tq"},
 		},
-	}), "a worker-hosted handler would need OnProgress, which is not delivered yet")
+	}), "a worker-hosted handler takes progress only when it names an operation for it")
 	for _, cb := range []*callbackspb.Callback{
 		newNexusCallback("http://localhost/callback", nil).GetCallback(),
+		newNexusHandlerProgressCallback("OnProgress").GetCallback(),
 		{Variant: &callbackspb.Callback_StreamWake_{StreamWake: &callbackspb.Callback_StreamWake{}}},
 	} {
 		require.NotNil(t, variantProgressDelivery(cb))

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -158,6 +159,7 @@ func (c *Callback) loadInvocationArgs(
 			runID:               ctx.ExecutionKey().RunID,
 			requestID:           c.RequestId,
 			attempt:             c.Attempt,
+			receiverState:       slices.Clone(c.ReceiverState),
 		}, nil
 	}
 
@@ -266,6 +268,8 @@ func (c *Callback) ToAPICallback() (*commonpb.Callback, error) {
 				Service:       variant.NexusHandler.GetService(),
 				Operation:     variant.NexusHandler.GetOperation(),
 				SourceContext: common.CloneProto(variant.NexusHandler.GetSourceContext()),
+
+				ProgressOperation: variant.NexusHandler.GetProgressOperation(),
 			},
 		}
 		return res, nil
@@ -368,6 +372,8 @@ func FromAPICallback(cb *commonpb.Callback) (*callbackspb.Callback, error) {
 				Service:       variant.NexusHandler.GetService(),
 				Operation:     variant.NexusHandler.GetOperation(),
 				SourceContext: common.CloneProto(variant.NexusHandler.GetSourceContext()),
+
+				ProgressOperation: variant.NexusHandler.GetProgressOperation(),
 			},
 		}
 		return res, nil

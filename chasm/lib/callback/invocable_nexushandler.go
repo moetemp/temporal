@@ -49,6 +49,9 @@ type invocableNexusHandler struct {
 	// the handler's perspective.
 	requestID string
 	attempt   int32
+
+	// receiverState is what the handler returned with its last accepted progress.
+	receiverState []byte
 }
 
 // buildOnCompleteRequest builds the input delivered to the worker's completion handler from the source
@@ -56,6 +59,7 @@ type invocableNexusHandler struct {
 func (n invocableNexusHandler) buildOnCompleteRequest() (*notificationservice.OnCompleteRequest, error) {
 	onCompReq := &notificationservice.OnCompleteRequest{
 		SourceContext: n.callback.GetSourceContext(),
+		ReceiverState: n.receiverState,
 	}
 
 	if n.completion.Error != nil {
