@@ -141,7 +141,7 @@ type attachInput struct {
 	maxCallbackBytes   int
 	idleTimeout        time.Duration
 	ownerCheckInterval time.Duration
-	// Set for a Nexus callback that gets progress only when it waits.
+	// Set for a callback that gets progress only when it waits.
 	idle bool
 }
 
@@ -273,11 +273,14 @@ func (n *StreamNotifier) armRecheck(ctx chasm.MutableContext, gap time.Duration)
 }
 
 // recheck asks every waiting Workflow reader to read again, since no notification came for the
-// gap, and arms the next recheck after twice the gap, up to maxGap.
+// gap, and arms the next recheck after twice the gap, up to maxGap. It wakes idle readers too and
+// uses up their waits, so a wait that never reached the notifier delays a reader by at most the
+// gap. The reader asks for its next wake after it reads.
 func (n *StreamNotifier) recheck(ctx chasm.MutableContext, maxGap time.Duration) error {
 	progress := n.progress()
 	progress.Recheck = true
 	for _, cb := range n.waitingWorkflowTargets(ctx) {
+		delete(n.Waits, cb.GetRequestId())
 		if err := cb.DeliverProgress(ctx, progress); err != nil {
 			return err
 		}
@@ -413,6 +416,7 @@ func (n *StreamNotifier) cancel(ctx chasm.MutableContext, requestID string) erro
 	}
 	n.CanceledRequestIds = append(n.CanceledRequestIds, requestID)
 	slices.Sort(n.CanceledRequestIds)
+	delete(n.Waits, requestID)
 	return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
 }
 
@@ -479,7 +483,6 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 	return nil
 }
 
-// deliverProgress hands the latest notification to every callback.
 // deliverProgress hands the latest notification to every callback that takes it: a callback
 // that is not idle, or an idle one whose wait the counter passed. That wait is then used up.
 func (n *StreamNotifier) deliverProgress(ctx chasm.MutableContext) error {
@@ -518,8 +521,10 @@ func (n *StreamNotifier) wait(
 	if !ok {
 		return serviceerror.NewNotFoundf("no callback is attached with request ID %q", requestID)
 	}
-	// A closed stream completes the callback, which is the last thing it gets.
-	if n.Closed || !n.isIdle(requestID) {
+	// A closed stream completes the callback, which is the last thing it gets. A callback that
+	// completes for another reason, such as a detach, takes no more progress.
+	if n.Closed || !n.isIdle(requestID) ||
+		field.Get(ctx).Status != callbackspb.CALLBACK_STATUS_STANDBY {
 		return nil
 	}
 	n.touch(ctx, idleTimeout)
