@@ -29,6 +29,16 @@ message DetachStreamCallbackResponse {
   temporal.api.workflowservice.v1.DetachStreamCallbackResponse frontend_response = 1;
 }
 
+message WaitStreamCallbackRequest {
+  string namespace_id = 1;
+  string business_id = 2;
+  temporal.api.workflowservice.v1.WaitStreamCallbackRequest frontend_request = 3;
+}
+
+message WaitStreamCallbackResponse {
+  temporal.api.workflowservice.v1.WaitStreamCallbackResponse frontend_response = 1;
+}
+
 message NotifyStreamRequest {
   string namespace_id = 1;
   string business_id = 2;
