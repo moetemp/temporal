@@ -133,6 +133,7 @@ func (h *handler) AttachStreamCallback(
 				workflowTarget:     r.GetWorkflowTarget(),
 				recheckInitial:     h.config.RecheckInitial(ns),
 				operationToken:     r.GetOperationToken(),
+				idle:               r.GetIdle(),
 				startTime:          r.GetStartTime(),
 				maxCallbacks:       h.config.MaxCallbacks(ns),
 				maxCallbackBytes:   h.config.MaxCallbackBytes(ns),
@@ -262,6 +263,38 @@ func ignoreNotFound(err error) error {
 		return nil
 	}
 	return err
+}
+
+func (h *handler) WaitStreamCallback(
+	ctx context.Context,
+	req *streamnotifierpb.WaitStreamCallbackRequest,
+) (_ *streamnotifierpb.WaitStreamCallbackResponse, retErr error) {
+	defer log.CapturePanic(h.logger, &retErr)
+	fe := req.GetFrontendRequest()
+	idleTimeout := h.config.IdleTimeout(fe.GetNamespace())
+	ref := chasm.NewComponentRef[*StreamNotifier](chasm.ExecutionKey{
+		NamespaceID: req.GetNamespaceId(),
+		BusinessID:  req.GetBusinessId(),
+	})
+	// A wait starts no notifier, since it names a callback that an attach put there.
+	_, _, err := chasm.UpdateComponent(
+		ctx,
+		ref,
+		func(
+			n *StreamNotifier,
+			mctx chasm.MutableContext,
+			r *workflowservice.WaitStreamCallbackRequest,
+		) (struct{}, error) {
+			return struct{}{}, n.wait(mctx, r.GetRequestId(), r.GetAfterCounter(), idleTimeout)
+		},
+		fe,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &streamnotifierpb.WaitStreamCallbackResponse{
+		FrontendResponse: &workflowservice.WaitStreamCallbackResponse{},
+	}, nil
 }
 
 func (h *handler) DetachStreamCallback(

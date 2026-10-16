@@ -19,6 +19,11 @@ service StreamNotifierService {
     option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;
   }
 
+  rpc WaitStreamCallback(WaitStreamCallbackRequest) returns (WaitStreamCallbackResponse) {
+    option (temporal.server.api.routing.v1.routing).business_id = "business_id";
+    option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;
+  }
+
   rpc NotifyStream(NotifyStreamRequest) returns (NotifyStreamResponse) {
     option (temporal.server.api.routing.v1.routing).business_id = "business_id";
     option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;

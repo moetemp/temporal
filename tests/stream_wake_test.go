@@ -520,6 +520,99 @@ func (s *StreamWakeSuite) TestATakenCloseFreesTheReadersPlace() {
 	s.NoError(r.attach("jetty/run/2", "sub-2"))
 }
 
+func (r *notifierReader) attachIdle(requestID, subscription string) error {
+	_, err := r.env.FrontendClient().AttachStreamCallback(
+		r.s.Context(),
+		&workflowservice.AttachStreamCallbackRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+			RequestId: requestID,
+			WorkflowTarget: &streampb.WorkflowWakeTarget{
+				WorkflowId:     r.run.GetID(),
+				RunId:          r.run.GetRunID(),
+				SubscriptionId: subscription,
+			},
+			Idle: true,
+		},
+	)
+	return err
+}
+
+func (r *notifierReader) waitFor(requestID string, after int64) {
+	_, err := r.env.FrontendClient().WaitStreamCallback(
+		r.s.Context(),
+		&workflowservice.WaitStreamCallbackRequest{
+			Namespace:    r.env.Namespace().String(),
+			StreamRef:    r.stream,
+			RequestId:    requestID,
+			AfterCounter: after,
+		},
+	)
+	r.s.NoError(err)
+}
+
+// scheduledTasks counts the reader's Workflow Task scheduled events.
+func (r *notifierReader) scheduledTasks() int {
+	var scheduled int
+	for _, event := range r.history() {
+		if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
+			scheduled++
+		}
+	}
+	return scheduled
+}
+
+// expectNoTask checks for a while that the notifier schedules no task for the reader.
+func (r *notifierReader) expectNoTask(why string) {
+	before := r.scheduledTasks()
+	for range 10 {
+		time.Sleep(100 * time.Millisecond)
+		r.s.Equal(before, r.scheduledTasks(), why)
+	}
+}
+
+func (s *StreamWakeSuite) TestAnIdleReaderWakesOncePerWait() {
+	r := s.newNotifierReader()
+	s.NoError(r.attachIdle("jetty/run/1", "sub-1"))
+	for counter := int64(1); counter <= 30; counter++ {
+		r.notify(counter, nil)
+	}
+	r.expectNoTask("a reader that reads sends no wait, so a busy stream wakes it never")
+
+	r.waitFor("jetty/run/1", 10)
+	task := r.poll()
+	wakes := lastScheduledWakes(task)
+	s.Len(wakes, 1, "a counter past the wait wakes the reader at once")
+	s.Equal(int64(30), wakes[0].GetCounter())
+	r.respond(task)
+
+	r.waitFor("jetty/run/1", 30)
+	r.expectNoTask("the counter has not passed the wait")
+	r.notify(31, nil)
+	var woke []*streampb.StreamWake
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		woke = append(woke, lastScheduledWakes(task)...)
+		s.NotEmpty(woke)
+	}, 10*time.Second, 50*time.Millisecond)
+	s.Equal(int64(31), woke[len(woke)-1].GetCounter())
+
+	for counter := int64(32); counter <= 40; counter++ {
+		r.notify(counter, nil)
+	}
+	r.expectNoTask("the wake is used up")
+
+	r.notify(41, testcore.MustToPayload(s.T(), "summary"))
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes := lastScheduledWakes(task)
+		s.NotEmpty(wakes)
+		s.True(wakes[len(wakes)-1].GetClosed(), "the close reaches an idle reader")
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
 // takeClose polls and answers Workflow Tasks until one carries the close wake.
 func (r *notifierReader) takeClose() {
 	r.s.Await(func(s *StreamWakeSuite) {

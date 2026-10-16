@@ -20,6 +20,7 @@ import (
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
 	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/log/tag"
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexusrpc"
 	"google.golang.org/protobuf/proto"
@@ -141,6 +142,8 @@ type attachInput struct {
 	maxCloseBytes      int
 	idleTimeout        time.Duration
 	ownerCheckInterval time.Duration
+	// Set for a callback that gets progress only when it waits.
+	idle bool
 }
 
 // attach adds a callback, or changes nothing when one with the request ID is attached. On a
@@ -202,7 +205,10 @@ func (n *StreamNotifier) attach(ctx chasm.MutableContext, in attachInput) error 
 	if n.Closed {
 		return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
 	}
-	if n.Counter > 0 {
+	if in.idle {
+		n.IdleRequestIds = append(n.IdleRequestIds, in.requestID)
+		slices.Sort(n.IdleRequestIds)
+	} else if n.Counter > 0 {
 		// A callback attached after notifications starts from the latest one.
 		if err := cb.DeliverProgress(ctx, n.progress()); err != nil {
 			return err
@@ -271,11 +277,14 @@ func (n *StreamNotifier) armRecheck(ctx chasm.MutableContext, gap time.Duration)
 }
 
 // recheck asks every waiting Workflow reader to read again, since no notification came for the
-// gap, and arms the next recheck after twice the gap, up to maxGap.
+// gap, and arms the next recheck after twice the gap, up to maxGap. It wakes idle readers too and
+// uses up their waits, so a wait that never reached the notifier delays a reader by at most the
+// gap. The reader asks for its next wake after it reads.
 func (n *StreamNotifier) recheck(ctx chasm.MutableContext, maxGap time.Duration) error {
 	progress := n.progress()
 	progress.Recheck = true
 	for _, cb := range n.waitingWorkflowTargets(ctx) {
+		delete(n.Waits, cb.GetRequestId())
 		if err := cb.DeliverProgress(ctx, progress); err != nil {
 			return err
 		}
@@ -389,6 +398,11 @@ func (n *StreamNotifier) failIdleCallbacks(ctx chasm.MutableContext) (bool, erro
 func (n *StreamNotifier) detach(requestID string) {
 	delete(n.Callbacks, requestID)
 	delete(n.CallerStarts, requestID)
+	delete(n.Waits, requestID)
+	n.IdleRequestIds = slices.DeleteFunc(
+		n.IdleRequestIds,
+		func(id string) bool { return id == requestID },
+	)
 	n.IdleFailedRequestIds = slices.DeleteFunc(
 		n.IdleFailedRequestIds,
 		func(id string) bool { return id == requestID },
@@ -412,6 +426,7 @@ func (n *StreamNotifier) cancel(ctx chasm.MutableContext, requestID string) erro
 	}
 	n.CanceledRequestIds = append(n.CanceledRequestIds, requestID)
 	slices.Sort(n.CanceledRequestIds)
+	delete(n.Waits, requestID)
 	return callback.TransitionScheduled.Apply(cb, ctx, callback.EventScheduled{})
 }
 
@@ -478,14 +493,69 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 	return nil
 }
 
-// deliverProgress hands the latest notification to every callback.
+// deliverProgress hands the latest notification to every callback that takes it: a callback
+// that is not idle, or an idle one whose wait the counter passed. That wait is then used up.
 func (n *StreamNotifier) deliverProgress(ctx chasm.MutableContext) error {
 	progress := n.progress()
-	for _, field := range n.Callbacks {
+	for requestID, field := range n.Callbacks {
+		if n.isIdle(requestID) {
+			after, waiting := n.Waits[requestID]
+			if !waiting || n.Counter <= after {
+				continue
+			}
+			delete(n.Waits, requestID)
+		}
 		if err := field.Get(ctx).DeliverProgress(ctx, progress); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// isIdle reports whether the callback was attached idle.
+func (n *StreamNotifier) isIdle(requestID string) bool {
+	_, idle := slices.BinarySearch(n.IdleRequestIds, requestID)
+	return idle
+}
+
+// wait asks for one delivery to an idle callback once the counter passes after. A counter that
+// passed already delivers at once, outside any debounce window. A newer wait replaces an older
+// one. A callback that is not idle gets every delivery, so its wait changes nothing.
+func (n *StreamNotifier) wait(
+	ctx chasm.MutableContext,
+	requestID string,
+	after int64,
+	idleTimeout time.Duration,
+) error {
+	field, ok := n.Callbacks[requestID]
+	if !ok {
+		return serviceerror.NewNotFoundf("no callback is attached with request ID %q", requestID)
+	}
+	// A closed stream completes the callback, which is the last thing it gets. A callback that
+	// completes for another reason, such as a detach, takes no more progress.
+	if n.Closed || !n.isIdle(requestID) ||
+		field.Get(ctx).Status != callbackspb.CALLBACK_STATUS_STANDBY {
+		return nil
+	}
+	n.touch(ctx, idleTimeout)
+	if n.Counter > after {
+		cb := field.Get(ctx)
+		if cb.GetDeliveredProgressCounter() >= n.Counter {
+			// The reader read below a counter it was woken for, so the store lost records or a
+			// writer sent a counter past the store's head. Rechecks alone wake this reader then.
+			ctx.MetricsHandler().Counter(WaitBelowDelivered.Name()).Record(1)
+			ctx.Logger().Warn("A stream reader waits below a counter it already got",
+				tag.NewStringTag("request-id", requestID),
+				tag.NewInt64("after-counter", after),
+				tag.NewInt64("counter", n.Counter))
+		}
+		delete(n.Waits, requestID)
+		return cb.DeliverProgress(ctx, n.progress())
+	}
+	if n.Waits == nil {
+		n.Waits = map[string]int64{}
+	}
+	n.Waits[requestID] = after
 	return nil
 }
 
