@@ -1545,3 +1545,168 @@ func TestDebounce(t *testing.T) {
 		})
 	})
 }
+
+// attachIdleReader attaches a Workflow reader's target that gets a wake only when it waits.
+func (nt *notifierTest) attachIdleReader(requestID, subscription string) error {
+	_, err := nt.handler.AttachStreamCallback(nt.ctx, &streamnotifierpb.AttachStreamCallbackRequest{
+		NamespaceId: "namespace-id",
+		BusinessId:  BusinessID(nt.ref),
+		FrontendRequest: &workflowservice.AttachStreamCallbackRequest{
+			Namespace: "ns",
+			StreamRef: nt.ref,
+			RequestId: requestID,
+			WorkflowTarget: &streampb.WorkflowWakeTarget{
+				WorkflowId:     "reader",
+				RunId:          "reader-run",
+				SubscriptionId: subscription,
+			},
+			Idle: true,
+		},
+	})
+	return err
+}
+
+// waitForReader asks for one wake of an idle reader after the counter.
+func (nt *notifierTest) waitForReader(requestID string, after int64) error {
+	_, err := nt.handler.WaitStreamCallback(nt.ctx, &streamnotifierpb.WaitStreamCallbackRequest{
+		NamespaceId: "namespace-id",
+		BusinessId:  BusinessID(nt.ref),
+		FrontendRequest: &workflowservice.WaitStreamCallbackRequest{
+			Namespace:    "ns",
+			StreamRef:    nt.ref,
+			RequestId:    requestID,
+			AfterCounter: after,
+		},
+	})
+	return err
+}
+
+// wokeTo is the highest counter handed to a reader, waiting, in flight or delivered.
+func (nt *notifierTest) wokeTo(requestID string) int64 {
+	cb := nt.callbacks()[requestID]
+	return max(
+		cb.GetPendingProgress().GetCounter(),
+		cb.GetProgressInFlightCounter(),
+		cb.GetDeliveredProgressCounter(),
+	)
+}
+
+func TestIdleWorkflowReaders(t *testing.T) {
+	t.Run("ABusyStreamWakesAnIdleReaderNever", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub-idle"))
+		require.NoError(t, nt.attachWorkflow("standing", "sub-standing"))
+		for counter := int64(1); counter <= 20; counter++ {
+			require.NoError(t, nt.notify(counter, false))
+		}
+		require.Zero(t, nt.wokeTo("idle"), "a reader that keeps up gets no wake")
+		require.Equal(t, int64(20), nt.wokeTo("standing"), "a reader that is not idle gets them")
+	})
+
+	t.Run("AnIdleReaderAttachedLateGetsNoWake", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.start()
+		require.NoError(t, nt.notify(5, false))
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.Zero(t, nt.wokeTo("idle"))
+	})
+
+	t.Run("AWaitWakesOnceThenTheReaderIsIdleAgain", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.notify(3, false))
+		require.NoError(t, nt.waitForReader("idle", 3))
+		require.Zero(t, nt.wokeTo("idle"), "the counter has not passed the wait")
+		require.NoError(t, nt.notify(4, false))
+		require.Equal(t, int64(4), nt.wokeTo("idle"), "the next notification wakes it")
+		require.NoError(t, nt.notify(9, false))
+		require.Equal(t, int64(4), nt.wokeTo("idle"), "the wake is used up")
+		require.NoError(t, nt.waitForReader("idle", 4))
+		require.Equal(t, int64(9), nt.wokeTo("idle"), "a passed counter wakes it at once")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Empty(t, n.GetWaits())
+		})
+	})
+
+	t.Run("ANewerWaitReplacesAnOlderOne", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.waitForReader("idle", 2))
+		require.NoError(t, nt.waitForReader("idle", 5))
+		require.NoError(t, nt.notify(3, false))
+		require.Zero(t, nt.wokeTo("idle"))
+		require.NoError(t, nt.notify(6, false))
+		require.Equal(t, int64(6), nt.wokeTo("idle"))
+	})
+
+	t.Run("AWakeInsideAWindowGoesOutAtTheWindowsEnd", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		nt.handler.config.DebounceWindow = dynamicconfig.GetDurationPropertyFnFilteredByNamespace(
+			time.Hour,
+		)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.waitForReader("idle", 1))
+		require.NoError(t, nt.notify(2, false))
+		require.Zero(t, nt.wokeTo("idle"), "the window holds the notification")
+		nt.runDebounce()
+		require.Equal(t, int64(2), nt.wokeTo("idle"))
+	})
+
+	t.Run("ACloseCompletesAnIdleReader", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.notify(3, true))
+		require.Equal(t, callbackspb.CALLBACK_STATUS_SCHEDULED, nt.callbacks()["idle"].GetStatus())
+		require.NoError(t, nt.waitForReader("idle", 0), "a wait on a closed stream changes nothing")
+	})
+
+	t.Run("ARecheckWakesAnIdleReaderAndUsesUpItsWait", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.waitForReader("idle", 0))
+		nt.runRecheck()
+		cb := nt.callbacks()["idle"]
+		require.True(t, cb.GetPendingProgress().GetRecheck(), "a lost wait costs at most the gap")
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Empty(t, n.GetWaits())
+			require.Equal(t, 2*time.Minute, n.GetRecheckGap().AsDuration(), "the gap doubles")
+		})
+	})
+
+	t.Run("ADetachDropsTheWait", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.waitForReader("idle", 1))
+		_, err := nt.handler.DetachStreamCallback(
+			nt.ctx,
+			&streamnotifierpb.DetachStreamCallbackRequest{
+				NamespaceId: "namespace-id",
+				BusinessId:  BusinessID(nt.ref),
+				FrontendRequest: &workflowservice.DetachStreamCallbackRequest{
+					Namespace: "ns", StreamRef: nt.ref, RequestId: "idle",
+				},
+			},
+		)
+		require.NoError(t, err)
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Empty(t, n.GetWaits())
+		})
+		require.NoError(t, nt.waitForReader("idle", 1), "a detached reader's wait changes nothing")
+		require.NoError(t, nt.notify(2, false))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Empty(t, n.GetWaits())
+		})
+	})
+
+	t.Run("AnAttachAgainKeepsTheReaderIdle", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		require.NoError(t, nt.attachIdleReader("idle", "sub"), "a new process attaches again")
+		require.NoError(t, nt.notify(2, false))
+		require.Zero(t, nt.wokeTo("idle"))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, []string{"idle"}, n.GetIdleRequestIds())
+		})
+	})
+}

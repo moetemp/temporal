@@ -1945,3 +1945,18 @@ func (c *retryableClient) ValidateWorkerDeploymentVersionComputeConfig(
 	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
 	return resp, err
 }
+
+func (c *retryableClient) WaitStreamCallback(
+	ctx context.Context,
+	request *workflowservice.WaitStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.WaitStreamCallbackResponse, error) {
+	var resp *workflowservice.WaitStreamCallbackResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.WaitStreamCallback(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}

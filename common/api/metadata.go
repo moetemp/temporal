@@ -99,6 +99,7 @@ var (
 		"AttachStreamCallback":                         {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 		"DetachStreamCallback":                         {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 		"NotifyStream":                                 {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
+		"WaitStreamCallback":                           {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 		"NotifyStreams":                                {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 		"DescribeStreamNotifier":                       {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingNone},
 		"PollStreamNotifier":                           {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingAlways},
