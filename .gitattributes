@@ -1,2 +1,7 @@
 *.png filter=lfs diff=lfs merge=lfs -text
 *.jpg filter=lfs diff=lfs merge=lfs -text
+# GitHub folds generated files in diffs.
+*.pb.go linguist-generated=true
+*_gen.go linguist-generated=true
+*_mock.go linguist-generated=true
+*.mock.go linguist-generated=true
