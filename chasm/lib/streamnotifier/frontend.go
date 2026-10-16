@@ -218,11 +218,6 @@ func (h *frontendHandler) AttachStreamCallback(
 			"exactly one of callback and workflow_target is required",
 		)
 	}
-	if req.GetIdle() && req.GetWorkflowTarget() != nil {
-		return nil, serviceerror.NewInvalidArgument(
-			"idle is only allowed with a Nexus callback",
-		)
-	}
 	if target := req.GetWorkflowTarget(); target != nil {
 		if err := h.validateWorkflowTarget(target); err != nil {
 			return nil, err

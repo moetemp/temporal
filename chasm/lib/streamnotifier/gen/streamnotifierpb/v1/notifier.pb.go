@@ -81,7 +81,7 @@ type NotifierState struct {
 	DebounceUntil *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=debounce_until,json=debounceUntil,proto3" json:"debounce_until,omitempty"`
 	// Set when a notification came inside the open window and was not delivered yet.
 	DebounceHeld bool `protobuf:"varint,21,opt,name=debounce_held,json=debounceHeld,proto3" json:"debounce_held,omitempty"`
-	// The Nexus callbacks attached idle, sorted. An idle callback gets progress only when it waits.
+	// The callbacks attached idle, sorted. An idle callback gets progress only when it waits.
 	IdleRequestIds []string `protobuf:"bytes,22,rep,name=idle_request_ids,json=idleRequestIds,proto3" json:"idle_request_ids,omitempty"`
 	// The idle callbacks that wait for one wake, by request ID, with the counter the notifier's
 	// counter must pass. A callback leaves this map when the wake goes out.
