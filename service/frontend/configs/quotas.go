@@ -184,6 +184,10 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStream":  3,
 		"/temporal.api.workflowservice.v1.WorkflowService/NotifyStreams": 3,
 
+		// P3: A reader asks for one wake after each read that finds nothing. A late wake costs a
+		// reread, not a record.
+		"/temporal.api.workflowservice.v1.WorkflowService/WaitStreamCallback": 3,
+
 		// P3: Progress APIs for reporting cancellations and failures.
 		// They are relatively low priority as the tasks need to be retried anyway.
 		"/temporal.api.workflowservice.v1.WorkflowService/RespondActivityTaskCanceled":     3,

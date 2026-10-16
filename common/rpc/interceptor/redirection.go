@@ -171,6 +171,7 @@ var (
 		"AttachStreamCallback":   func() any { return &workflowservice.AttachStreamCallbackResponse{} },
 		"DetachStreamCallback":   func() any { return &workflowservice.DetachStreamCallbackResponse{} },
 		"NotifyStream":           func() any { return &workflowservice.NotifyStreamResponse{} },
+		"WaitStreamCallback":     func() any { return &workflowservice.WaitStreamCallbackResponse{} },
 		"NotifyStreams":          func() any { return &workflowservice.NotifyStreamsResponse{} },
 		"DescribeStreamNotifier": func() any { return &workflowservice.DescribeStreamNotifierResponse{} },
 		"PollStreamNotifier":     func() any { return &workflowservice.PollStreamNotifierResponse{} },
