@@ -21,20 +21,20 @@ var MaxCallbacks = dynamicconfig.NewNamespaceIntSetting(
 this many callbacks or when an attach would take its callbacks past
 streamnotifier.maxCallbackBytes. A full notifier makes room for an attach by dropping the oldest
 callbacks that already completed, and refuses the attach if that is not enough. The default matches
-callback.maxPerExecution. A callback that carries a Temporal callback token takes about 1.2 KB, so
-2,000 of them stay under the byte limit.`,
+callback.maxPerExecution. With the default byte limit, the byte limit is reached first, at about
+1,000 callbacks that carry a Temporal callback token.`,
 )
 
 var MaxCallbackBytes = dynamicconfig.NewNamespaceIntSetting(
 	"streamnotifier.maxCallbackBytes",
-	4*1024*1024,
-	`The maximum summed size, in bytes, of the callbacks one stream notifier holds. It works next to
-streamnotifier.maxCallbacks: an attach that would take the callbacks past it is refused the same
-way, after the notifier drops the oldest callbacks that already completed. Callers with callback
-headers near frontend.callbackHeaderMaxLength reach this limit before the callback count limit. The
-size of a callback grows after its attach, for example with the progress it delivers, so keep this
-well under limit.mutableStateSize.error, which ends the notifier and fails every caller when the
-notifier passes it.`,
+	6*1024*1024,
+	`The maximum size, in bytes, of what one stream notifier holds for its callbacks. It works next
+to streamnotifier.maxCallbacks: an attach that would take the notifier past it is refused the same
+way, after the notifier drops the oldest callbacks that already completed. Each callback counts its
+state plus the largest progress a notification can give it, and the notifier also counts the
+largest close outcome, limit.blobSize.error. Both arrive after the attach, so the attach counts
+them in advance. Keep this under limit.mutableStateSize.error, which ends the notifier and fails
+every caller when the notifier passes it.`,
 )
 
 var IdleTimeout = dynamicconfig.NewNamespaceDurationSetting(
@@ -75,9 +75,11 @@ notification sets it back. Zero turns rechecks off.`,
 
 var RecheckMax = dynamicconfig.NewNamespaceDurationSetting(
 	"streamnotifier.recheckMax",
-	time.Hour,
-	`The longest wait between two rechecks of a stream notifier's Workflow readers. An idle reader
-gets about 30 rechecks a day with the defaults, each one Workflow Task and one read.`,
+	5*time.Minute,
+	`The longest wait between two rechecks of a stream notifier's Workflow readers. It bounds how
+late a reader wakes when a notification is lost or never sent, such as in a deployment with
+notifications off. An idle reader gets about 290 rechecks a day with the defaults, each one Workflow
+Task and one read.`,
 )
 
 var OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(

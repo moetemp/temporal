@@ -519,3 +519,48 @@ func (s *StreamWakeSuite) TestATakenCloseFreesTheReadersPlace() {
 	r.stream.Topic = "another"
 	s.NoError(r.attach("jetty/run/2", "sub-2"))
 }
+
+// takeClose polls and answers Workflow Tasks until one carries the close wake.
+func (r *notifierReader) takeClose() {
+	r.s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes := lastScheduledWakes(task)
+		s.NotEmpty(wakes)
+		s.True(wakes[len(wakes)-1].GetClosed())
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestALateWakeTakesNoPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, testcore.MustToPayload(s.T(), "summary"))
+	r.takeClose()
+	// A progress wake that was in flight when the close was taken.
+	_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
+		s.Context(),
+		&historyservice.RecordStreamWakeRequest{
+			NamespaceId:    r.env.NamespaceID().String(),
+			Execution:      r.execution(),
+			Wake:           &streampb.StreamWake{SubscriptionId: "sub-1", Counter: 1},
+			OnlyIfReserved: true,
+		},
+	)
+	s.NoError(err)
+	r.stream.Topic = "another"
+	s.NoError(r.attach("jetty/run/2", "sub-2"))
+}
+
+func (s *StreamWakeSuite) TestARepeatedAttachAfterTheCloseTakesNoPlace() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(dynamicconfig.MaximumStreamWakeSources, 1),
+	)
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	r.notify(1, testcore.MustToPayload(s.T(), "summary"))
+	r.takeClose()
+	s.NoError(r.attach("jetty/run/1", "sub-1"), "the repeat finds its callback")
+	r.stream.Topic = "another"
+	s.NoError(r.attach("jetty/run/2", "sub-2"))
+}

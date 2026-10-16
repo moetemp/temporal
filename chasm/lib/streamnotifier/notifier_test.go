@@ -32,6 +32,7 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -63,10 +64,11 @@ type notifierTest struct {
 
 func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 	config := &Config{
-		Enabled:          dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
-		MaxCallbacks:     dynamicconfig.GetIntPropertyFnFilteredByNamespace(maxCallbacks),
-		MaxCallbackBytes: MaxCallbackBytes.Get(dynamicconfig.NewNoopCollection()),
-		IdleTimeout:      dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Hour),
+		Enabled:            dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		MaxCallbacks:       dynamicconfig.GetIntPropertyFnFilteredByNamespace(maxCallbacks),
+		MaxCallbackBytes:   MaxCallbackBytes.Get(dynamicconfig.NewNoopCollection()),
+		BlobSizeLimitError: dynamicconfig.BlobSizeLimitError.Get(dynamicconfig.NewNoopCollection()),
+		IdleTimeout:        dynamicconfig.GetDurationPropertyFnFilteredByNamespace(time.Hour),
 		IdleTimeoutNoCallbacks: dynamicconfig.GetDurationPropertyFnFilteredByNamespace(
 			10 * time.Minute,
 		),
@@ -254,6 +256,18 @@ func (nt *notifierTest) notify(counter int64, closeStream bool) error {
 			Close:       closeStream,
 			CloseResult: map[bool]*commonpb.Payload{true: {Data: []byte("summary")}}[closeStream],
 		},
+	})
+	return err
+}
+
+// notifyWith sends a notification with the fields of fe, on the test's stream.
+func (nt *notifierTest) notifyWith(fe *workflowservice.NotifyStreamRequest) error {
+	fe.Namespace = "ns"
+	fe.StreamRef = nt.ref
+	_, err := nt.handler.NotifyStream(nt.ctx, &streamnotifierpb.NotifyStreamRequest{
+		NamespaceId:     "namespace-id",
+		BusinessId:      BusinessID(nt.ref),
+		FrontendRequest: fe,
 	})
 	return err
 }
@@ -655,7 +669,7 @@ func TestStreamNotifier(t *testing.T) {
 		nt := newNotifierTest(t, 2)
 		require.NoError(t, nt.attach("a"))
 		require.NoError(t, nt.attach("b"))
-		var failed *serviceerror.FailedPrecondition
+		var failed *serviceerror.ResourceExhausted
 		require.ErrorAs(t, nt.attach("c"), &failed)
 	})
 
@@ -798,7 +812,7 @@ func TestStreamNotifier(t *testing.T) {
 				func(cb *callback.Callback) { cb.ProgressDisabled = true },
 			)
 		}
-		var failed *serviceerror.FailedPrecondition
+		var failed *serviceerror.ResourceExhausted
 		require.ErrorAs(
 			t,
 			nt.attach("caller-100"),
@@ -1104,21 +1118,66 @@ func TestClosedRetentionCoversTheStoreRetention(t *testing.T) {
 		"a closed stream answers late attaches as long as the store keeps its records")
 }
 
+func TestARecheckComesAtMostFiveMinutesLate(t *testing.T) {
+	require.Equal(t, 5*time.Minute,
+		configProvider(dynamicconfig.NewNoopCollection()).RecheckMax("ns"),
+		"a reader with no notification wakes within the cap")
+}
+
 func TestTheOwnerCheckRunsEveryThirtySeconds(t *testing.T) {
 	require.Equal(t, 30*time.Second,
 		configProvider(dynamicconfig.NewNoopCollection()).OwnerCheckInterval("ns"),
 		"an implicit close reaches waiting callers within about 30 s plus the grace")
 }
 
-func TestTheDefaultHoldsTwoThousandWaitingCallers(t *testing.T) {
+func TestTheDefaultHoldsAThousandWaitingCallers(t *testing.T) {
 	maxCallbacks := configProvider(dynamicconfig.NewNoopCollection()).MaxCallbacks("ns")
 	nt := newNotifierTest(t, maxCallbacks)
-	for i := range 2000 {
-		require.NoError(t, nt.attach(fmt.Sprintf("caller-%d", i)), "caller-%d attaches", i)
+	attached := 0
+	var err error
+	for attached < maxCallbacks {
+		if err = nt.attach(fmt.Sprintf("caller-%d", attached)); err != nil {
+			break
+		}
+		attached++
 	}
-	var failed *serviceerror.FailedPrecondition
-	require.ErrorAs(t, nt.attach("caller-2000"), &failed, "the caller after the limit is refused")
-	require.Len(t, nt.callbacks(), 2000)
+	var full *serviceerror.ResourceExhausted
+	require.ErrorAs(t, err, &full, "the caller after the limit is refused")
+	require.Greater(t, attached, 1000)
+	require.Len(t, nt.callbacks(), attached)
+}
+
+// The budget counts the progress and the close outcome that come after the attaches, so a full
+// notifier stays under the mutable state limit when both arrive.
+func TestAFullNotifierStaysUnderTheBudgetAfterProgressAndClose(t *testing.T) {
+	nt := newNotifierTest(t, 2000)
+	attached := 0
+	for ; attached < 2000; attached++ {
+		if nt.attach(fmt.Sprintf("caller-%d", attached)) != nil {
+			break
+		}
+	}
+	require.Less(t, attached, 2000, "the byte limit is reached first")
+	// Every receiver is down, so each callback keeps the largest progress.
+	require.NoError(t, nt.notifyWith(&workflowservice.NotifyStreamRequest{
+		Position: strings.Repeat("p", maxPositionBytes),
+		Counter:  1,
+		Metadata: map[string]string{"k": strings.Repeat("m", maxMetadataBytes-1)},
+	}))
+	blobLimit := dynamicconfig.BlobSizeLimitError.Get(dynamicconfig.NewNoopCollection())("ns")
+	require.NoError(t, nt.notifyWith(&workflowservice.NotifyStreamRequest{
+		Counter:     2,
+		Close:       true,
+		CloseResult: &commonpb.Payload{Data: make([]byte, blobLimit-64)},
+	}))
+	maxBytes := MaxCallbackBytes.Get(dynamicconfig.NewNoopCollection())("ns")
+	nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+		held := proto.Size(n.CloseResult)
+		for _, field := range n.Callbacks {
+			held += proto.Size(field.Get(ctx).CallbackState)
+		}
+		require.LessOrEqual(t, held, maxBytes)
+	})
 }
 
 func TestLargeCallbacksHitTheByteLimitBeforeTheCountLimit(t *testing.T) {
@@ -1133,15 +1192,23 @@ func TestLargeCallbacksHitTheByteLimitBeforeTheCountLimit(t *testing.T) {
 		}
 		attached++
 	}
-	var failed *serviceerror.FailedPrecondition
+	var failed *serviceerror.ResourceExhausted
 	require.ErrorAs(t, err, &failed, "an attach past the byte limit is refused")
-	maxBytes := MaxCallbackBytes.Get(dynamicconfig.NewNoopCollection())("ns")
-	require.LessOrEqual(t, attached, maxBytes/(8*1024-64), "each callback counts its header")
-	require.Greater(t, attached, maxBytes/(9*1024), "the callbacks fill the byte limit")
+	dc := dynamicconfig.NewNoopCollection()
+	room := MaxCallbackBytes.Get(dc)("ns") - dynamicconfig.BlobSizeLimitError.Get(dc)("ns")
+	require.LessOrEqual(t, attached, room/(8*1024-64+progressReserve),
+		"each callback counts its header and its progress")
+	require.Greater(t, attached, room/(9*1024+progressReserve), "the callbacks fill the byte limit")
 	require.Len(t, nt.callbacks(), attached)
 
 	// The notifier makes room from callbacks that are done, as it does for the count limit.
-	require.NoError(t, nt.notify(1, true))
+	// A close outcome as large as the limit takes the room counted for it.
+	closeResult := make([]byte, dynamicconfig.BlobSizeLimitError.Get(dc)("ns")-64)
+	require.NoError(t, nt.notifyWith(&workflowservice.NotifyStreamRequest{
+		Counter:     1,
+		Close:       true,
+		CloseResult: &commonpb.Payload{Data: closeResult},
+	}))
 	nt.updateCallback(
 		"caller-0",
 		func(cb *callback.Callback) { cb.Status = callbackspb.CALLBACK_STATUS_SUCCEEDED },
@@ -1289,7 +1356,7 @@ func TestWorkflowTargets(t *testing.T) {
 	t.Run("AFailedAttachFreesItsReserve", func(t *testing.T) {
 		nt := newNotifierTest(t, 1)
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
-		var failed *serviceerror.FailedPrecondition
+		var failed *serviceerror.ResourceExhausted
 		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
 		require.Len(t, nt.reserved, 3)
 		require.True(t, nt.reserved[2].GetRelease())
@@ -1297,6 +1364,21 @@ func TestWorkflowTargets(t *testing.T) {
 
 		nt.counted = true
 		require.ErrorAs(t, nt.attachWorkflow("c", "sub-a"), &failed)
+		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
+	})
+
+	t.Run("ARepeatedAttachFreesTheReserveNoCallbackHolds", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 1)
+		// The reader's close was taken, so its place was freed, and the attach comes again.
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		require.Len(t, nt.reserved, 3)
+		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, "sub-a", nt.reserved[2].GetWake().GetSubscriptionId())
+
+		nt.counted = true
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
 		require.Len(t, nt.reserved, 4, "a reader that counted before keeps its place")
 	})
 
@@ -1380,7 +1462,7 @@ func TestWorkflowTargets(t *testing.T) {
 	t.Run("AReaderOfAClosedRunIsDroppedAndFreesItsPlace", func(t *testing.T) {
 		nt := newNotifierTest(t, 1)
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
-		var failed *serviceerror.FailedPrecondition
+		var failed *serviceerror.ResourceExhausted
 		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
 		// A delivery found the reader's run closed.
 		nt.updateCallback("a", func(cb *callback.Callback) {
