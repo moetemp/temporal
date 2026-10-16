@@ -54,6 +54,16 @@ message NotifierState {
   // The quiet period before the armed recheck. It doubles after each recheck up to
   // streamnotifier.recheckMax, and a notification sets it back to streamnotifier.recheckInitial.
   google.protobuf.Duration recheck_gap = 18;
+  // When the notifier started. The owner check leaves an owner that does not exist yet alone for
+  // streamnotifier.ownerStartGrace from this time, since a reader may subscribe before the owner
+  // starts. Unset on a notifier that started before this field.
+  google.protobuf.Timestamp start_time = 19;
+  // When the debounce window that the last delivered notification opened ends, or unset when no
+  // window is open. A notification inside the window updates the counter and waits for the
+  // window's end, so callbacks get at most one delivery per streamnotifier.debounceWindow.
+  google.protobuf.Timestamp debounce_until = 20;
+  // Set when a notification came inside the open window and was not delivered yet.
+  bool debounce_held = 21;
 }
 
 // What the handler's start answered a caller with.

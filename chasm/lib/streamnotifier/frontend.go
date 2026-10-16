@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
+	"golang.org/x/sync/errgroup"
 )
 
 // maxMetadataBytes bounds a notification's metadata, so progress stays a notification and the data
@@ -27,6 +28,9 @@ const maxSubscriptionIDBytes = 256
 // maxPositionBytes bounds a notification's position, which every callback copies into its
 // caller's history.
 const maxPositionBytes = 1024
+
+// notifyBatchParallelism bounds the notifier calls one NotifyStreams request has in flight.
+const notifyBatchParallelism = 32
 
 // FrontendHandler serves the stream notifier RPCs of the WorkflowService.
 type FrontendHandler interface {
@@ -50,6 +54,10 @@ type FrontendHandler interface {
 		context.Context,
 		*workflowservice.PollStreamNotifierRequest,
 	) (*workflowservice.PollStreamNotifierResponse, error)
+	NotifyStreams(
+		context.Context,
+		*workflowservice.NotifyStreamsRequest,
+	) (*workflowservice.NotifyStreamsResponse, error)
 }
 
 type frontendHandler struct {
@@ -227,26 +235,9 @@ func (h *frontendHandler) NotifyStream(
 	if err != nil {
 		return nil, err
 	}
-	if req.GetCounter() <= 0 {
-		return nil, serviceerror.NewInvalidArgument("counter must be positive")
-	}
-	if len(req.GetPosition()) > maxPositionBytes {
-		return nil, serviceerror.NewInvalidArgumentf(
-			"position is %d bytes, more than the %d allowed",
-			len(req.GetPosition()),
-			maxPositionBytes,
-		)
-	}
-	size := 0
-	for key, value := range req.GetMetadata() {
-		size += len(key) + len(value)
-	}
-	if size > maxMetadataBytes {
-		return nil, serviceerror.NewInvalidArgumentf(
-			"metadata is %d bytes, more than the %d allowed",
-			size,
-			maxMetadataBytes,
-		)
+	err = validateNotification(req.GetPosition(), req.GetCounter(), req.GetMetadata())
+	if err != nil {
+		return nil, err
 	}
 	if req.GetCloseResult() != nil && !req.GetClose() {
 		return nil, serviceerror.NewInvalidArgument("close_result is only allowed with close")
@@ -279,6 +270,125 @@ func (h *frontendHandler) NotifyStream(
 		FrontendRequest: req,
 	})
 	return resp.GetFrontendResponse(), err
+}
+
+// validateNotification checks the fields that NotifyStream and a NotifyStreams entry share.
+func validateNotification(position string, counter int64, metadata map[string]string) error {
+	if counter <= 0 {
+		return serviceerror.NewInvalidArgument("counter must be positive")
+	}
+	if len(position) > maxPositionBytes {
+		return serviceerror.NewInvalidArgumentf(
+			"position is %d bytes, more than the %d allowed",
+			len(position),
+			maxPositionBytes,
+		)
+	}
+	size := 0
+	for key, value := range metadata {
+		size += len(key) + len(value)
+	}
+	if size > maxMetadataBytes {
+		return serviceerror.NewInvalidArgumentf(
+			"metadata is %d bytes, more than the %d allowed",
+			size,
+			maxMetadataBytes,
+		)
+	}
+	return nil
+}
+
+// NotifyStreams checks and applies each entry on its own, as a NotifyStream on the notifier of its
+// stream, and answers each in its result, so a bad entry holds up no other stream of the batch.
+// Only a fault of the request as a whole fails the call.
+func (h *frontendHandler) NotifyStreams(
+	ctx context.Context,
+	req *workflowservice.NotifyStreamsRequest,
+) (*workflowservice.NotifyStreamsResponse, error) {
+	ns := req.GetNamespace()
+	entries := req.GetNotifications()
+	if len(entries) == 0 {
+		return nil, serviceerror.NewInvalidArgument("notifications is empty")
+	}
+	if limit := h.config.MaxNotifyBatch(ns); len(entries) > limit {
+		return nil, serviceerror.NewInvalidArgumentf(
+			"notifications has %d entries, more than the %d allowed",
+			len(entries),
+			limit,
+		)
+	}
+	if !h.config.Enabled(ns) || !h.config.ChasmEnabled(ns) {
+		// resolve gives the error that a NotifyStream in this namespace gets.
+		_, _, err := h.resolve(ns, nil)
+		return nil, err
+	}
+	if _, err := h.namespaceRegistry.GetNamespaceID(namespace.Name(ns)); err != nil {
+		return nil, err
+	}
+	errs := make([]error, len(entries))
+	requests := make([]*streamnotifierpb.NotifyStreamRequest, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for i, entry := range entries {
+		requests[i], errs[i] = h.notifyStreamsEntry(ns, req.GetIdentity(), entry, seen)
+	}
+	var group errgroup.Group
+	group.SetLimit(notifyBatchParallelism)
+	for i, request := range requests {
+		if request == nil {
+			continue
+		}
+		group.Go(func() error {
+			_, errs[i] = h.client.NotifyStream(ctx, request)
+			return nil
+		})
+	}
+	_ = group.Wait()
+	results := make([]*streampb.StreamNotificationResult, len(entries))
+	for i, err := range errs {
+		results[i] = &streampb.StreamNotificationResult{}
+		if err != nil {
+			st := serviceerror.ToStatus(err)
+			results[i].Code = int32(st.Code())
+			results[i].Message = st.Message()
+		}
+	}
+	return &workflowservice.NotifyStreamsResponse{Results: results}, nil
+}
+
+// notifyStreamsEntry checks one entry of a NotifyStreams request and builds its NotifyStream.
+func (h *frontendHandler) notifyStreamsEntry(
+	ns, identity string,
+	entry *streampb.StreamNotification,
+	seen map[string]struct{},
+) (*streamnotifierpb.NotifyStreamRequest, error) {
+	namespaceID, businessID, err := h.resolve(ns, entry.GetStreamRef())
+	if err != nil {
+		return nil, err
+	}
+	err = validateNotification(entry.GetPosition(), entry.GetCounter(), entry.GetMetadata())
+	if err != nil {
+		return nil, err
+	}
+	// Two entries for one stream would race on its notifier, and a driver folds them anyway.
+	if _, ok := seen[businessID]; ok {
+		return nil, serviceerror.NewInvalidArgumentf(
+			"notifications has two entries for the stream %q",
+			businessID,
+		)
+	}
+	seen[businessID] = struct{}{}
+	return &streamnotifierpb.NotifyStreamRequest{
+		NamespaceId: namespaceID,
+		BusinessId:  businessID,
+		FrontendRequest: &workflowservice.NotifyStreamRequest{
+			Namespace: ns,
+			StreamRef: entry.GetStreamRef(),
+			Position:  entry.GetPosition(),
+			Counter:   entry.GetCounter(),
+			Metadata:  entry.GetMetadata(),
+			Identity:  identity,
+		},
+	}, nil
 }
 
 func (h *frontendHandler) DescribeStreamNotifier(

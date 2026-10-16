@@ -17,6 +17,7 @@ import (
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/resource"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type handler struct {
@@ -53,6 +54,7 @@ func startOrUpdate[I any](
 		chasm.ExecutionKey{NamespaceID: namespaceID, BusinessID: businessID},
 		func(mctx chasm.MutableContext, in I) (*StreamNotifier, error) {
 			n := newStreamNotifier(ref)
+			n.StartTime = timestamppb.New(mctx.Now(n))
 			_, err := update(n, mctx, in)
 			return n, err
 		},
@@ -170,34 +172,36 @@ func (h *handler) NotifyStream(
 	defer log.CapturePanic(h.logger, &retErr)
 	fe := req.GetFrontendRequest()
 	ns := fe.GetNamespace()
-	update := func(
-		n *StreamNotifier,
-		mctx chasm.MutableContext,
-		r *workflowservice.NotifyStreamRequest,
-	) (struct{}, error) {
-		return struct{}{}, n.notify(mctx, notifyInput{
-			position:     r.GetPosition(),
-			counter:      r.GetCounter(),
-			metadata:     r.GetMetadata(),
-			close:        r.GetClose(),
-			closeResult:  r.GetCloseResult(),
-			closeFailure: r.GetCloseFailure(),
-			idleTimeout:  h.config.IdleTimeout(ns),
-			retention:    h.config.ClosedRetention(ns),
+	in := notifyInput{
+		position:     fe.GetPosition(),
+		counter:      fe.GetCounter(),
+		metadata:     fe.GetMetadata(),
+		close:        fe.GetClose(),
+		closeResult:  fe.GetCloseResult(),
+		closeFailure: fe.GetCloseFailure(),
+		idleTimeout:  h.config.IdleTimeout(ns),
+		retention:    h.config.ClosedRetention(ns),
 
-			idleTimeoutNoCallbacks: h.config.IdleTimeoutNoCallbacks(ns),
-			recheckInitial:         h.config.RecheckInitial(ns),
-		})
+		idleTimeoutNoCallbacks: h.config.IdleTimeoutNoCallbacks(ns),
+		recheckInitial:         h.config.RecheckInitial(ns),
+		debounceWindow:         h.config.DebounceWindow(ns),
 	}
-	// A notification starts a notifier when the stream has none. A reader that armed the store
-	// may not have reached the notifier yet, and the notifier keeps the counter it waits for. A
-	// late attach must also find a closed stream closed.
-	err := startOrUpdate(
-		ctx, req.GetNamespaceId(), req.GetBusinessId(), fe.GetStreamRef(), update, fe,
-	)
-	if _, ok := errors.AsType[*serviceerror.FailedPrecondition](err); ok && !fe.GetClose() {
-		// The stream closed and its notifier ended. Nothing waits on a notification.
-		err = nil
+	var err error
+	if fe.GetClose() {
+		// A close starts a notifier when the stream has none, so a callback that attaches later
+		// gets the stream's own close outcome.
+		err = startOrUpdate(
+			ctx,
+			req.GetNamespaceId(),
+			req.GetBusinessId(),
+			fe.GetStreamRef(),
+			func(n *StreamNotifier, mctx chasm.MutableContext, in notifyInput) (struct{}, error) {
+				return struct{}{}, n.notify(mctx, in)
+			},
+			in,
+		)
+	} else {
+		err = h.notifyExisting(ctx, req.GetNamespaceId(), req.GetBusinessId(), in)
 	}
 	if err != nil {
 		return nil, err
@@ -205,6 +209,53 @@ func (h *handler) NotifyStream(
 	return &streamnotifierpb.NotifyStreamResponse{
 		FrontendResponse: &workflowservice.NotifyStreamResponse{},
 	}, nil
+}
+
+// notifyExisting applies a notification that does not close the stream. It starts no notifier,
+// since nobody waits on a stream that has none, and a reader reads the stream again after it
+// subscribes. It writes nothing when the notifier ended or already holds the counter, so a repeat
+// from an at-least-once driver costs only a read.
+func (h *handler) notifyExisting(
+	ctx context.Context,
+	namespaceID, businessID string,
+	in notifyInput,
+) error {
+	ref := chasm.NewComponentRef[*StreamNotifier](chasm.ExecutionKey{
+		NamespaceID: namespaceID,
+		BusinessID:  businessID,
+	})
+	changes, err := chasm.ReadComponent(
+		ctx,
+		ref,
+		func(n *StreamNotifier, _ chasm.Context, counter int64) (bool, error) {
+			return n.takesNotification(counter), nil
+		},
+		in.counter,
+	)
+	if err != nil || !changes {
+		return ignoreNotFound(err)
+	}
+	_, _, err = chasm.UpdateComponent(
+		ctx,
+		ref,
+		func(n *StreamNotifier, mctx chasm.MutableContext, in notifyInput) (struct{}, error) {
+			// The notifier may have ended since the read.
+			if !n.takesNotification(in.counter) {
+				return struct{}{}, nil
+			}
+			return struct{}{}, n.notify(mctx, in)
+		},
+		in,
+	)
+	return ignoreNotFound(err)
+}
+
+// ignoreNotFound treats a stream with no notifier as one where nothing waits.
+func ignoreNotFound(err error) error {
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return nil
+	}
+	return err
 }
 
 func (h *handler) DetachStreamCallback(
@@ -275,7 +326,8 @@ func (h *handler) DescribeStreamNotifier(
 
 // PollStreamNotifier waits until the notifier's counter passes the request's after_counter, the
 // stream closes, or the wait limit passes. A poll writes nothing, except that it starts a notifier
-// when the stream has none, so the notification the client waits for has somewhere to land.
+// when the stream has none, so the notification the client waits for has somewhere to land. A
+// notification that came before that start was dropped, so the client reads once more.
 func (h *handler) PollStreamNotifier(
 	ctx context.Context,
 	req *streamnotifierpb.PollStreamNotifierRequest,

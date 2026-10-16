@@ -70,7 +70,17 @@ type NotifierState struct {
 	RecheckTime *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=recheck_time,json=recheckTime,proto3" json:"recheck_time,omitempty"`
 	// The quiet period before the armed recheck. It doubles after each recheck up to
 	// streamnotifier.recheckMax, and a notification sets it back to streamnotifier.recheckInitial.
-	RecheckGap    *durationpb.Duration `protobuf:"bytes,18,opt,name=recheck_gap,json=recheckGap,proto3" json:"recheck_gap,omitempty"`
+	RecheckGap *durationpb.Duration `protobuf:"bytes,18,opt,name=recheck_gap,json=recheckGap,proto3" json:"recheck_gap,omitempty"`
+	// When the notifier started. The owner check leaves an owner that does not exist yet alone for
+	// streamnotifier.ownerStartGrace from this time, since a reader may subscribe before the owner
+	// starts. Unset on a notifier that started before this field.
+	StartTime *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	// When the debounce window that the last delivered notification opened ends, or unset when no
+	// window is open. A notification inside the window updates the counter and waits for the
+	// window's end, so callbacks get at most one delivery per streamnotifier.debounceWindow.
+	DebounceUntil *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=debounce_until,json=debounceUntil,proto3" json:"debounce_until,omitempty"`
+	// Set when a notification came inside the open window and was not delivered yet.
+	DebounceHeld  bool `protobuf:"varint,21,opt,name=debounce_held,json=debounceHeld,proto3" json:"debounce_held,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -217,6 +227,27 @@ func (x *NotifierState) GetRecheckGap() *durationpb.Duration {
 	return nil
 }
 
+func (x *NotifierState) GetStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartTime
+	}
+	return nil
+}
+
+func (x *NotifierState) GetDebounceUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.DebounceUntil
+	}
+	return nil
+}
+
+func (x *NotifierState) GetDebounceHeld() bool {
+	if x != nil {
+		return x.DebounceHeld
+	}
+	return false
+}
+
 // What the handler's start answered a caller with.
 type CallerStart struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -274,7 +305,8 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto protor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDesc = "" +
 	"\n" +
-	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xa8\t\n" +
+	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xcb\n" +
+	"\n" +
 	"\rNotifierState\x12F\n" +
 	"\n" +
 	"stream_ref\x18\x01 \x01(\v2'.temporal.api.stream.v1.StreamReferenceR\tstreamRef\x12\x18\n" +
@@ -295,7 +327,11 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawD
 	"\rclose_failure\x18\x10 \x01(\v2 .temporal.api.failure.v1.FailureR\fcloseFailure\x12=\n" +
 	"\frecheck_time\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\vrecheckTime\x12:\n" +
 	"\vrecheck_gap\x18\x12 \x01(\v2\x19.google.protobuf.DurationR\n" +
-	"recheckGap\x1a;\n" +
+	"recheckGap\x129\n" +
+	"\n" +
+	"start_time\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x12A\n" +
+	"\x0edebounce_until\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\rdebounceUntil\x12#\n" +
+	"\rdebounce_held\x18\x15 \x01(\bR\fdebounceHeld\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x7f\n" +
@@ -343,13 +379,15 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_depIdx
 	7,  // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_failure:type_name -> temporal.api.failure.v1.Failure
 	6,  // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_time:type_name -> google.protobuf.Timestamp
 	8,  // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_gap:type_name -> google.protobuf.Duration
-	6,  // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
-	1,  // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	6,  // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.start_time:type_name -> google.protobuf.Timestamp
+	6,  // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.debounce_until:type_name -> google.protobuf.Timestamp
+	6,  // 12: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
+	1,  // 13: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_init() }

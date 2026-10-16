@@ -3,6 +3,7 @@ package streamnotifier
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ import (
 	"go.temporal.io/server/common/namespace"
 	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 )
 
 type fakeNotifierClient struct {
@@ -276,4 +278,113 @@ func TestAttachTakesExactlyOneTarget(t *testing.T) {
 	require.Zero(t, client.attached)
 	require.NoError(t, attach(nil, target(strings.Repeat("s", 256))))
 	require.Equal(t, 1, client.attached)
+}
+
+type batchNotifierClient struct {
+	streamnotifierpb.StreamNotifierServiceClient
+	mu       sync.Mutex
+	notified []*streamnotifierpb.NotifyStreamRequest
+	err      error
+}
+
+func (c *batchNotifierClient) NotifyStream(
+	_ context.Context,
+	req *streamnotifierpb.NotifyStreamRequest,
+	_ ...grpc.CallOption,
+) (*streamnotifierpb.NotifyStreamResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notified = append(c.notified, req)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &streamnotifierpb.NotifyStreamResponse{
+		FrontendResponse: &workflowservice.NotifyStreamResponse{},
+	}, nil
+}
+
+func TestNotifyStreamsAppliesEachEntry(t *testing.T) {
+	registry := namespace.NewMockRegistry(gomock.NewController(t))
+	registry.EXPECT().
+		GetNamespaceID(namespace.Name("ns")).
+		Return(namespace.ID("namespace-id"), nil).
+		AnyTimes()
+	client := &batchNotifierClient{}
+	config := &Config{
+		Enabled:        dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		ChasmEnabled:   dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true),
+		MaxIDLength:    dynamicconfig.GetIntPropertyFn(1000),
+		MaxNotifyBatch: dynamicconfig.GetIntPropertyFnFilteredByNamespace(3),
+	}
+	h := NewFrontendHandler(client, config, registry, nil, metrics.NoopMetricsHandler,
+		log.NewTestLogger())
+	entry := func(topic string, counter int64) *streampb.StreamNotification {
+		return &streampb.StreamNotification{
+			StreamRef: &streampb.StreamReference{
+				OwnerKind:  enumspb.STREAM_OWNER_KIND_WORKFLOW,
+				WorkflowId: "wf",
+				RunId:      "first-run",
+				Topic:      topic,
+			},
+			Position: "cursor",
+			Counter:  counter,
+			Metadata: map[string]string{"k": "v"},
+		}
+	}
+	notify := func(entries ...*streampb.StreamNotification) ([]codes.Code, error) {
+		resp, err := h.NotifyStreams(context.Background(), &workflowservice.NotifyStreamsRequest{
+			Namespace:     "ns",
+			Notifications: entries,
+			Identity:      "driver",
+		})
+		var got []codes.Code
+		for _, result := range resp.GetResults() {
+			got = append(got, codes.Code(result.GetCode()))
+		}
+		return got, err
+	}
+
+	var invalid *serviceerror.InvalidArgument
+	_, err := notify()
+	require.ErrorAs(t, err, &invalid, "a batch has entries")
+	_, err = notify(entry("a", 1), entry("b", 1), entry("c", 1), entry("d", 1))
+	require.ErrorAs(t, err, &invalid, "a batch has at most streamnotifier.maxNotifyBatch entries")
+	require.Empty(t, client.notified)
+
+	got, err := notify(entry("a", 1), entry("a", 2), entry("b", 0))
+	require.NoError(t, err)
+	require.Equal(t, []codes.Code{codes.OK, codes.InvalidArgument, codes.InvalidArgument}, got,
+		"a batch has one entry per stream, and each entry takes the NotifyStream rules")
+	require.Len(t, client.notified, 1, "a bad entry holds up no other entry")
+	got, err = notify(entry("", 1), entry("c", 1))
+	require.NoError(t, err)
+	require.Equal(t, []codes.Code{codes.InvalidArgument, codes.OK}, got, "each entry names a stream")
+	client.notified = nil
+
+	got, err = notify(entry("a", 5), entry("b", 7))
+	require.NoError(t, err)
+	require.Equal(t, []codes.Code{codes.OK, codes.OK}, got)
+	require.Len(t, client.notified, 2)
+	byTopic := map[string]*streamnotifierpb.NotifyStreamRequest{}
+	for _, req := range client.notified {
+		require.Equal(t, "namespace-id", req.GetNamespaceId())
+		require.Equal(t, BusinessID(req.GetFrontendRequest().GetStreamRef()), req.GetBusinessId())
+		require.False(t, req.GetFrontendRequest().GetClose())
+		require.Equal(t, "driver", req.GetFrontendRequest().GetIdentity())
+		require.Equal(t, "cursor", req.GetFrontendRequest().GetPosition())
+		byTopic[req.GetFrontendRequest().GetStreamRef().GetTopic()] = req
+	}
+	require.EqualValues(t, 5, byTopic["a"].GetFrontendRequest().GetCounter())
+	require.EqualValues(t, 7, byTopic["b"].GetFrontendRequest().GetCounter())
+
+	config.Enabled = dynamicconfig.GetBoolPropertyFnFilteredByNamespace(false)
+	_, err = notify(entry("a", 6))
+	var unimplemented *serviceerror.Unimplemented
+	require.ErrorAs(t, err, &unimplemented, "a namespace with the notifier off fails the call")
+	config.Enabled = dynamicconfig.GetBoolPropertyFnFilteredByNamespace(true)
+
+	client.err = serviceerror.NewUnavailable("shard moved")
+	got, err = notify(entry("a", 6))
+	require.NoError(t, err)
+	require.Equal(t, []codes.Code{codes.Unavailable}, got, "a failed entry fails only itself")
 }

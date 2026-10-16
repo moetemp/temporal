@@ -360,14 +360,70 @@ func (s *StreamWakeSuite) TestTheNotifierWakesAWorkflowReader() {
 	}, 10*time.Second, 50*time.Millisecond)
 }
 
+func (s *StreamWakeSuite) TestABusyStreamWakesOncePerDebounceWindow() {
+	r := s.newNotifierReader(
+		testcore.WithDynamicConfig(streamnotifier.DebounceWindow, 2*time.Second),
+	)
+	capture := r.env.StartNamespaceMetricCapture()
+	s.NoError(r.attach("jetty/run/1", "sub-1"))
+	before := len(r.history())
+	for counter := int64(1); counter <= 100; counter++ {
+		r.notify(counter, nil)
+	}
+	var wakes []*streampb.StreamWake
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		wakes = append(wakes, lastScheduledWakes(task)...)
+		s.NotEmpty(wakes)
+		s.Equal(int64(100), wakes[len(wakes)-1].GetCounter(), "the window's end delivers the newest")
+	}, 20*time.Second, 50*time.Millisecond)
+	s.Len(wakes, 2, "one leading and one trailing wake")
+	s.Equal(int64(1), wakes[0].GetCounter())
+	s.Len(capture.Metric(streamnotifier.NotificationHeld.Name()), 99,
+		"the window held every notification after the first")
+	s.Len(capture.Metric(streamnotifier.TrailingDelivery.Name()), 1)
+
+	var scheduled int
+	for _, event := range r.history()[before:] {
+		if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
+			scheduled++
+		}
+	}
+	s.Equal(2, scheduled, "the reader runs one task per delivery")
+}
+
 func (s *StreamWakeSuite) TestAnAttachAfterNotificationsWakesAtOnce() {
 	r := s.newNotifierReader()
+	// The first reader starts the notifier, so the notification has somewhere to land.
+	s.NoError(r.attach("jetty/run/0", "sub-0"))
 	r.notify(5, nil)
 	s.NoError(r.attach("jetty/run/1", "sub-1"))
-	task := r.poll()
-	s.Equal(int64(5), lastScheduledWakes(task)[0].GetCounter(),
-		"a notification before the attach is not lost")
-	r.respond(task)
+	s.Await(func(s *StreamWakeSuite) {
+		task := r.poll()
+		r.respond(task)
+		var counter int64
+		for _, wake := range lastScheduledWakes(task) {
+			if wake.GetSubscriptionId() == "sub-1" {
+				counter = wake.GetCounter()
+			}
+		}
+		s.Equal(int64(5), counter, "a notification before the attach is not lost")
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func (s *StreamWakeSuite) TestANotificationBeforeAnyReaderIsDropped() {
+	r := s.newNotifierReader()
+	r.notify(5, nil)
+	_, err := r.env.FrontendClient().DescribeStreamNotifier(
+		s.Context(),
+		&workflowservice.DescribeStreamNotifierRequest{
+			Namespace: r.env.Namespace().String(),
+			StreamRef: r.stream,
+		},
+	)
+	var notFound *serviceerror.NotFound
+	s.ErrorAs(err, &notFound, "the notification wrote nothing, and the reader reads after it attaches")
 }
 
 func (s *StreamWakeSuite) TestTheCloseWakesTheReader() {
@@ -407,9 +463,12 @@ func (s *StreamWakeSuite) TestAReaderOfAClosedRunIsDropped() {
 	s.NoError(r.env.SdkClient().TerminateWorkflow(
 		s.Context(), r.run.GetID(), r.run.GetRunID(), "the reader is done"))
 	r.notify(1, nil)
-	// The delivery finds the run closed, and the next notification drops the callback.
+	// The delivery finds the run closed, and the next notification drops the callback. A repeated
+	// counter writes nothing, so each try sends a new one.
+	counter := int64(1)
 	s.Await(func(s *StreamWakeSuite) {
-		r.notify(2, nil)
+		counter++
+		r.notify(counter, nil)
 		s.Empty(r.describe().GetCallbacks())
 	}, 10*time.Second, 100*time.Millisecond)
 }

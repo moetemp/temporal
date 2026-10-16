@@ -418,10 +418,12 @@ type notifyInput struct {
 	idleTimeoutNoCallbacks time.Duration
 	retention              time.Duration
 	recheckInitial         time.Duration
+	debounceWindow         time.Duration
 }
 
-// notify keeps the highest counter and hands it to every callback as progress. A close completes
-// every callback and keeps the notifier taking late attaches for the closed retention.
+// notify keeps the highest counter and hands it to every callback as progress, at most once per
+// debounce window. A close completes every callback and keeps the notifier taking late attaches
+// for the closed retention.
 func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error {
 	if n.Closed {
 		return nil
@@ -431,11 +433,20 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 		n.Counter = in.counter
 		n.Position = in.position
 		n.Metadata = maps.Clone(in.metadata)
-		progress := n.progress()
-		for _, field := range n.Callbacks {
-			if err := field.Get(ctx).DeliverProgress(ctx, progress); err != nil {
+		switch {
+		case in.close:
+			// The close completes every callback right after, so the progress goes with it.
+			if err := n.deliverProgress(ctx); err != nil {
 				return err
 			}
+		case n.inDebounceWindow(ctx):
+			n.DebounceHeld = true
+			ctx.MetricsHandler().Counter(NotificationHeld.Name()).Record(1)
+		default:
+			if err := n.deliverProgress(ctx); err != nil {
+				return err
+			}
+			n.openDebounceWindow(ctx, in.debounceWindow)
 		}
 		// A notification shows the producer reaches the notifier, so the quiet period starts over.
 		if n.RecheckTime != nil {
@@ -455,6 +466,60 @@ func (n *StreamNotifier) notify(ctx chasm.MutableContext, in notifyInput) error 
 		n.touch(ctx, in.idleTimeoutNoCallbacks)
 	}
 	return nil
+}
+
+// deliverProgress hands the latest notification to every callback.
+func (n *StreamNotifier) deliverProgress(ctx chasm.MutableContext) error {
+	progress := n.progress()
+	for _, field := range n.Callbacks {
+		if err := field.Get(ctx).DeliverProgress(ctx, progress); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// inDebounceWindow reports whether a delivery opened a window that has not ended.
+func (n *StreamNotifier) inDebounceWindow(ctx chasm.Context) bool {
+	return n.DebounceUntil != nil && ctx.Now(n).Before(n.DebounceUntil.AsTime())
+}
+
+// openDebounceWindow starts a window after a delivery, and arms the task that delivers what comes
+// inside it. A window of zero turns the debounce off.
+func (n *StreamNotifier) openDebounceWindow(ctx chasm.MutableContext, window time.Duration) {
+	n.DebounceHeld = false
+	if window <= 0 {
+		n.DebounceUntil = nil
+		return
+	}
+	until := timestamppb.New(ctx.Now(n).Add(window))
+	n.DebounceUntil = until
+	ctx.AddTask(
+		n,
+		chasm.TaskAttributes{ScheduledTime: until.AsTime()},
+		&streamnotifierpb.DebounceTask{ScheduledTime: until},
+	)
+}
+
+// endDebounceWindow delivers the notification held in the window that ended and opens the next
+// window, or closes the window when nothing came inside it.
+func (n *StreamNotifier) endDebounceWindow(ctx chasm.MutableContext, window time.Duration) error {
+	if !n.DebounceHeld {
+		n.DebounceUntil = nil
+		return nil
+	}
+	if err := n.deliverProgress(ctx); err != nil {
+		return err
+	}
+	ctx.MetricsHandler().Counter(TrailingDelivery.Name()).Record(1)
+	n.openDebounceWindow(ctx, window)
+	return nil
+}
+
+// takesNotification reports whether a notification that does not close the stream changes the
+// notifier: an open notifier that has not ended and holds a lower counter.
+func (n *StreamNotifier) takesNotification(counter int64) bool {
+	return !n.Closed && !n.Expired && counter > n.Counter
 }
 
 // startIdle arms the expiry of a notifier that a poll started, and changes nothing on one that
@@ -499,6 +564,8 @@ func (n *StreamNotifier) close(
 	n.OwnerCheckTime = nil
 	n.RecheckTime = nil
 	n.RecheckGap = nil
+	n.DebounceUntil = nil
+	n.DebounceHeld = false
 	return callback.ScheduleStandbyCallbacks(ctx, n.Callbacks)
 }
 
