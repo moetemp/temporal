@@ -59,6 +59,7 @@ import (
 	"go.temporal.io/server/service/history/api/recordactivitytaskheartbeat"
 	"go.temporal.io/server/service/history/api/recordactivitytaskstarted"
 	"go.temporal.io/server/service/history/api/recordchildworkflowcompleted"
+	"go.temporal.io/server/service/history/api/recordstreamwake"
 	"go.temporal.io/server/service/history/api/recordworkflowtaskstarted"
 	"go.temporal.io/server/service/history/api/refreshworkflow"
 	"go.temporal.io/server/service/history/api/removesignalmutablestate"
@@ -688,6 +689,13 @@ func (e *historyEngineImpl) SignalWorkflowExecution(
 	req *historyservice.SignalWorkflowExecutionRequest,
 ) (resp *historyservice.SignalWorkflowExecutionResponse, retError error) {
 	return signalworkflow.Invoke(ctx, req, e.shardContext, e.workflowConsistencyChecker)
+}
+
+func (e *historyEngineImpl) RecordStreamWake(
+	ctx context.Context,
+	req *historyservice.RecordStreamWakeRequest,
+) (*historyservice.RecordStreamWakeResponse, error) {
+	return recordstreamwake.Invoke(ctx, req, e.shardContext, e.workflowConsistencyChecker)
 }
 
 // SignalWithStartWorkflowExecution signals current workflow (if running) or creates & signals a new workflow

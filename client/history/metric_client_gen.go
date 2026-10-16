@@ -639,6 +639,20 @@ func (c *metricClient) RecordChildExecutionCompleted(
 	return c.client.RecordChildExecutionCompleted(ctx, request, opts...)
 }
 
+func (c *metricClient) RecordStreamWake(
+	ctx context.Context,
+	request *historyservice.RecordStreamWakeRequest,
+	opts ...grpc.CallOption,
+) (_ *historyservice.RecordStreamWakeResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "HistoryClientRecordStreamWake")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.RecordStreamWake(ctx, request, opts...)
+}
+
 func (c *metricClient) RecordWorkflowTaskStarted(
 	ctx context.Context,
 	request *historyservice.RecordWorkflowTaskStartedRequest,

@@ -115,3 +115,77 @@ func (this *IncomingSignalData) Equal(that interface{}) bool {
 
 	return proto.Equal(this, that1)
 }
+
+// Marshal an object of type TaskCarriedIndex to the protobuf v3 wire format
+func (val *TaskCarriedIndex) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type TaskCarriedIndex from the protobuf v3 wire format
+func (val *TaskCarriedIndex) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *TaskCarriedIndex) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two TaskCarriedIndex values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *TaskCarriedIndex) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *TaskCarriedIndex
+	switch t := that.(type) {
+	case *TaskCarriedIndex:
+		that1 = t
+	case TaskCarriedIndex:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}
+
+// Marshal an object of type StreamWakeState to the protobuf v3 wire format
+func (val *StreamWakeState) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type StreamWakeState from the protobuf v3 wire format
+func (val *StreamWakeState) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *StreamWakeState) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two StreamWakeState values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *StreamWakeState) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *StreamWakeState
+	switch t := that.(type) {
+	case *StreamWakeState:
+		that1 = t
+	case StreamWakeState:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}

@@ -14,6 +14,7 @@ import "temporal/api/history/v1/message.proto";
 import "temporal/api/nexus/v1/message.proto";
 import "temporal/api/protocol/v1/message.proto";
 import "temporal/api/query/v1/message.proto";
+import "temporal/api/stream/v1/message.proto";
 import "temporal/api/taskqueue/v1/message.proto";
 import "temporal/api/workflow/v1/message.proto";
 import "temporal/api/workflowservice/v1/request_response.proto";
@@ -1477,3 +1478,14 @@ message PollWorkflowExecutionTimeSkippingResponse {
 message OrphanedChildReplacementInfo {
   repeated temporal.server.api.history.v1.VersionHistoryItem parent_current_version_history_items = 1;
 }
+
+message RecordStreamWakeRequest {
+  option (routing).workflow_id = "execution.workflow_id";
+
+  string namespace_id = 1;
+  // The run whose reader the wake is for. A closed run answers NotFound.
+  temporal.api.common.v1.WorkflowExecution execution = 2;
+  temporal.api.stream.v1.StreamWake wake = 3;
+}
+
+message RecordStreamWakeResponse {}

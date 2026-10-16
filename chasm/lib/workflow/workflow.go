@@ -45,6 +45,10 @@ type Workflow struct {
 
 	// Updates indexed by update ID, used to store the update components.
 	Updates chasm.Map[string, *WorkflowUpdate]
+
+	// StreamWakes holds the wakes of the run's stream readers that wait for, or ride, a Workflow
+	// Task, so a transaction can tell whether a task must be scheduled for them.
+	StreamWakes chasm.Field[*chasmworkflowpb.StreamWakeState]
 }
 
 func NewWorkflow(

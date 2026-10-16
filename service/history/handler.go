@@ -1001,6 +1001,34 @@ func (h *Handler) SignalWorkflowExecution(ctx context.Context, request *historys
 	return resp, nil
 }
 
+// RecordStreamWake records a wake for one stream reader of a Workflow run, for its next Workflow
+// Task scheduled event.
+func (h *Handler) RecordStreamWake(
+	ctx context.Context,
+	request *historyservice.RecordStreamWakeRequest,
+) (*historyservice.RecordStreamWakeResponse, error) {
+	namespaceID := namespace.ID(request.GetNamespaceId())
+	if namespaceID == "" {
+		return nil, h.convertError(errNamespaceNotSet)
+	}
+	shardContext, err := h.controller.GetShardByNamespaceWorkflow(
+		namespaceID,
+		request.GetExecution().GetWorkflowId(),
+	)
+	if err != nil {
+		return nil, h.convertError(err)
+	}
+	engine, err := shardContext.GetEngine(ctx)
+	if err != nil {
+		return nil, h.convertError(err)
+	}
+	resp, err := engine.RecordStreamWake(ctx, request)
+	if err != nil {
+		return nil, h.convertError(err)
+	}
+	return resp, nil
+}
+
 // SignalWithStartWorkflowExecution is used to ensure sending a signal event to a workflow execution.
 // If workflow is running, this results in WorkflowExecutionSignaled event recorded in the history
 // and a workflow task being created for the execution.

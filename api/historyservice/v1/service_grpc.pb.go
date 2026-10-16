@@ -98,6 +98,7 @@ const (
 	HistoryService_StartNexusOperation_FullMethodName                    = "/temporal.server.api.historyservice.v1.HistoryService/StartNexusOperation"
 	HistoryService_CancelNexusOperation_FullMethodName                   = "/temporal.server.api.historyservice.v1.HistoryService/CancelNexusOperation"
 	HistoryService_PollWorkflowExecutionTimeSkipping_FullMethodName      = "/temporal.server.api.historyservice.v1.HistoryService/PollWorkflowExecutionTimeSkipping"
+	HistoryService_RecordStreamWake_FullMethodName                       = "/temporal.server.api.historyservice.v1.HistoryService/RecordStreamWake"
 )
 
 // HistoryServiceClient is the client API for HistoryService service.
@@ -384,6 +385,9 @@ type HistoryServiceClient interface {
 	// CancelNexusOperation cancels a Nexus operation on the __temporal_system endpoint.
 	CancelNexusOperation(ctx context.Context, in *CancelNexusOperationRequest, opts ...grpc.CallOption) (*CancelNexusOperationResponse, error)
 	PollWorkflowExecutionTimeSkipping(ctx context.Context, in *PollWorkflowExecutionTimeSkippingRequest, opts ...grpc.CallOption) (*PollWorkflowExecutionTimeSkippingResponse, error)
+	// RecordStreamWake records a wake for one stream reader of a Workflow. The wake rides the next
+	// Workflow Task scheduled event, so it adds no event of its own.
+	RecordStreamWake(ctx context.Context, in *RecordStreamWakeRequest, opts ...grpc.CallOption) (*RecordStreamWakeResponse, error)
 }
 
 type historyServiceClient struct {
@@ -1118,6 +1122,15 @@ func (c *historyServiceClient) PollWorkflowExecutionTimeSkipping(ctx context.Con
 	return out, nil
 }
 
+func (c *historyServiceClient) RecordStreamWake(ctx context.Context, in *RecordStreamWakeRequest, opts ...grpc.CallOption) (*RecordStreamWakeResponse, error) {
+	out := new(RecordStreamWakeResponse)
+	err := c.cc.Invoke(ctx, HistoryService_RecordStreamWake_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HistoryServiceServer is the server API for HistoryService service.
 // All implementations must embed UnimplementedHistoryServiceServer
 // for forward compatibility
@@ -1402,6 +1415,9 @@ type HistoryServiceServer interface {
 	// CancelNexusOperation cancels a Nexus operation on the __temporal_system endpoint.
 	CancelNexusOperation(context.Context, *CancelNexusOperationRequest) (*CancelNexusOperationResponse, error)
 	PollWorkflowExecutionTimeSkipping(context.Context, *PollWorkflowExecutionTimeSkippingRequest) (*PollWorkflowExecutionTimeSkippingResponse, error)
+	// RecordStreamWake records a wake for one stream reader of a Workflow. The wake rides the next
+	// Workflow Task scheduled event, so it adds no event of its own.
+	RecordStreamWake(context.Context, *RecordStreamWakeRequest) (*RecordStreamWakeResponse, error)
 	mustEmbedUnimplementedHistoryServiceServer()
 }
 
@@ -1642,6 +1658,9 @@ func (UnimplementedHistoryServiceServer) CancelNexusOperation(context.Context, *
 }
 func (UnimplementedHistoryServiceServer) PollWorkflowExecutionTimeSkipping(context.Context, *PollWorkflowExecutionTimeSkippingRequest) (*PollWorkflowExecutionTimeSkippingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PollWorkflowExecutionTimeSkipping not implemented")
+}
+func (UnimplementedHistoryServiceServer) RecordStreamWake(context.Context, *RecordStreamWakeRequest) (*RecordStreamWakeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecordStreamWake not implemented")
 }
 func (UnimplementedHistoryServiceServer) mustEmbedUnimplementedHistoryServiceServer() {}
 
@@ -3068,6 +3087,24 @@ func _HistoryService_PollWorkflowExecutionTimeSkipping_Handler(srv interface{}, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HistoryService_RecordStreamWake_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordStreamWakeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HistoryServiceServer).RecordStreamWake(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HistoryService_RecordStreamWake_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HistoryServiceServer).RecordStreamWake(ctx, req.(*RecordStreamWakeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HistoryService_ServiceDesc is the grpc.ServiceDesc for HistoryService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3382,6 +3419,10 @@ var HistoryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PollWorkflowExecutionTimeSkipping",
 			Handler:    _HistoryService_PollWorkflowExecutionTimeSkipping_Handler,
+		},
+		{
+			MethodName: "RecordStreamWake",
+			Handler:    _HistoryService_RecordStreamWake_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

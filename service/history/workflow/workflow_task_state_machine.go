@@ -267,6 +267,7 @@ func (m *workflowTaskStateMachine) ApplyWorkflowTaskTimedOutEvent(timeoutType en
 func (m *workflowTaskStateMachine) AddWorkflowTaskScheduleToStartTimeoutEvent(
 	workflowTask *historyi.WorkflowTaskInfo,
 ) (*historypb.HistoryEvent, error) {
+	m.ms.clearScheduledCarriedState()
 	opTag := tag.WorkflowActionWorkflowTaskTimedOut
 	if m.ms.executionInfo.WorkflowTaskScheduledEventId != workflowTask.ScheduledEventID || m.ms.executionInfo.WorkflowTaskStartedEventId > 0 {
 		m.ms.logger.Warn(mutableStateInvalidHistoryActionMsg, opTag,
@@ -317,11 +318,22 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 		return nil, m.ms.createInternalServerError(opTag)
 	}
 
+	// A heartbeat task holds carried state, and so do its retries, which SDKs replay within the
+	// same heartbeat chain. Any other task releases it.
+	if m.ms.holdCarriedState || !m.ms.IsTransientWorkflowTask() {
+		m.ms.executionInfo.WorkflowTaskHoldsCarriedState = m.ms.holdCarriedState
+	}
+
 	// Create real WorkflowTaskScheduledEvent when workflow task:
 	//  - is not transient (is not continuously failing)
 	//  and
 	//  - is not speculative.
 	createWorkflowTaskScheduledEvent := !m.ms.IsTransientWorkflowTask() && workflowTaskType != enumsspb.WORKFLOW_TASK_TYPE_SPECULATIVE
+
+	// A cluster rebuilt from replicated events never learns workflow_task_holds_carried_state, so
+	// a task a failover converts may retry a heartbeat task without the hold. Such a task carries
+	// no carried state. The state waits for the task after it.
+	holdForFailover := false
 
 	// If while scheduling a workflow task and new events has come, then this workflow task cannot be a transient/speculative.
 	// Flush any buffered events before creating the workflow task, otherwise it will result in invalid IDs for
@@ -347,6 +359,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 			m.ms.executionInfo.WorkflowTaskAttempt = 1
 			workflowTaskType = enumsspb.WORKFLOW_TASK_TYPE_NORMAL
 			createWorkflowTaskScheduledEvent = true
+			holdForFailover = true
 		}
 	}
 
@@ -367,6 +380,9 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskScheduledEventAsHeartbeat(
 			attempt,
 			scheduleTime,
 		)
+		if !holdForFailover {
+			m.ms.attachCarriedState(scheduledEvent)
+		}
 		scheduledEventID = scheduledEvent.GetEventId()
 	} else {
 		// WorkflowTaskScheduledEvent will be created later.
@@ -584,6 +600,12 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskStartedEvent(
 			workflowTask.Attempt,
 			startTime,
 		)
+		// The worker has not seen this task yet, so its scheduled event can carry what is pending,
+		// unless a failover converted it (see holdForFailover in
+		// AddWorkflowTaskScheduledEventAsHeartbeat).
+		if workflowTask.Version == m.ms.GetCurrentVersion() {
+			m.ms.attachCarriedState(scheduledEvent)
+		}
 		scheduledEventID = scheduledEvent.GetEventId()
 	}
 
@@ -625,6 +647,10 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskStartedEvent(
 	}
 
 	m.emitWorkflowTaskAttemptStats(workflowTask.Attempt)
+
+	// The task is reading from here on, so newer carried state may not reach it and goes to the
+	// next task instead.
+	m.ms.clearScheduledCarriedState()
 
 	// TODO merge active & passive task generation
 	if err = m.ms.taskGenerator.GenerateStartWorkflowTaskTasks(
@@ -672,6 +698,7 @@ func (m *workflowTaskStateMachine) processBuildIdRedirectInfo(
 			workflowTask.Attempt,
 			workflowTask.ScheduledTime,
 		)
+		m.ms.attachCarriedState(scheduledEvent)
 		newWorkflowTask = m.getWorkflowTaskInfo()
 		newWorkflowTask.ScheduledEventID = scheduledEvent.GetEventId()
 		// Using 1 as the attempt in MS. it's needed so that the new WFT is not considered transient.
@@ -899,6 +926,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskFailedEvent(
 	newRunID string,
 	forkEventVersion int64,
 ) (*historypb.HistoryEvent, error) {
+	m.ms.clearScheduledCarriedState()
 
 	// IMPORTANT: returned event can be nil under some circumstances. Specifically, if WT is transient.
 
@@ -974,6 +1002,7 @@ func (m *workflowTaskStateMachine) AddWorkflowTaskFailedEvent(
 func (m *workflowTaskStateMachine) AddWorkflowTaskTimedOutEvent(
 	workflowTask *historyi.WorkflowTaskInfo,
 ) (*historypb.HistoryEvent, error) {
+	m.ms.clearScheduledCarriedState()
 
 	if workflowTask.Type == enumsspb.WORKFLOW_TASK_TYPE_SPECULATIVE {
 		m.ms.RemoveSpeculativeWorkflowTaskTimeoutTask()
@@ -1553,6 +1582,11 @@ func (m *workflowTaskStateMachine) convertSpeculativeWorkflowTaskToNormal() erro
 
 	if scheduledEvent.EventId != wt.ScheduledEventID {
 		return serviceerror.NewInternalf("it could be a bug, scheduled event Id: %d for normal workflow task doesn't match the one from speculative workflow task: %d", scheduledEvent.EventId, wt.ScheduledEventID)
+	}
+	// A task a worker already started ran without this event, so only one it has not seen yet may
+	// carry state.
+	if wt.StartedEventID == common.EmptyEventID {
+		m.ms.attachCarriedState(scheduledEvent)
 	}
 
 	if wtAlreadyStarted := wt.StartedEventID != common.EmptyEventID; wtAlreadyStarted {
