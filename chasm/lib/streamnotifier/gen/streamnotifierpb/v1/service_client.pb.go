@@ -151,6 +151,49 @@ func (c *StreamNotifierServiceLayeredClient) DetachStreamCallback(
 	}
 	return backoff.ThrottleRetryContextWithReturn(ctx, call, c.retryPolicy, common.IsServiceClientTransientError)
 }
+func (c *StreamNotifierServiceLayeredClient) callWaitStreamCallbackNoRetry(
+	ctx context.Context,
+	request *WaitStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (*WaitStreamCallbackResponse, error) {
+	var response *WaitStreamCallbackResponse
+	var err error
+	startTime := time.Now().UTC()
+	// the caller is a namespace, hence the tag below.
+	caller := headers.GetCallerInfo(ctx).CallerName
+	metricsHandler := c.metricsHandler.WithTags(
+		metrics.OperationTag("StreamNotifierService.WaitStreamCallback"),
+		metrics.NamespaceTag(caller),
+		metrics.ServiceRoleTag(metrics.HistoryRoleTagValue),
+	)
+	metrics.ClientRequests.With(metricsHandler).Record(1)
+	defer func() {
+		if err != nil {
+			metrics.ClientFailures.With(metricsHandler).Record(1, metrics.ServiceErrorTypeTag(err))
+		}
+		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
+	}()
+	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), request.GetBusinessId(), c.numShards)
+	op := func(ctx context.Context, client StreamNotifierServiceClient) error {
+		var err error
+		ctx, cancel := context.WithTimeout(ctx, history.DefaultTimeout)
+		defer cancel()
+		response, err = client.WaitStreamCallback(ctx, request, opts...)
+		return err
+	}
+	err = c.redirector.Execute(ctx, shardID, op)
+	return response, err
+}
+func (c *StreamNotifierServiceLayeredClient) WaitStreamCallback(
+	ctx context.Context,
+	request *WaitStreamCallbackRequest,
+	opts ...grpc.CallOption,
+) (*WaitStreamCallbackResponse, error) {
+	call := func(ctx context.Context) (*WaitStreamCallbackResponse, error) {
+		return c.callWaitStreamCallbackNoRetry(ctx, request, opts...)
+	}
+	return backoff.ThrottleRetryContextWithReturn(ctx, call, c.retryPolicy, common.IsServiceClientTransientError)
+}
 func (c *StreamNotifierServiceLayeredClient) callNotifyStreamNoRetry(
 	ctx context.Context,
 	request *NotifyStreamRequest,
