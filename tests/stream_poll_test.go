@@ -16,6 +16,7 @@ import (
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/testing/parallelsuite"
 	"go.temporal.io/server/tests/testcore"
+	"google.golang.org/grpc/codes"
 )
 
 // StreamPollSuite covers PollStreamNotifier, the long poll a client reader waits on after a read
@@ -217,13 +218,22 @@ func (s *StreamPollSuite) TestNotifyStreamsReachesEachNotifier() {
 	s.Equal(int64(5), desc.GetCounter())
 	s.Equal("a-5", desc.GetPosition())
 
-	_, err = env.FrontendClient().NotifyStreams(s.Context(), &workflowservice.NotifyStreamsRequest{
+	resp, err := env.FrontendClient().NotifyStreams(s.Context(), &workflowservice.NotifyStreamsRequest{
 		Namespace: env.Namespace().String(),
 		Notifications: []*streampb.StreamNotification{
 			{StreamRef: ref("a"), Counter: 6},
 			{StreamRef: ref("a"), Counter: 7},
+			{StreamRef: ref("b"), Counter: 0},
 		},
 	})
-	var invalid *serviceerror.InvalidArgument
-	s.ErrorAs(err, &invalid, "a batch has one entry per stream")
+	s.NoError(err)
+	results := resp.GetResults()
+	s.Len(results, 3)
+	s.Equal(int32(codes.OK), results[0].GetCode())
+	s.Equal(int32(codes.InvalidArgument), results[1].GetCode(), "a batch has one entry per stream")
+	s.Equal(int32(codes.InvalidArgument), results[2].GetCode())
+	s.NotEmpty(results[2].GetMessage())
+	desc, err = s.describe(env, ref("a"))
+	s.NoError(err)
+	s.Equal(int64(6), desc.GetCounter(), "a bad entry holds up no other entry")
 }
