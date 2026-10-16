@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/server/chasm/lib/callback"
 	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
 	"go.temporal.io/server/chasm/lib/scheduler"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 	chasmtests "go.temporal.io/server/chasm/lib/tests"
 	chasmworkflow "go.temporal.io/server/chasm/lib/workflow"
 	"go.temporal.io/server/common"
@@ -131,6 +132,7 @@ var Module = fx.Options(
 	chasmnexus.Module,
 	chasmworkflow.Module,
 	chasmworkflow.HistoryHandlerModule,
+	streamnotifier.HistoryModule,
 )
 
 // CallbackDestinationBlockedProvider lets the callback library report a callback as BLOCKED while
