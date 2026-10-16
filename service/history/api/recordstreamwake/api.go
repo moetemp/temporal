@@ -35,8 +35,10 @@ func Invoke(
 	if len(wake.GetSubscriptionId()) > maxSubscriptionIDBytes {
 		return nil, serviceerror.NewInvalidArgument("wake.subscription_id is too long")
 	}
-	if req.GetReserveOnly() && req.GetRelease() {
-		return nil, serviceerror.NewInvalidArgument("reserve_only and release can't both be set")
+	if req.GetReserveOnly() && (req.GetRelease() || req.GetOnlyIfReserved()) {
+		return nil, serviceerror.NewInvalidArgument(
+			"reserve_only can't be set with release or only_if_reserved",
+		)
 	}
 	namespaceEntry, err := api.GetActiveNamespace(
 		shard,
@@ -66,11 +68,13 @@ func Invoke(
 				releaseFn(nil)
 				return nil, consts.ErrWorkflowCompleted
 			}
-			if req.GetReserveOnly() || req.GetRelease() {
+			if req.GetReserveOnly() || req.GetRelease() || req.GetOnlyIfReserved() {
 				view, viewCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
-				if err == nil &&
-					view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId()) == req.GetReserveOnly() {
-					return &api.UpdateWorkflowAction{Noop: true, CreateWorkflowTask: false}, nil
+				if err == nil {
+					counted := view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId())
+					if counted == req.GetReserveOnly() {
+						return &api.UpdateWorkflowAction{Noop: true, CreateWorkflowTask: false}, nil
+					}
 				}
 			}
 			// An error from here on returns without releasing, so the cache drops the mutable
