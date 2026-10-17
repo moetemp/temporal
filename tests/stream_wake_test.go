@@ -126,7 +126,7 @@ func lastScheduledWakes(
 	events := task.GetHistory().GetEvents()
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
-			return events[i].GetWorkflowTaskScheduledEventAttributes().GetStreamWakes()
+			return attachedStreamWakes(events[i].GetWorkflowTaskScheduledEventAttributes())
 		}
 	}
 	return nil
@@ -137,9 +137,23 @@ func carriedStreamWakes(hist []*historypb.HistoryEvent) []*streampb.StreamWake {
 	for _, event := range hist {
 		carried = append(
 			carried,
-			event.GetWorkflowTaskScheduledEventAttributes().GetStreamWakes()...)
+			attachedStreamWakes(event.GetWorkflowTaskScheduledEventAttributes())...)
 	}
 	return carried
+}
+
+// attachedStreamWakes unpacks the stream wakes from the attachments of a scheduled event.
+func attachedStreamWakes(
+	attrs *historypb.WorkflowTaskScheduledEventAttributes,
+) []*streampb.StreamWake {
+	var wakes []*streampb.StreamWake
+	for _, attachment := range attrs.GetAttachments() {
+		wake := &streampb.StreamWake{}
+		if attachment.UnmarshalTo(wake) == nil {
+			wakes = append(wakes, wake)
+		}
+	}
+	return wakes
 }
 
 func (s *StreamWakeSuite) TestAWakeRidesTheNextScheduledEvent() {

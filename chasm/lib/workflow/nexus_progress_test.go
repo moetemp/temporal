@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,8 +28,12 @@ func TestNexusProgressIndex(t *testing.T) {
 			)
 			require.NoError(t, err)
 			op := nexusoperation.NewOperation(&nexusoperationpb.OperationState{
-				Status:     nexusoperationpb.OPERATION_STATUS_STARTED,
-				ParentData: parentData,
+				Status:         nexusoperationpb.OPERATION_STATUS_STARTED,
+				Endpoint:       "endpoint",
+				Service:        "service",
+				Operation:      "operation",
+				OperationToken: strconv.FormatInt(key, 10),
+				ParentData:     parentData,
 			})
 			op.Store = chasm.NewMockParentPtr[nexusoperation.OperationStore](wf)
 			wf.addNexusOperation(ctx, key, op)
@@ -44,10 +49,16 @@ func TestNexusProgressIndex(t *testing.T) {
 			})
 		require.NoError(t, err)
 	}
+	// Each test operation's token is its scheduled event ID.
+	scheduledEventID := func(p *nexuspb.NexusOperationProgress) int64 {
+		key, err := strconv.ParseInt(p.GetOperationKey().GetOperationToken(), 10, 64)
+		require.NoError(t, err)
+		return key
+	}
 	counters := func(taken []*nexuspb.NexusOperationProgress) map[int64]int64 {
 		out := map[int64]int64{}
 		for _, p := range taken {
-			out[p.GetScheduledEventId()] = p.GetCounter()
+			out[scheduledEventID(p)] = p.GetCounter()
 		}
 		return out
 	}
@@ -64,7 +75,13 @@ func TestNexusProgressIndex(t *testing.T) {
 
 		taken := wf.TakeNexusProgress(ctx)
 		require.Len(t, taken, 2)
-		require.Equal(t, int64(5), taken[0].GetScheduledEventId())
+		require.Equal(t, int64(5), scheduledEventID(taken[0]))
+		require.Equal(t, &nexuspb.NexusOperationProgress_OperationKey{
+			Endpoint:       "endpoint",
+			Service:        "service",
+			Operation:      "operation",
+			OperationToken: "12",
+		}, taken[1].GetOperationKey())
 		require.Equal(t, map[int64]int64{5: 2, 12: 3}, counters(taken))
 		require.False(t, wf.HasPendingNexusProgress(ctx))
 		require.True(t, wf.HasScheduledNexusProgress(ctx))

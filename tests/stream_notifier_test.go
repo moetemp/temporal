@@ -162,7 +162,10 @@ func (s *NexusWorkflowTestSuite) TestStreamNotifierEndToEnd(chasmEnabled bool) {
 		}, 10*time.Second, 50*time.Millisecond)
 		hist := env.GetHistory(env.Namespace().String(), wfExec)
 		carried := carriedNexusProgress(hist[len(started):])
-		s.Equal(s.scheduledEventID(started), carried[0].GetScheduledEventId())
+		s.ProtoEqual(
+			progressOperationKey(endpointName, stream.GetWorkflowId()),
+			carried[0].GetOperationKey(),
+		)
 		s.Equal("cursor", carried[0].GetPosition())
 		s.Equal("tokens", carried[0].GetMetadata()["topic"])
 		for _, event := range hist[len(started):] {

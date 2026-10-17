@@ -196,12 +196,21 @@ func (s *NexusProgressForwardingSuite) TestProgressForwardedFromStandbyToActive(
 	progressTask := poll()
 	var carried []*nexuspb.NexusOperationProgress
 	for _, event := range progressTask.History.Events {
-		carried = append(
-			carried,
-			event.GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()...)
+		attrs := event.GetWorkflowTaskScheduledEventAttributes()
+		for _, attachment := range attrs.GetAttachments() {
+			progress := &nexuspb.NexusOperationProgress{}
+			if attachment.MessageIs(progress) {
+				s.NoError(attachment.UnmarshalTo(progress))
+				carried = append(carried, progress)
+			}
+		}
 	}
 	s.Len(carried, 1)
-	s.Equal(startedTask.History.Events[scheduledIdx].GetEventId(), carried[0].GetScheduledEventId())
+	key := carried[0].GetOperationKey()
+	s.Equal(endpointName, key.GetEndpoint())
+	s.Equal("service", key.GetService())
+	s.Equal("operation", key.GetOperation())
+	s.Equal("test", key.GetOperationToken())
 	s.Equal(int64(1), carried[0].GetCounter())
 	s.Equal("p1", carried[0].GetPosition())
 	respond(progressTask, completeWorkflowCmd())

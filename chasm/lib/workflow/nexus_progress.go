@@ -90,7 +90,11 @@ func (w *Workflow) HasScheduledNexusProgress(ctx chasm.Context) bool {
 func (w *Workflow) TakeNexusProgress(ctx chasm.MutableContext) []*nexuspb.NexusOperationProgress {
 	previous := w.nexusProgressIndex(ctx)
 	index, keys := carriedIndexTake(previous, ctx.Now(w))
-	var taken []*nexuspb.NexusOperationProgress
+	type keyedProgress struct {
+		scheduledEventID int64
+		progress         *nexuspb.NexusOperationProgress
+	}
+	var keyed []keyedProgress
 	for _, indexKey := range keys {
 		key, err := strconv.ParseInt(indexKey, 10, 64)
 		if err != nil {
@@ -100,24 +104,45 @@ func (w *Workflow) TakeNexusProgress(ctx chasm.MutableContext) []*nexuspb.NexusO
 		if !ok {
 			continue
 		}
-		progress, ok := field.Get(ctx).TakePendingProgress(ctx)
+		op := field.Get(ctx)
+		progress, ok := op.TakePendingProgress(ctx)
 		if !ok {
 			continue
 		}
 		named := common.CloneProto(progress)
-		named.Operation = &nexuspb.NexusOperationProgress_ScheduledEventId{ScheduledEventId: key}
-		taken = append(taken, named)
+		named.Operation = &nexuspb.NexusOperationProgress_OperationKey_{
+			OperationKey: nexusProgressOperationKey(op),
+		}
+		keyed = append(keyed, keyedProgress{scheduledEventID: key, progress: named})
 	}
 	// The index sorts its keys as strings, and the event lists operations by scheduled event ID.
-	slices.SortFunc(taken, func(a, b *nexuspb.NexusOperationProgress) int {
-		return cmp.Compare(a.GetScheduledEventId(), b.GetScheduledEventId())
+	slices.SortFunc(keyed, func(a, b keyedProgress) int {
+		return cmp.Compare(a.scheduledEventID, b.scheduledEventID)
 	})
+	taken := make([]*nexuspb.NexusOperationProgress, 0, len(keyed))
+	for _, k := range keyed {
+		taken = append(taken, k.progress)
+	}
 	if len(taken) == 0 {
 		// No task carried progress, so the rate limit keeps its last mark.
 		index.LastCarriedTime = previous.GetLastCarriedTime()
 	}
 	w.setNexusProgressIndex(ctx, index)
 	return taken
+}
+
+// nexusProgressOperationKey names the operation by the values its caller Workflow knows. The
+// token comes from the server's own start record, so a handler cannot point progress at another
+// operation. Progress reaches the Workflow only after the start, so the token is set.
+func nexusProgressOperationKey(
+	op *nexusoperation.Operation,
+) *nexuspb.NexusOperationProgress_OperationKey {
+	return &nexuspb.NexusOperationProgress_OperationKey{
+		Endpoint:       op.GetEndpoint(),
+		Service:        op.GetService(),
+		Operation:      op.GetOperation(),
+		OperationToken: op.GetOperationToken(),
+	}
 }
 
 // NexusProgressReadyAt answers when pending progress may schedule a Workflow Task of its own:
