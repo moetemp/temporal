@@ -2375,11 +2375,29 @@ func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 		for _, batch := range mutation.DBEventsBatches {
 			for _, event := range batch {
 				attrs := event.GetWorkflowTaskScheduledEventAttributes()
-				carried = append(carried, attrs.GetStreamWakes()...)
+				for _, attachment := range attrs.GetAttachments() {
+					wake := &streampb.StreamWake{}
+					s.NoError(attachment.UnmarshalTo(wake))
+					carried = append(carried, wake)
+				}
 			}
 		}
 		return carried
 	}
+
+	s.Run("TakePacksEachWakeAsAnAttachment", func() {
+		prepare()
+		wf, ctx, err := s.mutableState.ChasmWorkflowComponent(context.Background())
+		s.NoError(err)
+		attrs := &historypb.WorkflowTaskScheduledEventAttributes{}
+		s.NoError(streamWakeCarrier{}.take(wf, ctx, attrs))
+		s.Len(attrs.GetAttachments(), 1)
+		wake := &streampb.StreamWake{}
+		s.NoError(attrs.GetAttachments()[0].UnmarshalTo(wake))
+		s.Equal("reader", wake.GetSubscriptionId())
+		s.Equal(int64(1), wake.GetCounter())
+		s.Empty(s.mutableState.pendingCarriers(), "take moves the wake off the Workflow")
+	})
 
 	s.Run("ScheduledByAWakeAfterTheVersionChanged", func() {
 		prepare()
