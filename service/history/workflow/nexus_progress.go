@@ -6,10 +6,11 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/server/chasm"
 	chasmworkflow "go.temporal.io/server/chasm/lib/workflow"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // nexusProgressCarrier carries the progress of the Workflow's Nexus operations, keyed by
-// operation, on the Workflow Task scheduled event.
+// operation, in the attachments of the Workflow Task scheduled event.
 type nexusProgressCarrier struct{}
 
 func (nexusProgressCarrier) hasPending(wf *chasmworkflow.Workflow, ctx chasm.Context) bool {
@@ -24,8 +25,15 @@ func (nexusProgressCarrier) take(
 	wf *chasmworkflow.Workflow,
 	ctx chasm.MutableContext,
 	attrs *historypb.WorkflowTaskScheduledEventAttributes,
-) {
-	attrs.NexusOperationProgress = append(attrs.NexusOperationProgress, wf.TakeNexusProgress(ctx)...)
+) error {
+	for _, progress := range wf.TakeNexusProgress(ctx) {
+		attachment, err := anypb.New(progress)
+		if err != nil {
+			return err
+		}
+		attrs.Attachments = append(attrs.Attachments, attachment)
+	}
+	return nil
 }
 
 func (nexusProgressCarrier) clearScheduled(wf *chasmworkflow.Workflow, ctx chasm.MutableContext) {

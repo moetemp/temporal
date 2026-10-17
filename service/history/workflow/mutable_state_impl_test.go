@@ -2497,7 +2497,13 @@ func (s *mutableStateSuite) TestNexusProgressAcrossFailoverConversion() {
 		for _, batch := range mutation.DBEventsBatches {
 			for _, event := range batch {
 				attrs := event.GetWorkflowTaskScheduledEventAttributes()
-				carried = append(carried, attrs.GetNexusOperationProgress()...)
+				for _, attachment := range attrs.GetAttachments() {
+					progress := &nexuspb.NexusOperationProgress{}
+					if attachment.MessageIs(progress) {
+						s.NoError(attachment.UnmarshalTo(progress))
+						carried = append(carried, progress)
+					}
+				}
 			}
 		}
 		return carried

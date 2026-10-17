@@ -154,13 +154,14 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressIntake(chasmEnabled b
 			accepted := `{"position": "cursor-2", "counter": "2", "metadata": {"topic": "t"}}`
 			s.Equal(http.StatusOK, progress(accepted))
 			// An accepted delivery rides the next Workflow Task's scheduled event.
-			scheduledEventID := s.RequireHistoryEvent(
-				started, enumspb.EVENT_TYPE_NEXUS_OPERATION_SCHEDULED).GetEventId()
 			s.Await(func(s *NexusWorkflowTestSuite) {
 				hist := env.GetHistory(env.Namespace().String(), wfExec)
 				carried := carriedNexusProgress(hist[len(started):])
 				s.Len(carried, 1)
-				s.Equal(scheduledEventID, carried[0].GetScheduledEventId())
+				s.ProtoEqual(
+					progressOperationKey(endpointName, "test"),
+					carried[0].GetOperationKey(),
+				)
 				s.Equal(int64(2), carried[0].GetCounter())
 				s.Equal("cursor-2", carried[0].GetPosition())
 				s.Equal("t", carried[0].GetMetadata()["topic"])
@@ -204,9 +205,20 @@ func scheduleNexusOperationCmd(t *testing.T, endpoint string) *commandpb.Command
 func carriedNexusProgress(hist []*historypb.HistoryEvent) []*nexuspb.NexusOperationProgress {
 	var carried []*nexuspb.NexusOperationProgress
 	for _, event := range hist {
-		carried = append(
-			carried,
-			event.GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()...)
+		carried = append(carried, scheduledNexusProgress(event)...)
+	}
+	return carried
+}
+
+// scheduledNexusProgress unpacks the Nexus operation progress in the attachments of a Workflow
+// Task scheduled event. It skips the other kinds of attachment.
+func scheduledNexusProgress(event *historypb.HistoryEvent) []*nexuspb.NexusOperationProgress {
+	var carried []*nexuspb.NexusOperationProgress
+	for _, attachment := range event.GetWorkflowTaskScheduledEventAttributes().GetAttachments() {
+		progress := &nexuspb.NexusOperationProgress{}
+		if attachment.MessageIs(progress) && attachment.UnmarshalTo(progress) == nil {
+			carried = append(carried, progress)
+		}
 	}
 	return carried
 }
@@ -307,7 +319,6 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
 		w.Stop()
 		return
 	}
-	scheduledEventID := s.scheduledEventID(beforeBurst)
 
 	// With no worker polling, the task the first delivery schedules stays unstarted, and later
 	// deliveries fold into it instead of asking for tasks of their own.
@@ -333,7 +344,7 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
 	onlyWorkflowTaskEvents(folded)
 	carried := carriedNexusProgress(folded)
 	s.Len(carried, 2)
-	s.Equal(scheduledEventID, carried[0].GetScheduledEventId())
+	s.ProtoEqual(progressOperationKey(endpointName, "test"), carried[0].GetOperationKey())
 	s.Equal(
 		int64(1),
 		carried[0].GetCounter(),
@@ -505,7 +516,7 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatTasks(c
 		if event.GetEventType() == enumspb.EVENT_TYPE_MARKER_RECORDED {
 			markerIdx = i
 		}
-		if len(event.GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress()) > 0 {
+		if len(scheduledNexusProgress(event)) > 0 {
 			carrierIdx = i
 		}
 	}
@@ -622,10 +633,7 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatRetries
 	respond(startedTask, true)
 	heartbeatTask := poll()
 	s.Empty(
-		lastScheduled(
-			heartbeatTask,
-		).GetWorkflowTaskScheduledEventAttributes().
-			GetNexusOperationProgress(),
+		scheduledNexusProgress(lastScheduled(heartbeatTask)),
 	)
 	status, err := postNexusProgress(
 		ctx,
@@ -653,19 +661,13 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatRetries
 		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED,
 	)
 	s.Empty(
-		lastScheduled(
-			retryTask,
-		).GetWorkflowTaskScheduledEventAttributes().
-			GetNexusOperationProgress(),
+		scheduledNexusProgress(lastScheduled(retryTask)),
 		"the retry of a heartbeat task carries no progress",
 	)
 	respond(retryTask, false)
 
 	normalTask := poll()
-	carried := lastScheduled(
-		normalTask,
-	).GetWorkflowTaskScheduledEventAttributes().
-		GetNexusOperationProgress()
+	carried := scheduledNexusProgress(lastScheduled(normalTask))
 	s.Len(carried, 1, "the next normal task carries the progress")
 	s.Equal(int64(1), carried[0].GetCounter())
 	respond(normalTask, false, completeWorkflowCmd())
@@ -783,8 +785,7 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressRidesSpeculativeTasks
 		events := task.GetHistory().GetEvents()
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED {
-				return events[i].GetWorkflowTaskScheduledEventAttributes().
-					GetNexusOperationProgress()
+				return scheduledNexusProgress(events[i])
 			}
 		}
 		return nil
@@ -836,8 +837,15 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressRidesSpeculativeTasks
 	s.NoError(run.Get(ctx, nil))
 }
 
-func (s *NexusWorkflowTestSuite) scheduledEventID(hist []*historypb.HistoryEvent) int64 {
-	return s.RequireHistoryEvent(hist, enumspb.EVENT_TYPE_NEXUS_OPERATION_SCHEDULED).GetEventId()
+// progressOperationKey is the key the server puts on progress for an operation that a test caller
+// schedules as "operation" of "service" on endpoint, and that started with token.
+func progressOperationKey(endpoint, token string) *nexuspb.NexusOperationProgress_OperationKey {
+	return &nexuspb.NexusOperationProgress_OperationKey{
+		Endpoint:       endpoint,
+		Service:        "service",
+		Operation:      "operation",
+		OperationToken: token,
+	}
 }
 
 // rawProgressCaller drives a caller Workflow with raw Workflow Task polls, so a test controls
@@ -956,17 +964,13 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressMinInterval(chasmEnab
 
 	c.postProgress(1)
 	first := c.poll()
-	s.Equal(int64(1), lastScheduled(first).GetWorkflowTaskScheduledEventAttributes().
-		GetNexusOperationProgress()[0].GetCounter())
+	s.Equal(int64(1), scheduledNexusProgress(lastScheduled(first))[0].GetCounter())
 	c.respond(first)
 
 	c.postProgress(2)
 	c.postProgress(3)
 	second := c.poll()
-	carried := lastScheduled(
-		second,
-	).GetWorkflowTaskScheduledEventAttributes().
-		GetNexusOperationProgress()
+	carried := scheduledNexusProgress(lastScheduled(second))
 	s.Len(carried, 1)
 	s.Equal(int64(3), carried[0].GetCounter(), "progress that waited folds into one task")
 	gap := lastScheduled(
@@ -996,10 +1000,7 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressOnFailedTask(chasmEna
 	c.postProgress(1)
 	failing := c.poll()
 	s.Len(
-		lastScheduled(
-			failing,
-		).GetWorkflowTaskScheduledEventAttributes().
-			GetNexusOperationProgress(),
+		scheduledNexusProgress(lastScheduled(failing)),
 		1,
 	)
 	_, err := c.env.FrontendClient().
@@ -1014,7 +1015,7 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressOnFailedTask(chasmEna
 	retry := c.poll()
 	s.Equal(int32(2), retry.GetAttempt())
 	s.Empty(
-		lastScheduled(retry).GetWorkflowTaskScheduledEventAttributes().GetNexusOperationProgress(),
+		scheduledNexusProgress(lastScheduled(retry)),
 		"the retry doesn't repeat what the failed task carried",
 	)
 	carried := carriedNexusProgress(retry.GetHistory().GetEvents())
