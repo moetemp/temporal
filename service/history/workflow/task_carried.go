@@ -9,22 +9,23 @@ import (
 	"go.temporal.io/server/chasm"
 	chasmworkflow "go.temporal.io/server/chasm/lib/workflow"
 	"go.temporal.io/server/common/log/tag"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
-// taskCarrier is one kind of state that writes no event and rides the next Workflow Task scheduled
-// event. The scheduling rules are the same for every kind: a pending task takes the state, state
-// that lands on a scheduled task that has not started gets one follow-up task, a heartbeat task
-// carries none, and tasks that carry only this state are rate limited. Each kind keeps its own
-// index on the CHASM Workflow.
+// taskCarrier is one kind of state that writes no event and rides the attachments of the next
+// Workflow Task scheduled event. The scheduling rules are the same for every kind. A pending task
+// takes the state, state that lands on a scheduled task that has not started gets one follow-up
+// task, a heartbeat task carries none, and tasks that carry only this state are rate limited. Each
+// kind keeps its own index on the CHASM Workflow.
 type taskCarrier interface {
 	hasPending(wf *chasmworkflow.Workflow, ctx chasm.Context) bool
 	hasScheduled(wf *chasmworkflow.Workflow, ctx chasm.Context) bool
-	// take moves the pending state onto the attributes of a scheduled event being written.
+	// take moves the pending state onto the attachments of a scheduled event being written.
 	take(
 		wf *chasmworkflow.Workflow,
 		ctx chasm.MutableContext,
 		attrs *historypb.WorkflowTaskScheduledEventAttributes,
-	)
+	) error
 	clearScheduled(wf *chasmworkflow.Workflow, ctx chasm.MutableContext)
 	readyAt(wf *chasmworkflow.Workflow, ctx chasm.Context, minInterval time.Duration) time.Time
 	hold(wf *chasmworkflow.Workflow, ctx chasm.MutableContext, readyAt time.Time)
@@ -48,8 +49,15 @@ func (streamWakeCarrier) take(
 	wf *chasmworkflow.Workflow,
 	ctx chasm.MutableContext,
 	attrs *historypb.WorkflowTaskScheduledEventAttributes,
-) {
-	attrs.StreamWakes = append(attrs.StreamWakes, wf.TakeStreamWakes(ctx)...)
+) error {
+	for _, wake := range wf.TakeStreamWakes(ctx) {
+		attachment, err := anypb.New(wake)
+		if err != nil {
+			return err
+		}
+		attrs.Attachments = append(attrs.Attachments, attachment)
+	}
+	return nil
 }
 
 func (streamWakeCarrier) clearScheduled(wf *chasmworkflow.Workflow, ctx chasm.MutableContext) {
@@ -134,7 +142,9 @@ func (ms *MutableStateImpl) attachCarriedState(event *historypb.HistoryEvent) {
 	}
 	attrs := event.GetWorkflowTaskScheduledEventAttributes()
 	for _, carrier := range pending {
-		carrier.take(wf, chasmCtx, attrs)
+		if err := carrier.take(wf, chasmCtx, attrs); err != nil {
+			ms.logger.Warn("cannot attach carried state to a Workflow Task", tag.Error(err))
+		}
 	}
 }
 
