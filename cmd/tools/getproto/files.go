@@ -85,6 +85,7 @@ func init() {
 	importMap["temporal/api/history/v1/message.proto"] = history.File_temporal_api_history_v1_message_proto
 	importMap["temporal/api/namespace/v1/message.proto"] = namespace.File_temporal_api_namespace_v1_message_proto
 	importMap["temporal/api/nexus/v1/message.proto"] = nexus.File_temporal_api_nexus_v1_message_proto
+	importMap["temporal/api/nexus/v1/progress.proto"] = nexus.File_temporal_api_nexus_v1_progress_proto
 	importMap["temporal/api/nexusoperation/v1/message.proto"] = nexusoperation.File_temporal_api_nexusoperation_v1_message_proto
 	importMap["temporal/api/protocol/v1/message.proto"] = protocol.File_temporal_api_protocol_v1_message_proto
 	importMap["temporal/api/query/v1/message.proto"] = query.File_temporal_api_query_v1_message_proto
