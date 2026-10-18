@@ -651,7 +651,7 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_prot
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_request_response_proto_rawDesc = "" +
 	"\n" +
-	"Htemporal/server/chasm/lib/streamnotifier/proto/v1/request_response.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a6temporal/api/workflowservice/v1/request_response.proto\"\xca\x01\n" +
+	"Htemporal/server/chasm/lib/streamnotifier/proto/v1/request_response.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a=temporal/api/workflowservice/v1/stream_request_response.proto\"\xca\x01\n" +
 	"\x1bAttachStreamCallbackRequest\x12!\n" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12\x1f\n" +
 	"\vbusiness_id\x18\x02 \x01(\tR\n" +

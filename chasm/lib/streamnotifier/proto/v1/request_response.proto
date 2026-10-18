@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package temporal.server.chasm.lib.streamnotifier.proto.v1;
 
-import "temporal/api/workflowservice/v1/request_response.proto";
+import "temporal/api/workflowservice/v1/stream_request_response.proto";
 
 option go_package = "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb;streamnotifierpb";
 
