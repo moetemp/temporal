@@ -245,17 +245,20 @@ func (nt *notifierTest) callbacks() map[string]*callbackspb.CallbackState {
 	return out
 }
 
-// expire runs the expiry the latest activity armed.
+// expire runs the armed expiry task until it fires at the expiry time, as the timer queue would.
 func (nt *notifierTest) expire() {
-	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
-		func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-			task := &streamnotifierpb.ExpiryTask{LastActivityTime: n.GetLastActivityTime()}
-			valid, err := nt.expiry.Validate(ctx, n, chasm.TaskInvocation{}, task)
-			require.NoError(nt.t, err)
-			require.True(nt.t, valid)
-			return struct{}{}, nt.expiry.Execute(ctx, n, chasm.TaskAttributes{}, task)
-		}, struct{}{})
-	require.NoError(nt.t, err)
+	for due := false; !due; {
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				task := &streamnotifierpb.ExpiryTask{ScheduledTime: n.GetExpiryTaskTime()}
+				due = !task.GetScheduledTime().AsTime().Before(n.GetExpiryTime().AsTime())
+				valid, err := nt.expiry.Validate(ctx, n, chasm.TaskInvocation{}, task)
+				require.NoError(nt.t, err)
+				require.True(nt.t, valid)
+				return struct{}{}, nt.expiry.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(nt.t, err)
+	}
 }
 
 // updateCallback changes one callback's state, standing in for its delivery tasks.
@@ -614,6 +617,32 @@ func TestStreamNotifier(t *testing.T) {
 			nt.describe().GetCounter(),
 			"a notifier a caller started takes it",
 		)
+	})
+
+	t.Run("ActivityMovesTheExpiryWithoutANewTask", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		var armed time.Time
+		nt.read(func(n *StreamNotifier, _ chasm.Context) { armed = n.GetExpiryTaskTime().AsTime() })
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(2, false))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, armed, n.GetExpiryTaskTime().AsTime(), "the armed task stays")
+		})
+
+		later := armed.Add(time.Minute)
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				n.ExpiryTime = timestamppb.New(later)
+				task := &streamnotifierpb.ExpiryTask{ScheduledTime: timestamppb.New(armed)}
+				return struct{}{}, nt.expiry.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(t, err)
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Equal(t, chasm.LifecycleStateRunning, n.LifecycleState(ctx))
+			require.Equal(t, later, n.GetExpiryTaskTime().AsTime(), "an early task arms the next")
+		})
+		require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, nt.callbacks()["a"].GetStatus())
 	})
 
 	t.Run("AClosedStreamStaysClosed", func(t *testing.T) {

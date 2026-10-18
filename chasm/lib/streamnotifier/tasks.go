@@ -42,7 +42,7 @@ func newExpiryTaskHandler(opts expiryTaskHandlerOptions) *expiryTaskHandler {
 	return &expiryTaskHandler{config: opts.Config}
 }
 
-// Validate keeps only the expiry armed by the latest activity.
+// Validate keeps only the armed expiry task.
 func (h *expiryTaskHandler) Validate(
 	_ chasm.Context,
 	n *StreamNotifier,
@@ -50,7 +50,7 @@ func (h *expiryTaskHandler) Validate(
 	task *streamnotifierpb.ExpiryTask,
 ) (bool, error) {
 	return !n.Expired &&
-		n.GetLastActivityTime().AsTime().Equal(task.GetLastActivityTime().AsTime()), nil
+		n.GetExpiryTaskTime().AsTime().Equal(task.GetScheduledTime().AsTime()), nil
 }
 
 // Execute fails the callers of an idle open stream and keeps the stream open, or ends a notifier
@@ -59,8 +59,14 @@ func (h *expiryTaskHandler) Execute(
 	ctx chasm.MutableContext,
 	n *StreamNotifier,
 	_ chasm.TaskAttributes,
-	_ *streamnotifierpb.ExpiryTask,
+	task *streamnotifierpb.ExpiryTask,
 ) error {
+	n.ExpiryTaskTime = nil
+	// Activity since the task was armed moved the expiry later without a task of its own.
+	if task.GetScheduledTime().AsTime().Before(n.GetExpiryTime().AsTime()) {
+		n.armExpiry(ctx)
+		return nil
+	}
 	if n.Closed {
 		n.Expired = true
 		return nil
