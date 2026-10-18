@@ -46,8 +46,9 @@ var _ chasm.RootComponent = (*StreamNotifier)(nil)
 var _ callback.CompletionSource = (*StreamNotifier)(nil)
 var _ callback.StreamWakeSource = (*StreamNotifier)(nil)
 
-// StreamNotifier holds the Nexus callbacks attached to one stream. It hands each notification to
-// them as progress, folded, and completes them when the stream closes.
+// StreamNotifier holds the callbacks attached to one stream. It hands each notification, folded,
+// as progress to the callbacks whose variant takes progress, and completes all of them when the
+// stream closes.
 type StreamNotifier struct {
 	chasm.UnimplementedComponent
 
@@ -105,16 +106,25 @@ func (n *StreamNotifier) Terminate(
 	return chasm.TerminateComponentResponse{}, nil
 }
 
-// touch records activity and arms the expiry for it.
+// touch records activity and moves the expiry to after from now. It arms a task only when none is
+// armed or the expiry moved earlier, so a busy stream does not write a task per notification.
 func (n *StreamNotifier) touch(ctx chasm.MutableContext, after time.Duration) {
-	now := timestamppb.New(ctx.Now(n))
-	n.LastActivityTime = now
+	now := ctx.Now(n)
+	n.LastActivityTime = timestamppb.New(now)
+	n.ExpiryTime = timestamppb.New(now.Add(after))
+	if n.ExpiryTaskTime == nil || n.ExpiryTime.AsTime().Before(n.ExpiryTaskTime.AsTime()) {
+		n.armExpiry(ctx)
+	}
+}
+
+// armExpiry arms the expiry task for the current expiry time.
+func (n *StreamNotifier) armExpiry(ctx chasm.MutableContext) {
+	at := timestamppb.New(n.GetExpiryTime().AsTime())
+	n.ExpiryTaskTime = at
 	ctx.AddTask(
 		n,
-		chasm.TaskAttributes{ScheduledTime: now.AsTime().Add(after)},
-		&streamnotifierpb.ExpiryTask{
-			LastActivityTime: now,
-		},
+		chasm.TaskAttributes{ScheduledTime: at.AsTime()},
+		&streamnotifierpb.ExpiryTask{ScheduledTime: at},
 	)
 }
 
@@ -322,12 +332,17 @@ func (n *StreamNotifier) heldBytes(ctx chasm.Context) int {
 // the field tags.
 const progressReserve = maxPositionBytes + maxMetadataBytes + 64
 
+// requestIDCopies is how many more times the state can hold a callback's request ID, besides the
+// copy inside the callback: as the key of Callbacks and of CallerStarts, and in
+// IdleFailedRequestIds and CanceledRequestIds. A request ID can be as long as an ID.
+const requestIDCopies = 4
+
 // callbackBytes is the persisted size of a callback and of the start its caller saw, which is what
 // the notifier's state holds for it. Pending progress counts as the largest one, since a later
 // notification can give every callback that much while their deliveries retry.
 func callbackBytes(cb *callback.Callback, start *streamnotifierpb.CallerStart) int {
 	return proto.Size(cb.CallbackState) - proto.Size(cb.GetPendingProgress()) + progressReserve +
-		proto.Size(start)
+		proto.Size(start) + requestIDCopies*len(cb.GetRequestId())
 }
 
 // hasWaitingCallbacks reports whether a callback still waits for the stream's close.

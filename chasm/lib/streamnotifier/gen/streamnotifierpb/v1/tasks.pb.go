@@ -27,10 +27,10 @@ const (
 // notifier has taken late attaches for the closed retention, which ends its execution.
 type ExpiryTask struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The last activity time the task was scheduled against. Activity since then makes it stale.
-	LastActivityTime *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=last_activity_time,json=lastActivityTime,proto3" json:"last_activity_time,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The expiry task time the task was scheduled for. A newer arming makes it stale.
+	ScheduledTime *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=scheduled_time,json=scheduledTime,proto3" json:"scheduled_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExpiryTask) Reset() {
@@ -63,9 +63,9 @@ func (*ExpiryTask) Descriptor() ([]byte, []int) {
 	return file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ExpiryTask) GetLastActivityTime() *timestamppb.Timestamp {
+func (x *ExpiryTask) GetScheduledTime() *timestamppb.Timestamp {
 	if x != nil {
-		return x.LastActivityTime
+		return x.ScheduledTime
 	}
 	return nil
 }
@@ -167,10 +167,10 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto protorefl
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_rawDesc = "" +
 	"\n" +
-	"=temporal/server/chasm/lib/streamnotifier/proto/v1/tasks.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"V\n" +
+	"=temporal/server/chasm/lib/streamnotifier/proto/v1/tasks.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"O\n" +
 	"\n" +
-	"ExpiryTask\x12H\n" +
-	"\x12last_activity_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x10lastActivityTime\"S\n" +
+	"ExpiryTask\x12A\n" +
+	"\x0escheduled_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\rscheduledTime\"S\n" +
 	"\x0eOwnerCheckTask\x12A\n" +
 	"\x0escheduled_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\rscheduledTime\"P\n" +
 	"\vRecheckTask\x12A\n" +
@@ -196,7 +196,7 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_goTypes =
 	(*timestamppb.Timestamp)(nil), // 3: google.protobuf.Timestamp
 }
 var file_temporal_server_chasm_lib_streamnotifier_proto_v1_tasks_proto_depIdxs = []int32{
-	3, // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.ExpiryTask.last_activity_time:type_name -> google.protobuf.Timestamp
+	3, // 0: temporal.server.chasm.lib.streamnotifier.proto.v1.ExpiryTask.scheduled_time:type_name -> google.protobuf.Timestamp
 	3, // 1: temporal.server.chasm.lib.streamnotifier.proto.v1.OwnerCheckTask.scheduled_time:type_name -> google.protobuf.Timestamp
 	3, // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.RecheckTask.scheduled_time:type_name -> google.protobuf.Timestamp
 	3, // [3:3] is the sub-list for method output_type

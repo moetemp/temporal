@@ -100,7 +100,7 @@ var (
 		"DetachStreamCallback":                         {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 		"NotifyStream":                                 {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 		"DescribeStreamNotifier":                       {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingNone},
-		"PollStreamNotifier":                           {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingAlways},
+		"PollStreamNotifier":                           {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingAlways},
 		"ListActivityExecutions":                       {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingNone},
 		"ListNexusOperationExecutions":                 {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingNone},
 		"RequestCancelActivityExecution":               {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},

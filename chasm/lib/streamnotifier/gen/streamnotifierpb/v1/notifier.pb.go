@@ -45,6 +45,13 @@ type NotifierState struct {
 	// When the notifier last saw an attach or a notification. An open notifier that sees neither
 	// for the idle timeout closes, so an abandoned stream does not hold callbacks forever.
 	LastActivityTime *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=last_activity_time,json=lastActivityTime,proto3" json:"last_activity_time,omitempty"`
+	// When the notifier expires if nothing happens before: the idle timeout after the last activity,
+	// or the closed retention after the close.
+	ExpiryTime *timestamppb.Timestamp `protobuf:"bytes,25,opt,name=expiry_time,json=expiryTime,proto3" json:"expiry_time,omitempty"`
+	// When the armed expiry task fires, or unset when none is armed. It is at or before
+	// expiry_time. Activity moves expiry_time without a new task, since each task costs a write. A
+	// task that fires before expiry_time arms the next one.
+	ExpiryTaskTime *timestamppb.Timestamp `protobuf:"bytes,26,opt,name=expiry_task_time,json=expiryTaskTime,proto3" json:"expiry_task_time,omitempty"`
 	// Set once the notifier's execution ends: a closed one after its closed retention, an open one
 	// that went idle with no callbacks left.
 	Expired bool `protobuf:"varint,10,opt,name=expired,proto3" json:"expired,omitempty"`
@@ -157,6 +164,20 @@ func (x *NotifierState) GetCloseTime() *timestamppb.Timestamp {
 func (x *NotifierState) GetLastActivityTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.LastActivityTime
+	}
+	return nil
+}
+
+func (x *NotifierState) GetExpiryTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiryTime
+	}
+	return nil
+}
+
+func (x *NotifierState) GetExpiryTaskTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiryTaskTime
 	}
 	return nil
 }
@@ -274,7 +295,8 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto protor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDesc = "" +
 	"\n" +
-	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xa8\t\n" +
+	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xab\n" +
+	"\n" +
 	"\rNotifierState\x12F\n" +
 	"\n" +
 	"stream_ref\x18\x01 \x01(\v2'.temporal.api.stream.v1.StreamReferenceR\tstreamRef\x12\x18\n" +
@@ -285,7 +307,10 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawD
 	"\fclose_result\x18\x06 \x01(\v2\x1f.temporal.api.common.v1.PayloadR\vcloseResult\x129\n" +
 	"\n" +
 	"close_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcloseTime\x12H\n" +
-	"\x12last_activity_time\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x10lastActivityTime\x12\x18\n" +
+	"\x12last_activity_time\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x10lastActivityTime\x12;\n" +
+	"\vexpiry_time\x18\x19 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expiryTime\x12D\n" +
+	"\x10expiry_task_time\x18\x1a \x01(\v2\x1a.google.protobuf.TimestampR\x0eexpiryTaskTime\x12\x18\n" +
 	"\aexpired\x18\n" +
 	" \x01(\bR\aexpired\x125\n" +
 	"\x17idle_failed_request_ids\x18\f \x03(\tR\x14idleFailedRequestIds\x12D\n" +
@@ -338,18 +363,20 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_depIdx
 	5,  // 2: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_result:type_name -> temporal.api.common.v1.Payload
 	6,  // 3: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_time:type_name -> google.protobuf.Timestamp
 	6,  // 4: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.last_activity_time:type_name -> google.protobuf.Timestamp
-	6,  // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.owner_check_time:type_name -> google.protobuf.Timestamp
-	3,  // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.caller_starts:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry
-	7,  // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_failure:type_name -> temporal.api.failure.v1.Failure
-	6,  // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_time:type_name -> google.protobuf.Timestamp
-	8,  // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_gap:type_name -> google.protobuf.Duration
-	6,  // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
-	1,  // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	6,  // 5: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.expiry_time:type_name -> google.protobuf.Timestamp
+	6,  // 6: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.expiry_task_time:type_name -> google.protobuf.Timestamp
+	6,  // 7: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.owner_check_time:type_name -> google.protobuf.Timestamp
+	3,  // 8: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.caller_starts:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry
+	7,  // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_failure:type_name -> temporal.api.failure.v1.Failure
+	6,  // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_time:type_name -> google.protobuf.Timestamp
+	8,  // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_gap:type_name -> google.protobuf.Duration
+	6,  // 12: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
+	1,  // 13: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_init() }
