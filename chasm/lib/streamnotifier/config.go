@@ -10,8 +10,8 @@ var Enabled = dynamicconfig.NewNamespaceBoolSetting(
 	"streamnotifier.enabled",
 	false,
 	`Experimental. Serves the stream notifier RPCs (AttachStreamCallback, DetachStreamCallback,
-NotifyStream, DescribeStreamNotifier), which hand a stream's progress and its close to the Nexus
-callbacks attached to it.`,
+NotifyStream, DescribeStreamNotifier), which hand a stream's close to the callbacks attached to it,
+and its progress to the callbacks that take progress.`,
 )
 
 var MaxCallbacks = dynamicconfig.NewNamespaceIntSetting(

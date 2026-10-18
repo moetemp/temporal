@@ -41,8 +41,9 @@ func BusinessID(ref *streampb.StreamReference) string {
 var _ chasm.RootComponent = (*StreamNotifier)(nil)
 var _ callback.CompletionSource = (*StreamNotifier)(nil)
 
-// StreamNotifier holds the Nexus callbacks attached to one stream. It hands each notification to
-// them as progress, folded, and completes them when the stream closes.
+// StreamNotifier holds the callbacks attached to one stream. It hands each notification, folded,
+// as progress to the callbacks whose variant takes progress, and completes all of them when the
+// stream closes.
 type StreamNotifier struct {
 	chasm.UnimplementedComponent
 
