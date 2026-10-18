@@ -28,8 +28,7 @@ func (w *Workflow) setStreamWakeState(
 }
 
 // RecordStreamWake keeps the latest wake of one stream reader for the next Workflow Task scheduled
-// event. A wake for a reader that rides a scheduled Workflow Task that has not started folds into
-// that task, and one follow-up task carries it. A run takes wakes for at most maxSources readers.
+// event. A run takes wakes for at most maxSources readers.
 func (w *Workflow) RecordStreamWake(
 	ctx chasm.MutableContext,
 	wake *streampb.StreamWake,
@@ -85,15 +84,8 @@ func (w *Workflow) HasPendingStreamWakes(ctx chasm.Context) bool {
 	return len(w.streamWakeState(ctx).GetIndex().GetPending()) > 0
 }
 
-// HasScheduledStreamWakes reports whether a scheduled Workflow Task carries wakes.
-func (w *Workflow) HasScheduledStreamWakes(ctx chasm.Context) bool {
-	index := w.streamWakeState(ctx).GetIndex()
-	return len(index.GetScheduled()) > 0 || len(index.GetFolded()) > 0
-}
-
 // TakeStreamWakes returns the pending wake of every reader in subscription ID order, for a Workflow
-// Task scheduled event that is being written. The event acknowledges them, and until the task
-// starts newer wakes for those readers fold into it.
+// Task scheduled event that is being written. The event acknowledges them.
 func (w *Workflow) TakeStreamWakes(ctx chasm.MutableContext) []*streampb.StreamWake {
 	state := common.CloneProto(w.streamWakeState(ctx))
 	index, keys := carriedIndexTake(state.GetIndex(), ctx.Now(w))
@@ -109,17 +101,6 @@ func (w *Workflow) TakeStreamWakes(ctx chasm.MutableContext) []*streampb.StreamW
 	}
 	w.setStreamWakeState(ctx, state)
 	return taken
-}
-
-// ClearScheduledStreamWakes forgets which readers the scheduled Workflow Task carries, once that
-// task starts, fails or times out.
-func (w *Workflow) ClearScheduledStreamWakes(ctx chasm.MutableContext) {
-	if !w.HasScheduledStreamWakes(ctx) {
-		return
-	}
-	state := common.CloneProto(w.streamWakeState(ctx))
-	state.Index = carriedIndexClearScheduled(state.GetIndex())
-	w.setStreamWakeState(ctx, state)
 }
 
 // StreamWakesReadyAt answers when pending wakes may schedule a Workflow Task of their own.

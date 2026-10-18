@@ -23,62 +23,34 @@ func cloneCarriedIndex(index *chasmworkflowpb.TaskCarriedIndex) *chasmworkflowpb
 }
 
 // carriedIndexAdd records that the key holds state for the next Workflow Task scheduled event.
-// State for a key that rides a scheduled task that has not started folds into that task: it asks
-// for no task of its own until that one starts.
+// While a task is pending, the history service schedules no other, so state that comes after its
+// scheduled event was written waits for the task after it.
 func carriedIndexAdd(
 	index *chasmworkflowpb.TaskCarriedIndex,
 	key string,
 ) *chasmworkflowpb.TaskCarriedIndex {
 	index = cloneCarriedIndex(index)
-	waiting := &index.Pending
-	if slices.Contains(index.Scheduled, key) {
-		waiting = &index.Folded
-	}
-	if !slices.Contains(*waiting, key) {
-		*waiting = append(*waiting, key)
-		slices.Sort(*waiting)
+	if !slices.Contains(index.Pending, key) {
+		index.Pending = append(index.Pending, key)
+		slices.Sort(index.Pending)
 	}
 	return index
 }
 
-// carriedIndexTake moves every pending key to scheduled, for a Workflow Task scheduled event that
-// is being written and carries their state. It returns the keys it took, in order.
+// carriedIndexTake clears the pending keys, for a Workflow Task scheduled event that is being
+// written and carries their state. It returns the keys it took, in order.
 func carriedIndexTake(
 	index *chasmworkflowpb.TaskCarriedIndex,
 	now time.Time,
 ) (*chasmworkflowpb.TaskCarriedIndex, []string) {
 	index = cloneCarriedIndex(index)
 	taken := index.Pending
-	for _, key := range taken {
-		if !slices.Contains(index.Scheduled, key) {
-			index.Scheduled = append(index.Scheduled, key)
-		}
-	}
-	slices.Sort(index.Scheduled)
 	index.Pending = nil
 	index.ReleaseTime = nil
 	if len(taken) > 0 {
 		index.LastCarriedTime = timestamppb.New(now)
 	}
 	return index, taken
-}
-
-// carriedIndexClearScheduled forgets which keys the scheduled Workflow Task carries. Called once
-// that task starts, fails or times out: from then on newer state needs a task of its own, and state
-// that folded into it waits for the next task, since its scheduled event carries older state.
-func carriedIndexClearScheduled(
-	index *chasmworkflowpb.TaskCarriedIndex,
-) *chasmworkflowpb.TaskCarriedIndex {
-	index = cloneCarriedIndex(index)
-	for _, key := range index.Folded {
-		if !slices.Contains(index.Pending, key) {
-			index.Pending = append(index.Pending, key)
-		}
-	}
-	slices.Sort(index.Pending)
-	index.Scheduled = nil
-	index.Folded = nil
-	return index
 }
 
 // carriedIndexReadyAt answers when pending state may schedule a Workflow Task of its own:

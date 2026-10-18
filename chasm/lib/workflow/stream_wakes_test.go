@@ -116,29 +116,19 @@ func TestStreamWakeCloseAndResubscribeStaySet(t *testing.T) {
 	require.Equal(t, int64(7), taken[0].GetCounter())
 }
 
-func TestStreamWakeOnAScheduledTaskGetsOneFollowUp(t *testing.T) {
+func TestStreamWakesAfterATakeWaitForTheNextTask(t *testing.T) {
 	st := newStreamWakeTest(t)
 	st.record(wakeOf("a", 1))
 	require.Len(t, st.wf.TakeStreamWakes(st.ctx), 1)
-	require.True(t, st.wf.HasScheduledStreamWakes(st.ctx))
-
-	// The task is scheduled and not started: newer wakes fold into it and ask for no task.
-	st.record(wakeOf("a", 2))
-	st.record(wakeOf("a", 3))
 	require.False(t, st.wf.HasPendingStreamWakes(st.ctx))
 
-	// Once the task starts, what folded into it waits for one follow-up task.
-	st.wf.ClearScheduledStreamWakes(st.ctx)
+	// Wakes after the scheduled event was written wait, folded, for the next task.
+	st.record(wakeOf("a", 2))
+	st.record(wakeOf("a", 3))
 	require.True(t, st.wf.HasPendingStreamWakes(st.ctx))
-	require.False(t, st.wf.HasScheduledStreamWakes(st.ctx))
 	taken := st.wf.TakeStreamWakes(st.ctx)
 	require.Len(t, taken, 1)
 	require.Equal(t, int64(3), taken[0].GetCounter())
-
-	// After that task started, a new wake needs a task of its own.
-	st.wf.ClearScheduledStreamWakes(st.ctx)
-	st.record(wakeOf("a", 4))
-	require.True(t, st.wf.HasPendingStreamWakes(st.ctx))
 }
 
 func TestStreamWakesWaitTheMinInterval(t *testing.T) {
@@ -148,7 +138,6 @@ func TestStreamWakesWaitTheMinInterval(t *testing.T) {
 	st.record(wakeOf("a", 1))
 	carried := st.timeSource.Now()
 	st.wf.TakeStreamWakes(st.ctx)
-	st.wf.ClearScheduledStreamWakes(st.ctx)
 	require.Equal(t, carried.Add(time.Second), st.wf.StreamWakesReadyAt(st.ctx, time.Second))
 
 	st.record(wakeOf("a", 2))
