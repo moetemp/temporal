@@ -1045,6 +1045,25 @@ func TestAFullNotifierStaysUnderTheBudgetAfterProgressAndClose(t *testing.T) {
 	})
 }
 
+// A request ID is a key or an entry in more than one place of the state, so the limit counts
+// each copy.
+func TestLongRequestIDsCountOncePerCopy(t *testing.T) {
+	nt := newNotifierTest(t, 2000)
+	attached := 0
+	var err error
+	for attached < 2000 {
+		if err = nt.attach(fmt.Sprintf("%0999d", attached)); err != nil {
+			break
+		}
+		attached++
+	}
+	var full *serviceerror.ResourceExhausted
+	require.ErrorAs(t, err, &full)
+	dc := dynamicconfig.NewNoopCollection()
+	room := MaxCallbackBytes.Get(dc)("ns") - dynamicconfig.BlobSizeLimitError.Get(dc)("ns")
+	require.LessOrEqual(t, attached, room/((1+requestIDCopies)*999+progressReserve))
+}
+
 func TestLargeCallbacksHitTheByteLimitBeforeTheCountLimit(t *testing.T) {
 	nt := newNotifierTest(t, 2000)
 	// A header near frontend.callbackHeaderMaxLength.

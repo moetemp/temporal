@@ -263,12 +263,17 @@ func (n *StreamNotifier) heldBytes(ctx chasm.Context) int {
 // the field tags.
 const progressReserve = maxPositionBytes + maxMetadataBytes + 64
 
+// requestIDCopies is how many more times the state can hold a callback's request ID, besides the
+// copy inside the callback: as the key of Callbacks and of CallerStarts, and in
+// IdleFailedRequestIds and CanceledRequestIds. A request ID can be as long as an ID.
+const requestIDCopies = 4
+
 // callbackBytes is the persisted size of a callback and of the start its caller saw, which is what
 // the notifier's state holds for it. Pending progress counts as the largest one, since a later
 // notification can give every callback that much while their deliveries retry.
 func callbackBytes(cb *callback.Callback, start *streamnotifierpb.CallerStart) int {
 	return proto.Size(cb.CallbackState) - proto.Size(cb.GetPendingProgress()) + progressReserve +
-		proto.Size(start)
+		proto.Size(start) + requestIDCopies*len(cb.GetRequestId())
 }
 
 // hasWaitingCallbacks reports whether a callback still waits for the stream's close.
