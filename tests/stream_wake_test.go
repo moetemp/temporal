@@ -14,6 +14,7 @@ import (
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -63,16 +64,26 @@ func (r *wakeReader) execution() *commonpb.WorkflowExecution {
 	return &commonpb.WorkflowExecution{WorkflowId: r.run.GetID(), RunId: r.run.GetRunID()}
 }
 
+// wake reserves the reader's place, as its attach would, and records the wake.
 func (r *wakeReader) wake(wake *streampb.StreamWake) error {
-	_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
-		r.s.Context(),
-		&historyservice.RecordStreamWakeRequest{
-			NamespaceId: r.env.NamespaceID().String(),
-			Execution:   r.execution(),
-			Wake:        wake,
-		},
-	)
-	return err
+	for _, mode := range []enumsspb.StreamWakeMode{
+		enumsspb.STREAM_WAKE_MODE_RESERVE,
+		enumsspb.STREAM_WAKE_MODE_WAKE,
+	} {
+		_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
+			r.s.Context(),
+			&historyservice.RecordStreamWakeRequest{
+				NamespaceId: r.env.NamespaceID().String(),
+				Execution:   r.execution(),
+				Wake:        wake,
+				Mode:        mode,
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *wakeReader) wakeAt(subscription string, counter int64) {
@@ -504,13 +515,14 @@ func (s *StreamWakeSuite) TestALateWakeTakesNoPlace() {
 	_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
 		s.Context(),
 		&historyservice.RecordStreamWakeRequest{
-			NamespaceId:    r.env.NamespaceID().String(),
-			Execution:      r.execution(),
-			Wake:           &streampb.StreamWake{SubscriptionId: "sub-1", Counter: 1},
-			OnlyIfReserved: true,
+			NamespaceId: r.env.NamespaceID().String(),
+			Execution:   r.execution(),
+			Wake:        &streampb.StreamWake{SubscriptionId: "sub-1", Counter: 1},
+			Mode:        enumsspb.STREAM_WAKE_MODE_WAKE,
 		},
 	)
-	s.NoError(err)
+	var notFound *serviceerror.NotFound
+	s.ErrorAs(err, &notFound, "the callback ends, so the reader attaches again")
 	r.stream.Topic = "another"
 	s.NoError(r.attach("jetty/run/2", "sub-2"))
 }

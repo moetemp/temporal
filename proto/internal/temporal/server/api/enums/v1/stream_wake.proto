@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package temporal.server.api.enums.v1;
+
+option go_package = "go.temporal.io/server/api/enums/v1;enums";
+
+// What a RecordStreamWake call does with the wake's reader.
+enum StreamWakeMode {
+  STREAM_WAKE_MODE_UNSPECIFIED = 0;
+  // Records a wake for a reader that holds a place among its run's readers. A reader without one
+  // answers NotFound, so its callback ends and the reader attaches again.
+  STREAM_WAKE_MODE_WAKE = 1;
+  // Counts the reader toward history.maximumStreamWakeSources and records no wake. A reader's
+  // attach asks for this, so an attach past the limit fails.
+  STREAM_WAKE_MODE_RESERVE = 2;
+  // Stops counting the reader toward history.maximumStreamWakeSources and records no wake. A
+  // reader that detached, or whose attach failed after its reserve, frees its place this way.
+  STREAM_WAKE_MODE_RELEASE = 3;
+}

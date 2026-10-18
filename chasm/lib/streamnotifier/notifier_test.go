@@ -17,6 +17,7 @@ import (
 	streampb "go.temporal.io/api/stream/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
@@ -115,7 +116,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		) (*historyservice.RecordStreamWakeResponse, error) {
 			nt.reserved = append(nt.reserved, req)
 			return &historyservice.RecordStreamWakeResponse{
-				Reserved: req.GetReserveOnly() && !nt.counted,
+				Reserved: req.GetMode() == enumsspb.STREAM_WAKE_MODE_RESERVE && !nt.counted,
 			}, nt.reserveErr
 		}).
 		AnyTimes()
@@ -1292,7 +1293,7 @@ func TestWorkflowTargets(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
 		require.Len(t, nt.reserved, 1)
-		require.True(t, nt.reserved[0].GetReserveOnly())
+		require.Equal(t, enumsspb.STREAM_WAKE_MODE_RESERVE, nt.reserved[0].GetMode())
 		require.Equal(t, "sub-a", nt.reserved[0].GetWake().GetSubscriptionId())
 		require.Equal(t, "reader", nt.reserved[0].GetExecution().GetWorkflowId())
 
@@ -1309,7 +1310,7 @@ func TestWorkflowTargets(t *testing.T) {
 		var failed *serviceerror.ResourceExhausted
 		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
 		require.Len(t, nt.reserved, 3)
-		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, enumsspb.STREAM_WAKE_MODE_RELEASE, nt.reserved[2].GetMode())
 		require.Equal(t, "sub-b", nt.reserved[2].GetWake().GetSubscriptionId())
 
 		nt.counted = true
@@ -1324,7 +1325,7 @@ func TestWorkflowTargets(t *testing.T) {
 		// The reader's close was taken, so its place was freed, and the attach comes again.
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
 		require.Len(t, nt.reserved, 3)
-		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, enumsspb.STREAM_WAKE_MODE_RELEASE, nt.reserved[2].GetMode())
 		require.Equal(t, "sub-a", nt.reserved[2].GetWake().GetSubscriptionId())
 
 		nt.counted = true

@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	streamnotifierpb "go.temporal.io/server/chasm/lib/streamnotifier/gen/streamnotifierpb/v1"
@@ -82,23 +83,25 @@ func (h *handler) AttachStreamCallback(
 		return nil, err
 	}
 	target := fe.GetWorkflowTarget()
-	sourceRequest := func(release bool) *historyservice.RecordStreamWakeRequest {
+	sourceRequest := func(mode enumsspb.StreamWakeMode) *historyservice.RecordStreamWakeRequest {
 		return &historyservice.RecordStreamWakeRequest{
 			NamespaceId: req.GetNamespaceId(),
 			Execution: &commonpb.WorkflowExecution{
 				WorkflowId: target.GetWorkflowId(),
 				RunId:      target.GetRunId(),
 			},
-			Wake:        &streampb.StreamWake{SubscriptionId: target.GetSubscriptionId()},
-			ReserveOnly: !release,
-			Release:     release,
+			Wake: &streampb.StreamWake{SubscriptionId: target.GetSubscriptionId()},
+			Mode: mode,
 		}
 	}
 	reserved := false
 	if target != nil {
 		// The reader counts toward its run's readers now, so an attach past the limit fails, and a
 		// run that already closed refuses it.
-		resp, err := h.historyClient.RecordStreamWake(ctx, sourceRequest(false))
+		resp, err := h.historyClient.RecordStreamWake(
+			ctx,
+			sourceRequest(enumsspb.STREAM_WAKE_MODE_RESERVE),
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +151,10 @@ func (h *handler) AttachStreamCallback(
 	// place for the caller's retry.
 	if reserved && (refused || err == nil && !created) {
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
-		_, releaseErr := h.historyClient.RecordStreamWake(releaseCtx, sourceRequest(true))
+		_, releaseErr := h.historyClient.RecordStreamWake(
+			releaseCtx,
+			sourceRequest(enumsspb.STREAM_WAKE_MODE_RELEASE),
+		)
 		cancel()
 		if releaseErr != nil {
 			h.logger.Warn("Failed to free a stream reader's place after an attach",

@@ -58,9 +58,11 @@ func newStreamWakeTest(t *testing.T) *streamWakeTest {
 	}
 }
 
+// record reserves the reader's place, as its attach would, and records the wake.
 func (st *streamWakeTest) record(wake *streampb.StreamWake) {
 	st.t.Helper()
-	require.NoError(st.t, st.wf.RecordStreamWake(st.ctx, wake, 32))
+	require.NoError(st.t, st.wf.ReserveStreamWakeSource(st.ctx, wake.GetSubscriptionId(), 32))
+	st.wf.RecordStreamWake(st.ctx, wake)
 }
 
 func wakeOf(subscription string, counter int64) *streampb.StreamWake {
@@ -155,14 +157,15 @@ func TestStreamWakesWaitTheMinInterval(t *testing.T) {
 func TestStreamWakeSourcesAreBounded(t *testing.T) {
 	st := newStreamWakeTest(t)
 	for i := range 3 {
-		require.NoError(t, st.wf.RecordStreamWake(st.ctx, wakeOf(fmt.Sprint(i), 1), 3))
+		require.NoError(t, st.wf.ReserveStreamWakeSource(st.ctx, fmt.Sprint(i), 3))
+		st.wf.RecordStreamWake(st.ctx, wakeOf(fmt.Sprint(i), 1))
 	}
-	require.NoError(t, st.wf.RecordStreamWake(st.ctx, wakeOf("1", 2), 3),
+	require.NoError(t, st.wf.ReserveStreamWakeSource(st.ctx, "1", 3),
 		"a known reader is not counted again")
 	var failed *serviceerror.FailedPrecondition
-	require.ErrorAs(t, st.wf.RecordStreamWake(st.ctx, wakeOf("3", 1), 3), &failed)
+	require.ErrorAs(t, st.wf.ReserveStreamWakeSource(st.ctx, "3", 3), &failed)
 	st.wf.TakeStreamWakes(st.ctx)
-	require.ErrorAs(t, st.wf.RecordStreamWake(st.ctx, wakeOf("3", 1), 3), &failed,
+	require.ErrorAs(t, st.wf.ReserveStreamWakeSource(st.ctx, "3", 3), &failed,
 		"a reader counts for the whole run")
 }
 

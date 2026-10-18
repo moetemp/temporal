@@ -28,24 +28,16 @@ func (w *Workflow) setStreamWakeState(
 }
 
 // RecordStreamWake keeps the latest wake of one stream reader for the next Workflow Task scheduled
-// event. A run takes wakes for at most maxSources readers.
-func (w *Workflow) RecordStreamWake(
-	ctx chasm.MutableContext,
-	wake *streampb.StreamWake,
-	maxSources int,
-) error {
+// event. The caller checks that the reader holds a place (HasStreamWakeSource).
+func (w *Workflow) RecordStreamWake(ctx chasm.MutableContext, wake *streampb.StreamWake) {
 	key := wake.GetSubscriptionId()
 	state := common.CloneProto(w.streamWakeState(ctx))
-	if err := addStreamWakeSource(state, key, maxSources); err != nil {
-		return err
-	}
 	if state.Wakes == nil {
 		state.Wakes = map[string]*streampb.StreamWake{}
 	}
 	state.Wakes[key] = foldStreamWake(state.Wakes[key], wake)
 	state.Index = carriedIndexAdd(state.GetIndex(), key)
 	w.setStreamWakeState(ctx, state)
-	return nil
 }
 
 // HasStreamWakeSource reports whether the reader already counts toward the run's readers.
