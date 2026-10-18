@@ -179,18 +179,11 @@ type TaskCarriedIndex struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Keys whose state waits for the next Workflow Task scheduled event.
 	Pending []string `protobuf:"bytes,1,rep,name=pending,proto3" json:"pending,omitempty"`
-	// Keys whose latest state rides a scheduled Workflow Task that has not started yet. Newer state
-	// for one of them folds into that task, since the read it triggers sees it.
-	Scheduled []string `protobuf:"bytes,2,rep,name=scheduled,proto3" json:"scheduled,omitempty"`
-	// Keys whose state folded into that task but is newer than what its scheduled event carries.
-	// Once the task starts, fails or times out they wait like pending ones, so one follow-up task
-	// carries the latest state.
-	Folded []string `protobuf:"bytes,3,rep,name=folded,proto3" json:"folded,omitempty"`
 	// When a Workflow Task last carried this state. Waiting state waits a minimum interval after it
 	// before it schedules a task of its own, so a busy source can't fill the Workflow's History.
-	LastCarriedTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_carried_time,json=lastCarriedTime,proto3" json:"last_carried_time,omitempty"`
+	LastCarriedTime *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=last_carried_time,json=lastCarriedTime,proto3" json:"last_carried_time,omitempty"`
 	// When the armed release task lets waiting state schedule a Workflow Task.
-	ReleaseTime   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=release_time,json=releaseTime,proto3" json:"release_time,omitempty"`
+	ReleaseTime   *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=release_time,json=releaseTime,proto3" json:"release_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -232,20 +225,6 @@ func (x *TaskCarriedIndex) GetPending() []string {
 	return nil
 }
 
-func (x *TaskCarriedIndex) GetScheduled() []string {
-	if x != nil {
-		return x.Scheduled
-	}
-	return nil
-}
-
-func (x *TaskCarriedIndex) GetFolded() []string {
-	if x != nil {
-		return x.Folded
-	}
-	return nil
-}
-
 func (x *TaskCarriedIndex) GetLastCarriedTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.LastCarriedTime
@@ -264,7 +243,7 @@ func (x *TaskCarriedIndex) GetReleaseTime() *timestamppb.Timestamp {
 type StreamWakeState struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Index *TaskCarriedIndex      `protobuf:"bytes,1,opt,name=index,proto3" json:"index,omitempty"`
-	// The latest wake of each reader that waits for, or folded into, a Workflow Task.
+	// The latest wake of each reader that waits for a Workflow Task.
 	Wakes map[string]*v1.StreamWake `protobuf:"bytes,2,rep,name=wakes,proto3" json:"wakes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Every reader that got a wake in this run, sorted. Bounded by
 	// history.maximumStreamWakeSources.
@@ -335,13 +314,11 @@ const file_temporal_server_chasm_lib_workflow_proto_v1_state_proto_rawDesc = "" 
 	"\x1bNexusCancellationParentData\x12,\n" +
 	"\x12requested_event_id\x18\x01 \x01(\x03R\x10requestedEventId\"/\n" +
 	"\x12IncomingSignalData\x12\x19\n" +
-	"\bevent_id\x18\x01 \x01(\x03R\aeventId\"\xe9\x01\n" +
+	"\bevent_id\x18\x01 \x01(\x03R\aeventId\"\xb3\x01\n" +
 	"\x10TaskCarriedIndex\x12\x18\n" +
-	"\apending\x18\x01 \x03(\tR\apending\x12\x1c\n" +
-	"\tscheduled\x18\x02 \x03(\tR\tscheduled\x12\x16\n" +
-	"\x06folded\x18\x03 \x03(\tR\x06folded\x12F\n" +
-	"\x11last_carried_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x0flastCarriedTime\x12=\n" +
-	"\frelease_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vreleaseTime\"\xbd\x02\n" +
+	"\apending\x18\x01 \x03(\tR\apending\x12F\n" +
+	"\x11last_carried_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x0flastCarriedTime\x12=\n" +
+	"\frelease_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vreleaseTime\"\xbd\x02\n" +
 	"\x0fStreamWakeState\x12S\n" +
 	"\x05index\x18\x01 \x01(\v2=.temporal.server.chasm.lib.workflow.proto.v1.TaskCarriedIndexR\x05index\x12]\n" +
 	"\x05wakes\x18\x02 \x03(\v2G.temporal.server.chasm.lib.workflow.proto.v1.StreamWakeState.WakesEntryR\x05wakes\x12\x18\n" +

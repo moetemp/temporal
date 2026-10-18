@@ -27,6 +27,13 @@ message NotifierState {
   // When the notifier last saw an attach or a notification. An open notifier that sees neither
   // for the idle timeout closes, so an abandoned stream does not hold callbacks forever.
   google.protobuf.Timestamp last_activity_time = 8;
+  // When the notifier expires if nothing happens before: the idle timeout after the last activity,
+  // or the closed retention after the close.
+  google.protobuf.Timestamp expiry_time = 25;
+  // When the armed expiry task fires, or unset when none is armed. It is at or before
+  // expiry_time. Activity moves expiry_time without a new task, since each task costs a write. A
+  // task that fires before expiry_time arms the next one.
+  google.protobuf.Timestamp expiry_task_time = 26;
   reserved 9, 11;
   // Set once the notifier's execution ends: a closed one after its closed retention, an open one
   // that went idle with no callbacks left.
@@ -47,7 +54,7 @@ message NotifierState {
   // Workflow failed. The callbacks complete as failed with it, or as canceled when it has
   // canceled info.
   temporal.api.failure.v1.Failure close_failure = 16;
-  // When the armed recheck fires, or unset when none is armed. While Workflow readers wait, the
+  // When the next recheck is due, or unset when none is armed. While Workflow readers wait, the
   // notifier asks them to read again after a quiet period, so a notification that a producer
   // never sent delays them by at most the period.
   google.protobuf.Timestamp recheck_time = 17;
@@ -64,6 +71,10 @@ message NotifierState {
   google.protobuf.Timestamp debounce_until = 20;
   // Set when a notification came inside the open window and was not delivered yet.
   bool debounce_held = 21;
+  // When the armed recheck task fires, or unset when none is armed. It is at or before
+  // recheck_time. A notification moves recheck_time without a new task, and a task that fires
+  // before recheck_time arms the next one.
+  google.protobuf.Timestamp recheck_task_time = 27;
 }
 
 // What the handler's start answered a caller with.

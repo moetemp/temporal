@@ -210,10 +210,7 @@ type (
 		// (via AttachChasmRequestID). It gates the lazy request-ID sweep at transaction close so only
 		// transactions that added an ID pay for the scan.
 		chasmRequestIDsAdded bool
-		// holdCarriedState marks the Workflow Task scheduled in the current transaction as one
-		// that holds carried state (see HoldCarriedState).
-		holdCarriedState  bool
-		updateInfoUpdated map[string]struct{}
+		updateInfoUpdated    map[string]struct{}
 		// following xxxUserDataUpdated fields are for tracking if activity/timer user data updated.
 		// This help to determine if we need to update transition history: For
 		// user data change, we need to update transition history. No update for
@@ -8588,7 +8585,6 @@ func (ms *MutableStateImpl) cleanupTransaction() error {
 	ms.executionStateUpdated = false
 	ms.workflowTaskUpdated = false
 	ms.chasmRequestIDsAdded = false
-	ms.holdCarriedState = false
 	ms.isResetStateUpdated = false
 	ms.timeSkippingInfoUpdated = false
 	ms.updateInfoUpdated = make(map[string]struct{})
