@@ -80,7 +80,7 @@ type NotifierState struct {
 	RecheckGap *durationpb.Duration `protobuf:"bytes,18,opt,name=recheck_gap,json=recheckGap,proto3" json:"recheck_gap,omitempty"`
 	// When the notifier started. The owner check leaves an owner that does not exist yet alone for
 	// streamnotifier.ownerStartGrace from this time, since a reader may subscribe before the owner
-	// starts. Unset on a notifier that started before this field.
+	// starts.
 	StartTime *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
 	// When the debounce window that the last delivered notification opened ends, or unset when no
 	// window is open. A notification inside the window updates the counter and waits for the

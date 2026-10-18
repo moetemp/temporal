@@ -125,9 +125,9 @@ var DebounceWindow = dynamicconfig.NewNamespaceDurationSetting(
 	`How often a stream notifier delivers progress to its callbacks. A notification after a quiet
 window goes out at once and opens a window. Notifications inside the window update the counter
 and wait. At the window's end the newest one goes out and opens the next window. So a busy stream
-wakes each Workflow reader and each Nexus caller at most once per window. A poll returns as soon as
-the counter passes the one it waits for, and a close goes out at once. Zero delivers every
-notification at once.`,
+wakes each callback that takes progress at most once per window. A poll returns as soon as the
+counter passes the one it waits for, and a close goes out at once. Zero delivers every notification
+at once.`,
 )
 
 var ClosedRetention = dynamicconfig.NewNamespaceDurationSetting(
