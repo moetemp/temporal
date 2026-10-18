@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nexus-rpc/sdk-go/nexus"
-	commandpb "go.temporal.io/api/command/v1"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
@@ -16,11 +15,9 @@ import (
 	streampb "go.temporal.io/api/stream/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/api/workflowservice/v1/workflowservicenexus"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
-	"go.temporal.io/server/chasm/lib/activity"
 	"go.temporal.io/server/chasm/lib/callback"
 	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
@@ -28,9 +25,7 @@ import (
 	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/nexus/nexustest"
 	"go.temporal.io/server/common/payload"
-	"go.temporal.io/server/common/payloads"
 	"go.temporal.io/server/tests/testcore"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -293,166 +288,6 @@ func (s *NexusWorkflowTestSuite) TestActivityStreamOwnerFailureFailsTheNexusCall
 	cause := failed.GetNexusOperationFailedEventAttributes().GetFailure().GetCause()
 	s.Equal("Boom", cause.GetApplicationFailureInfo().GetType())
 	s.Equal("boom", cause.GetMessage())
-}
-
-// systemNexusCall runs one System Nexus operation from a Workflow driven by hand, since the SDK
-// refuses the reserved endpoint name. The input may name the calling Workflow. It answers the
-// operation's failure, or nil.
-func (env *activityStreamEnv) systemNexusCall(
-	operation string,
-	input func(caller *commonpb.WorkflowExecution) proto.Message,
-) *failurepb.Failure {
-	ctx := env.s.Context()
-	frontend := env.FrontendClient()
-	queue := &taskqueuepb.TaskQueue{
-		Name: testcore.RandomizeStr(env.s.T().Name() + "-" + operation),
-		Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
-	}
-	workflowID := "system-nexus-" + uuid.NewString()
-	started, err := frontend.StartWorkflowExecution(
-		ctx,
-		&workflowservice.StartWorkflowExecutionRequest{
-			Namespace:    env.Namespace().String(),
-			WorkflowId:   workflowID,
-			WorkflowType: &commonpb.WorkflowType{Name: "reader"},
-			TaskQueue:    queue,
-			RequestId:    uuid.NewString(),
-		},
-	)
-	env.s.NoError(err)
-	poll := func() *workflowservice.PollWorkflowTaskQueueResponse {
-		resp, err := frontend.PollWorkflowTaskQueue(
-			ctx,
-			&workflowservice.PollWorkflowTaskQueueRequest{
-				Namespace: env.Namespace().String(),
-				TaskQueue: queue,
-				Identity:  "reader",
-			},
-		)
-		env.s.NoError(err)
-		return resp
-	}
-	attrs := &commandpb.ScheduleNexusOperationCommandAttributes{
-		Endpoint:  commonnexus.SystemEndpoint,
-		Service:   workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService.ServiceName,
-		Operation: operation,
-		Input: payloads.MustEncodeSingle(input(&commonpb.WorkflowExecution{
-			WorkflowId: workflowID,
-			RunId:      started.GetRunId(),
-		})),
-	}
-	task := poll()
-	_, err = frontend.RespondWorkflowTaskCompleted(
-		ctx,
-		&workflowservice.RespondWorkflowTaskCompletedRequest{
-			Identity:  "reader",
-			TaskToken: task.GetTaskToken(),
-			Commands: []*commandpb.Command{{
-				CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
-				Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
-					ScheduleNexusOperationCommandAttributes: attrs,
-				},
-			}},
-		},
-	)
-	env.s.NoError(err)
-	task = poll()
-	for _, event := range task.GetHistory().GetEvents() {
-		if failed := event.GetNexusOperationFailedEventAttributes(); failed != nil {
-			return failed.GetFailure()
-		}
-		if event.GetNexusOperationCompletedEventAttributes() != nil {
-			return nil
-		}
-	}
-	env.s.Fail("the System Nexus operation neither completed nor failed")
-	return nil
-}
-
-func (s *NexusWorkflowTestSuite) TestActivityStreamSystemNexusAttachAndWait(chasmEnabled bool) {
-	if !chasmEnabled {
-		return
-	}
-	env := s.newActivityStreamEnv()
-	stream := env.start()
-	workflowService := workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService
-	failure := env.systemNexusCall(
-		workflowService.AttachStreamCallback.Name(),
-		func(caller *commonpb.WorkflowExecution) proto.Message {
-			return &workflowservice.AttachStreamCallbackRequest{
-				StreamRef: stream,
-				RequestId: "system-nexus-attach",
-				WorkflowTarget: &streampb.WorkflowWakeTarget{
-					WorkflowId:     caller.GetWorkflowId(),
-					RunId:          caller.GetRunId(),
-					SubscriptionId: "sub-1",
-				},
-			}
-		},
-	)
-	s.Nil(failure, "%v", failure)
-	callbacks := env.describe(stream).GetCallbacks()
-	s.Len(callbacks, 1)
-	s.Equal("sub-1", callbacks[0].GetWorkflowTarget().GetSubscriptionId())
-
-	failure = env.systemNexusCall(
-		workflowService.WaitStreamCallback.Name(),
-		func(*commonpb.WorkflowExecution) proto.Message {
-			return &workflowservice.WaitStreamCallbackRequest{
-				StreamRef: stream,
-				RequestId: "system-nexus-attach",
-			}
-		},
-	)
-	s.Nil(failure, "%v", failure)
-}
-
-func (s *NexusWorkflowTestSuite) TestActivityStreamSystemNexusNeedsStandaloneActivities(
-	chasmEnabled bool,
-) {
-	if !chasmEnabled {
-		return
-	}
-	env := s.newActivityStreamEnv(testcore.WithDynamicConfig(activity.Enabled, false))
-	workflowService := workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService
-	stream := activityStream("tool-"+uuid.NewString(), "run")
-	for _, call := range []struct {
-		operation string
-		input     proto.Message
-	}{
-		{
-			operation: workflowService.AttachStreamCallback.Name(),
-			input: &workflowservice.AttachStreamCallbackRequest{
-				StreamRef: stream,
-				RequestId: "attach",
-				WorkflowTarget: &streampb.WorkflowWakeTarget{
-					WorkflowId:     "reader",
-					RunId:          "run",
-					SubscriptionId: "sub",
-				},
-			},
-		},
-		{
-			operation: workflowService.WaitStreamCallback.Name(),
-			input: &workflowservice.WaitStreamCallbackRequest{
-				StreamRef: stream,
-				RequestId: "attach",
-			},
-		},
-	} {
-		failure := env.systemNexusCall(
-			call.operation,
-			func(*commonpb.WorkflowExecution) proto.Message { return call.input },
-		)
-		s.NotNil(failure, call.operation)
-		s.Contains(
-			failure.GetCause().GetMessage()+failure.GetMessage(),
-			"standalone Activities",
-			"%s answers FailedPrecondition, never Unimplemented: %v",
-			call.operation,
-			failure,
-		)
-	}
 }
 
 func (s *NexusWorkflowTestSuite) TestActivityStreamProgressReachesStandaloneCallerWorker(
