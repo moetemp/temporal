@@ -253,21 +253,37 @@ func (n *StreamNotifier) waitingWorkflowTargets(ctx chasm.Context) []*callback.C
 	return waiting
 }
 
-// armRecheck arms a recheck gap from now while Workflow readers wait, and disarms it otherwise.
+// armRecheck moves the recheck to gap from now while Workflow readers wait, and disarms it
+// otherwise. It adds a task only when none is armed or the recheck moved earlier, so a busy stream
+// does not write a task per notification.
 func (n *StreamNotifier) armRecheck(ctx chasm.MutableContext, gap time.Duration) {
 	if n.Closed || gap <= 0 || len(n.waitingWorkflowTargets(ctx)) == 0 {
-		n.RecheckTime = nil
-		n.RecheckGap = nil
+		n.disarmRecheck()
 		return
 	}
-	at := timestamppb.New(ctx.Now(n).Add(gap))
-	n.RecheckTime = at
+	n.RecheckTime = timestamppb.New(ctx.Now(n).Add(gap))
 	n.RecheckGap = durationpb.New(gap)
+	if n.RecheckTaskTime == nil || n.RecheckTime.AsTime().Before(n.RecheckTaskTime.AsTime()) {
+		n.armRecheckTask(ctx)
+	}
+}
+
+// armRecheckTask arms the recheck task for the current recheck time.
+func (n *StreamNotifier) armRecheckTask(ctx chasm.MutableContext) {
+	at := timestamppb.New(n.GetRecheckTime().AsTime())
+	n.RecheckTaskTime = at
 	ctx.AddTask(
 		n,
 		chasm.TaskAttributes{ScheduledTime: at.AsTime()},
 		&streamnotifierpb.RecheckTask{ScheduledTime: at},
 	)
+}
+
+// disarmRecheck clears the recheck. An armed task finds no match and does nothing.
+func (n *StreamNotifier) disarmRecheck() {
+	n.RecheckTime = nil
+	n.RecheckGap = nil
+	n.RecheckTaskTime = nil
 }
 
 // recheck asks every waiting Workflow reader to read again, since no notification came for the
@@ -512,8 +528,7 @@ func (n *StreamNotifier) close(
 	n.CloseResult = result
 	n.CloseTime = timestamppb.New(ctx.Now(n))
 	n.OwnerCheckTime = nil
-	n.RecheckTime = nil
-	n.RecheckGap = nil
+	n.disarmRecheck()
 	return callback.ScheduleStandbyCallbacks(ctx, n.Callbacks)
 }
 

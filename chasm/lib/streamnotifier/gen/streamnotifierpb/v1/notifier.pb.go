@@ -71,15 +71,19 @@ type NotifierState struct {
 	// Workflow failed. The callbacks complete as failed with it, or as canceled when it has
 	// canceled info.
 	CloseFailure *v12.Failure `protobuf:"bytes,16,opt,name=close_failure,json=closeFailure,proto3" json:"close_failure,omitempty"`
-	// When the armed recheck fires, or unset when none is armed. While Workflow readers wait, the
+	// When the next recheck is due, or unset when none is armed. While Workflow readers wait, the
 	// notifier asks them to read again after a quiet period, so a notification that a producer
 	// never sent delays them by at most the period.
 	RecheckTime *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=recheck_time,json=recheckTime,proto3" json:"recheck_time,omitempty"`
 	// The quiet period before the armed recheck. It doubles after each recheck up to
 	// streamnotifier.recheckMax, and a notification sets it back to streamnotifier.recheckInitial.
-	RecheckGap    *durationpb.Duration `protobuf:"bytes,18,opt,name=recheck_gap,json=recheckGap,proto3" json:"recheck_gap,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RecheckGap *durationpb.Duration `protobuf:"bytes,18,opt,name=recheck_gap,json=recheckGap,proto3" json:"recheck_gap,omitempty"`
+	// When the armed recheck task fires, or unset when none is armed. It is at or before
+	// recheck_time. A notification moves recheck_time without a new task, and a task that fires
+	// before recheck_time arms the next one.
+	RecheckTaskTime *timestamppb.Timestamp `protobuf:"bytes,27,opt,name=recheck_task_time,json=recheckTaskTime,proto3" json:"recheck_task_time,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *NotifierState) Reset() {
@@ -238,6 +242,13 @@ func (x *NotifierState) GetRecheckGap() *durationpb.Duration {
 	return nil
 }
 
+func (x *NotifierState) GetRecheckTaskTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RecheckTaskTime
+	}
+	return nil
+}
+
 // What the handler's start answered a caller with.
 type CallerStart struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -295,7 +306,7 @@ var File_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto protor
 
 const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawDesc = "" +
 	"\n" +
-	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xab\n" +
+	"@temporal/server/chasm/lib/streamnotifier/proto/v1/notifier.proto\x121temporal.server.chasm.lib.streamnotifier.proto.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\"\xf3\n" +
 	"\n" +
 	"\rNotifierState\x12F\n" +
 	"\n" +
@@ -320,7 +331,8 @@ const file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_rawD
 	"\rclose_failure\x18\x10 \x01(\v2 .temporal.api.failure.v1.FailureR\fcloseFailure\x12=\n" +
 	"\frecheck_time\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\vrecheckTime\x12:\n" +
 	"\vrecheck_gap\x18\x12 \x01(\v2\x19.google.protobuf.DurationR\n" +
-	"recheckGap\x1a;\n" +
+	"recheckGap\x12F\n" +
+	"\x11recheck_task_time\x18\x1b \x01(\v2\x1a.google.protobuf.TimestampR\x0frecheckTaskTime\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x7f\n" +
@@ -370,13 +382,14 @@ var file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_depIdx
 	7,  // 9: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.close_failure:type_name -> temporal.api.failure.v1.Failure
 	6,  // 10: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_time:type_name -> google.protobuf.Timestamp
 	8,  // 11: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_gap:type_name -> google.protobuf.Duration
-	6,  // 12: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
-	1,  // 13: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	6,  // 12: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.recheck_task_time:type_name -> google.protobuf.Timestamp
+	6,  // 13: temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart.start_time:type_name -> google.protobuf.Timestamp
+	1,  // 14: temporal.server.chasm.lib.streamnotifier.proto.v1.NotifierState.CallerStartsEntry.value:type_name -> temporal.server.chasm.lib.streamnotifier.proto.v1.CallerStart
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_streamnotifier_proto_v1_notifier_proto_init() }

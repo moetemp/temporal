@@ -54,13 +54,17 @@ message NotifierState {
   // Workflow failed. The callbacks complete as failed with it, or as canceled when it has
   // canceled info.
   temporal.api.failure.v1.Failure close_failure = 16;
-  // When the armed recheck fires, or unset when none is armed. While Workflow readers wait, the
+  // When the next recheck is due, or unset when none is armed. While Workflow readers wait, the
   // notifier asks them to read again after a quiet period, so a notification that a producer
   // never sent delays them by at most the period.
   google.protobuf.Timestamp recheck_time = 17;
   // The quiet period before the armed recheck. It doubles after each recheck up to
   // streamnotifier.recheckMax, and a notification sets it back to streamnotifier.recheckInitial.
   google.protobuf.Duration recheck_gap = 18;
+  // When the armed recheck task fires, or unset when none is armed. It is at or before
+  // recheck_time. A notification moves recheck_time without a new task, and a task that fires
+  // before recheck_time arms the next one.
+  google.protobuf.Timestamp recheck_task_time = 27;
 }
 
 // What the handler's start answered a caller with.

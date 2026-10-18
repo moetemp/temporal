@@ -211,17 +211,21 @@ func (nt *notifierTest) attachWorkflow(requestID, subscription string) error {
 	return err
 }
 
-// runRecheck runs the armed recheck.
+// runRecheck runs the armed recheck task until it fires at the recheck time, as the timer queue
+// would.
 func (nt *notifierTest) runRecheck() {
-	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
-		func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-			task := &streamnotifierpb.RecheckTask{ScheduledTime: n.GetRecheckTime()}
-			valid, err := nt.recheck.Validate(ctx, n, chasm.TaskInvocation{}, task)
-			require.NoError(nt.t, err)
-			require.True(nt.t, valid)
-			return struct{}{}, nt.recheck.Execute(ctx, n, chasm.TaskAttributes{}, task)
-		}, struct{}{})
-	require.NoError(nt.t, err)
+	for due := false; !due; {
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				task := &streamnotifierpb.RecheckTask{ScheduledTime: n.GetRecheckTaskTime()}
+				due = !task.GetScheduledTime().AsTime().Before(n.GetRecheckTime().AsTime())
+				valid, err := nt.recheck.Validate(ctx, n, chasm.TaskInvocation{}, task)
+				require.NoError(nt.t, err)
+				require.True(nt.t, valid)
+				return struct{}{}, nt.recheck.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(nt.t, err)
+	}
 }
 
 func (nt *notifierTest) notify(counter int64, closeStream bool) error {
@@ -1448,6 +1452,32 @@ func TestRechecks(t *testing.T) {
 				"a notification sets the gap back")
 			require.True(t, nt.now().Add(time.Minute).Equal(n.GetRecheckTime().AsTime()))
 		})
+	})
+
+	t.Run("NotificationsMoveTheRecheckWithoutANewTask", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		var armed time.Time
+		nt.read(func(n *StreamNotifier, _ chasm.Context) { armed = n.GetRecheckTaskTime().AsTime() })
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(2, false))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, armed, n.GetRecheckTaskTime().AsTime(), "the armed task stays")
+		})
+
+		later := armed.Add(time.Minute)
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				n.RecheckTime = timestamppb.New(later)
+				task := &streamnotifierpb.RecheckTask{ScheduledTime: timestamppb.New(armed)}
+				return struct{}{}, nt.recheck.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(t, err)
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, later, n.GetRecheckTaskTime().AsTime(), "an early task arms the next")
+		})
+		require.False(t, nt.callbacks()["a"].GetPendingProgress().GetRecheck(),
+			"an early task asks for no read")
 	})
 
 	t.Run("OnlyWorkflowReadersArmARecheck", func(t *testing.T) {

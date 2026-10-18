@@ -282,15 +282,15 @@ func newRecheckTaskHandler(opts recheckTaskHandlerOptions) *recheckTaskHandler {
 	return &recheckTaskHandler{config: opts.Config}
 }
 
-// Validate keeps only the latest armed recheck of an open notifier.
+// Validate keeps only the armed recheck task of an open notifier.
 func (h *recheckTaskHandler) Validate(
 	_ chasm.Context,
 	n *StreamNotifier,
 	_ chasm.TaskInvocation,
 	task *streamnotifierpb.RecheckTask,
 ) (bool, error) {
-	return !n.Closed && !n.Expired &&
-		n.GetRecheckTime().AsTime().Equal(task.GetScheduledTime().AsTime()), nil
+	return !n.Closed && !n.Expired && n.GetRecheckTaskTime() != nil &&
+		n.GetRecheckTaskTime().AsTime().Equal(task.GetScheduledTime().AsTime()), nil
 }
 
 // Execute asks the waiting Workflow readers to read again, since no notification came for the
@@ -300,7 +300,13 @@ func (h *recheckTaskHandler) Execute(
 	ctx chasm.MutableContext,
 	n *StreamNotifier,
 	_ chasm.TaskAttributes,
-	_ *streamnotifierpb.RecheckTask,
+	task *streamnotifierpb.RecheckTask,
 ) error {
+	n.RecheckTaskTime = nil
+	// A notification since the task was armed moved the recheck later without a task of its own.
+	if task.GetScheduledTime().AsTime().Before(n.GetRecheckTime().AsTime()) {
+		n.armRecheckTask(ctx)
+		return nil
+	}
 	return n.recheck(ctx, h.config.RecheckMax(ctx.NamespaceEntry().Name().String()))
 }
