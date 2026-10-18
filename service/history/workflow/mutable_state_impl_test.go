@@ -2321,7 +2321,7 @@ func (s *mutableStateSuite) TestTransientWorkflowTaskSchedule_CurrentVersionChan
 }
 
 // TestStreamWakesAcrossFailoverConversion checks that a transient Workflow Task a failover converts
-// doesn't carry stream wakes, and that the wakes wait for a later task instead of being dropped.
+// carries the pending stream wakes, since its scheduled event is new to the worker.
 func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 	version := int64(2000)
 	// prepare leaves a failed first task, so the next task is a transient retry.
@@ -2384,8 +2384,8 @@ func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 		s.NoError(s.mutableState.UpdateCurrentVersion(version+1, true))
 		s.NoError(s.mutableState.scheduleWorkflowTaskForCarriedState())
 		s.True(s.mutableState.HasPendingWorkflowTask())
-		s.Empty(scheduledWakes(), "the converted task doesn't carry the wake")
-		s.NotEmpty(s.mutableState.pendingCarriers(), "the wake waits for a later task")
+		s.Len(scheduledWakes(), 1, "the converted task carries the wake")
+		s.Empty(s.mutableState.pendingCarriers())
 	})
 
 	s.Run("StartedAfterTheVersionChanged", func() {
@@ -2413,8 +2413,8 @@ func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 		s.NoError(err)
 		s.NotNil(started)
 		s.Equal(int32(1), started.Attempt, "the transient task was converted")
-		s.Empty(scheduledWakes(), "the converted task doesn't carry the wake")
-		s.NotEmpty(s.mutableState.pendingCarriers())
+		s.Len(scheduledWakes(), 1, "the converted task carries the wake")
+		s.Empty(s.mutableState.pendingCarriers())
 	})
 }
 
