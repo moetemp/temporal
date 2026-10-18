@@ -59,7 +59,10 @@ type progressInvocation struct {
 	options nexusrpc.CompleteOperationOptions
 
 	// Set for a NexusHandler delivery.
-	requestID      string
+	requestID string
+	// delivery numbers the delivery, so a redelivery of the same counter gets a request ID of its
+	// own.
+	delivery       int64
 	receiverState  []byte
 	sourceLinks    []*nexuspb.Link
 	operationToken string
@@ -211,6 +214,7 @@ func (c *Callback) loadProgressArgs(
 	}
 	if c.GetCallback().GetNexusHandler() != nil {
 		invocation.requestID = c.RequestId
+		invocation.delivery = c.ProgressInFlight
 		invocation.receiverState = slices.Clone(c.ReceiverState)
 		parent := c.CompletionSource.Get(ctx)
 		if source, ok := parent.(HandlerTokenSource); ok {
@@ -643,7 +647,10 @@ func deliverNexusHandlerProgress(
 					Service:   target.GetService(),
 					Operation: target.GetProgressOperation(),
 					RequestId: fmt.Sprintf(
-						"%s/progress/%d", invocation.requestID, progress.GetCounter(),
+						"%s/progress/%d/%d",
+						invocation.requestID,
+						progress.GetCounter(),
+						invocation.delivery,
 					),
 					Payload: input,
 					Links:   invocation.sourceLinks,

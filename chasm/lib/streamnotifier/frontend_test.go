@@ -158,11 +158,11 @@ func TestNotifierRequestsAreBounded(t *testing.T) {
 	var invalid *serviceerror.InvalidArgument
 	require.ErrorAs(
 		t,
-		notify(ref("wf", "t"), strings.Repeat("x", maxPositionBytes+1)),
+		notify(ref("wf", "t"), strings.Repeat("x", MaxProgressPositionBytes+1)),
 		&invalid,
 		"a position over 1 KiB is refused",
 	)
-	require.NoError(t, notify(ref("wf", "t"), strings.Repeat("x", maxPositionBytes)))
+	require.NoError(t, notify(ref("wf", "t"), strings.Repeat("x", MaxProgressPositionBytes)))
 	require.ErrorAs(
 		t,
 		notify(ref(strings.Repeat("w", 11), "t"), ""),

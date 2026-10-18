@@ -8,6 +8,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
@@ -41,9 +42,7 @@ func streamWakeRequest(
 			RunId:      target.GetRunId(),
 		},
 		Wake: wake,
-		// The reader's place may be gone, after a close it took or a detach, by the time a wake
-		// lands.
-		OnlyIfReserved: true,
+		Mode: enumsspb.STREAM_WAKE_MODE_WAKE,
 	}
 }
 
@@ -111,7 +110,9 @@ func (c invocableStreamWake) Invoke(
 	}
 	req := streamWakeRequest(c.namespaceID, c.target, wake)
 	// The reader detached, so it frees its place among the run's readers for a new one.
-	req.Release = c.wake == nil
+	if c.wake == nil {
+		req.Mode = enumsspb.STREAM_WAKE_MODE_RELEASE
+	}
 	_, err := h.historyClient.RecordStreamWake(ctx, req)
 	if err == nil {
 		return invocationResultOK{}

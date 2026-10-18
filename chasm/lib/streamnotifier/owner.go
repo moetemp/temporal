@@ -315,8 +315,9 @@ func (d *ownerDescriber) checkActivityRun(
 
 // workflowActivityEnded reports whether the owner Activity left its scheduling run. The Workflow's
 // Worker closes the stream with the Activity's outcome when it resolves the Activity, so an
-// Activity that is no longer pending gets the close grace. It also gets the start grace, since the Workflow
-// may write to the stream in the activation that schedules the Activity, before History has it.
+// Activity that is no longer pending gets the close grace. It also gets the start grace, since the
+// Workflow may write to the stream in the activation that schedules the Activity, before History
+// has it.
 // A closed run has no pending Activities, and its Worker had its chance to close, so it ends the
 // stream at once.
 func (d *ownerDescriber) workflowActivityEnded(

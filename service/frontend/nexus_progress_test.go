@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 )
 
 func TestParseNexusProgress(t *testing.T) {
@@ -64,7 +65,7 @@ func TestParseNexusProgress(t *testing.T) {
 		{
 			name: "metadata over the limit",
 			body: `{"counter": 1, "metadata": {"k": "` +
-				strings.Repeat("x", maxNexusProgressMetadataBytes) + `"}}`,
+				strings.Repeat("x", streamnotifier.MaxProgressMetadataBytes) + `"}}`,
 			wantErr: "more than the 2048 allowed",
 		},
 	} {
@@ -82,7 +83,7 @@ func TestParseNexusProgress(t *testing.T) {
 
 	t.Run("metadata exactly at the limit", func(t *testing.T) {
 		t.Parallel()
-		value := strings.Repeat("x", maxNexusProgressMetadataBytes-1)
+		value := strings.Repeat("x", streamnotifier.MaxProgressMetadataBytes-1)
 		got, err := parseNexusProgress([]byte(`{"counter": 1, "metadata": {"k": "` + value + `"}}`))
 		require.NoError(t, err)
 		require.Equal(t, value, got.Metadata["k"])
