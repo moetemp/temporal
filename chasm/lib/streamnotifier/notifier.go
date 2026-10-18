@@ -551,22 +551,32 @@ func (n *StreamNotifier) isIdle(requestID string) bool {
 
 // wait asks for one delivery to an idle callback once the counter passes after. A counter that
 // passed already delivers at once, outside any debounce window. A newer wait replaces an older
-// one. A callback that is not idle gets every delivery, so its wait changes nothing.
+// one. A callback that is not idle gets every delivery, so its wait changes nothing. It reports
+// whether it dropped the callback because a delivery found its receiver closed.
 func (n *StreamNotifier) wait(
 	ctx chasm.MutableContext,
 	requestID string,
 	after int64,
 	idleTimeout time.Duration,
-) error {
+) (bool, error) {
 	field, ok := n.Callbacks[requestID]
 	if !ok {
-		return serviceerror.NewNotFoundf("no callback is attached with request ID %q", requestID)
+		return false, serviceerror.NewNotFoundf(
+			"no callback is attached with request ID %q",
+			requestID,
+		)
+	}
+	// The reader's run closed or lost the reader's place, so no wake reaches it. The caller
+	// answers NotFound, and a reader in a running run attaches again.
+	if field.Get(ctx).GetReceiverClosed() {
+		n.detach(requestID)
+		return true, nil
 	}
 	// A closed stream completes the callback, which is the last thing it gets. A callback that
 	// completes for another reason, such as a detach, takes no more progress.
 	if n.Closed || !n.isIdle(requestID) ||
 		field.Get(ctx).Status != callbackspb.CALLBACK_STATUS_STANDBY {
-		return nil
+		return false, nil
 	}
 	n.touch(ctx, idleTimeout)
 	if n.Counter > after {
@@ -581,13 +591,13 @@ func (n *StreamNotifier) wait(
 				tag.NewInt64("counter", n.Counter))
 		}
 		delete(n.Waits, requestID)
-		return cb.DeliverProgress(ctx, n.progress())
+		return false, cb.DeliverProgress(ctx, n.progress())
 	}
 	if n.Waits == nil {
 		n.Waits = map[string]int64{}
 	}
 	n.Waits[requestID] = after
-	return nil
+	return false, nil
 }
 
 // inDebounceWindow reports whether a delivery opened a window that has not ended.

@@ -283,20 +283,26 @@ func (h *handler) WaitStreamCallback(
 		BusinessID:  req.GetBusinessId(),
 	})
 	// A wait starts no notifier, since it names a callback that an attach put there.
-	_, _, err := chasm.UpdateComponent(
+	dropped, _, err := chasm.UpdateComponent(
 		ctx,
 		ref,
 		func(
 			n *StreamNotifier,
 			mctx chasm.MutableContext,
 			r *workflowservice.WaitStreamCallbackRequest,
-		) (struct{}, error) {
-			return struct{}{}, n.wait(mctx, r.GetRequestId(), r.GetAfterCounter(), idleTimeout)
+		) (bool, error) {
+			return n.wait(mctx, r.GetRequestId(), r.GetAfterCounter(), idleTimeout)
 		},
 		fe,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if dropped {
+		return nil, serviceerror.NewNotFoundf(
+			"the callback with request ID %q no longer reaches its reader",
+			fe.GetRequestId(),
+		)
 	}
 	return &streamnotifierpb.WaitStreamCallbackResponse{
 		FrontendResponse: &workflowservice.WaitStreamCallbackResponse{},
