@@ -14,6 +14,7 @@ import (
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -63,16 +64,26 @@ func (r *wakeReader) execution() *commonpb.WorkflowExecution {
 	return &commonpb.WorkflowExecution{WorkflowId: r.run.GetID(), RunId: r.run.GetRunID()}
 }
 
+// wake reserves the reader's place, as its attach would, and records the wake.
 func (r *wakeReader) wake(wake *streampb.StreamWake) error {
-	_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
-		r.s.Context(),
-		&historyservice.RecordStreamWakeRequest{
-			NamespaceId: r.env.NamespaceID().String(),
-			Execution:   r.execution(),
-			Wake:        wake,
-		},
-	)
-	return err
+	for _, mode := range []enumsspb.StreamWakeMode{
+		enumsspb.STREAM_WAKE_MODE_RESERVE,
+		enumsspb.STREAM_WAKE_MODE_WAKE,
+	} {
+		_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
+			r.s.Context(),
+			&historyservice.RecordStreamWakeRequest{
+				NamespaceId: r.env.NamespaceID().String(),
+				Execution:   r.execution(),
+				Wake:        wake,
+				Mode:        mode,
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *wakeReader) wakeAt(subscription string, counter int64) {
@@ -165,7 +176,7 @@ func (s *StreamWakeSuite) TestAWakeRidesTheNextScheduledEvent() {
 func (s *StreamWakeSuite) TestABurstCostsAtMostOneFollowUpTask() {
 	r := s.newWakeReader()
 	before := r.history()
-	// The first wake schedules a task. With no poll yet, later wakes fold into it.
+	// The first wake schedules a task. Later wakes wait, folded, for the task after it.
 	r.wakeAt("reader-1", 1)
 	r.wakeAt("reader-1", 2)
 	r.wakeAt("reader-2", 1)
@@ -177,7 +188,7 @@ func (s *StreamWakeSuite) TestABurstCostsAtMostOneFollowUpTask() {
 
 	followUp := r.poll()
 	wakes := lastScheduledWakes(followUp)
-	s.Len(wakes, 2, "one follow-up task carries what folded, one wake per reader")
+	s.Len(wakes, 2, "one follow-up task carries what waited, one wake per reader")
 	s.Equal("reader-1", wakes[0].GetSubscriptionId())
 	s.Equal(int64(3), wakes[0].GetCounter(), "the reader sees its latest wake")
 	s.Equal("reader-2", wakes[1].GetSubscriptionId())
@@ -232,7 +243,7 @@ func (s *StreamWakeSuite) TestWakesWaitTheMinInterval() {
 	r.respond(second)
 }
 
-func (s *StreamWakeSuite) TestAHeartbeatTaskCarriesNoWake() {
+func (s *StreamWakeSuite) TestAHeartbeatTaskCarriesTheWake() {
 	r := s.newWakeReader()
 	s.NoError(r.env.SdkClient().SignalWorkflow(
 		s.Context(), r.run.GetID(), r.run.GetRunID(), "go", nil))
@@ -244,12 +255,33 @@ func (s *StreamWakeSuite) TestAHeartbeatTaskCarriesNoWake() {
 		ForceCreateNewWorkflowTask: true,
 	})
 	heartbeat := r.poll()
-	s.Empty(lastScheduledWakes(heartbeat), "a heartbeat task holds the wake")
+	s.Len(lastScheduledWakes(heartbeat), 1,
+		"SDKs end a heartbeat chain at a task with attachments, so the server holds nothing")
 	r.respond(heartbeat)
+}
 
-	next := r.poll()
-	s.Len(lastScheduledWakes(next), 1, "the first normal task carries it")
-	r.respond(next)
+func (s *StreamWakeSuite) TestAWakeWaitsForTheStartDelay() {
+	r := &wakeReader{
+		s: s,
+		env: testcore.NewEnv(
+			s.T(),
+			testcore.WithDynamicConfig(dynamicconfig.EnableChasm, true),
+			testcore.WithDynamicConfig(dynamicconfig.EnableCHASMCallbacks, true),
+		),
+		taskQueue: testcore.RandomizeStr(s.T().Name()),
+	}
+	run, err := r.env.SdkClient().ExecuteWorkflow(
+		s.Context(),
+		client.StartWorkflowOptions{TaskQueue: r.taskQueue, StartDelay: time.Hour},
+		"reader",
+	)
+	s.NoError(err)
+	r.run = run
+	r.wakeAt("reader-1", 1)
+	for _, event := range r.history() {
+		s.NotEqual(enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED, event.GetEventType(),
+			"the first task waits for the start delay")
+	}
 }
 
 func (s *StreamWakeSuite) TestAClosedRunAnswersNotFound() {
@@ -542,13 +574,14 @@ func (s *StreamWakeSuite) TestALateWakeTakesNoPlace() {
 	_, err := r.env.GetTestCluster().HistoryClient().RecordStreamWake(
 		s.Context(),
 		&historyservice.RecordStreamWakeRequest{
-			NamespaceId:    r.env.NamespaceID().String(),
-			Execution:      r.execution(),
-			Wake:           &streampb.StreamWake{SubscriptionId: "sub-1", Counter: 1},
-			OnlyIfReserved: true,
+			NamespaceId: r.env.NamespaceID().String(),
+			Execution:   r.execution(),
+			Wake:        &streampb.StreamWake{SubscriptionId: "sub-1", Counter: 1},
+			Mode:        enumsspb.STREAM_WAKE_MODE_WAKE,
 		},
 	)
-	s.NoError(err)
+	var notFound *serviceerror.NotFound
+	s.ErrorAs(err, &notFound, "the callback ends, so the reader attaches again")
 	r.stream.Topic = "another"
 	s.NoError(r.attach("jetty/run/2", "sub-2"))
 }

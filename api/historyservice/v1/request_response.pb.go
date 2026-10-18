@@ -10503,19 +10503,11 @@ type RecordStreamWakeRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	NamespaceId string                 `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
 	// The run whose reader the wake is for. A closed run answers NotFound.
-	Execution *v14.WorkflowExecution `protobuf:"bytes,2,opt,name=execution,proto3" json:"execution,omitempty"`
-	Wake      *v124.StreamWake       `protobuf:"bytes,3,opt,name=wake,proto3" json:"wake,omitempty"`
-	// Counts the wake's reader toward history.maximumStreamWakeSources and records no wake. A
-	// reader's attach asks for this, so an attach past the limit fails.
-	ReserveOnly bool `protobuf:"varint,4,opt,name=reserve_only,json=reserveOnly,proto3" json:"reserve_only,omitempty"`
-	// Stops counting the wake's reader toward history.maximumStreamWakeSources and records no wake.
-	// A reader that detached, or whose attach failed after its reserve, frees its place this way.
-	Release bool `protobuf:"varint,5,opt,name=release,proto3" json:"release,omitempty"`
-	// Drops the wake when its reader holds no place, instead of giving it one. A callback's wake can
-	// land after the reader's place was freed, and it must not take the place again.
-	OnlyIfReserved bool `protobuf:"varint,6,opt,name=only_if_reserved,json=onlyIfReserved,proto3" json:"only_if_reserved,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	Execution     *v14.WorkflowExecution `protobuf:"bytes,2,opt,name=execution,proto3" json:"execution,omitempty"`
+	Wake          *v124.StreamWake       `protobuf:"bytes,3,opt,name=wake,proto3" json:"wake,omitempty"`
+	Mode          v112.StreamWakeMode    `protobuf:"varint,4,opt,name=mode,proto3,enum=temporal.server.api.enums.v1.StreamWakeMode" json:"mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RecordStreamWakeRequest) Reset() {
@@ -10569,25 +10561,11 @@ func (x *RecordStreamWakeRequest) GetWake() *v124.StreamWake {
 	return nil
 }
 
-func (x *RecordStreamWakeRequest) GetReserveOnly() bool {
+func (x *RecordStreamWakeRequest) GetMode() v112.StreamWakeMode {
 	if x != nil {
-		return x.ReserveOnly
+		return x.Mode
 	}
-	return false
-}
-
-func (x *RecordStreamWakeRequest) GetRelease() bool {
-	if x != nil {
-		return x.Release
-	}
-	return false
-}
-
-func (x *RecordStreamWakeRequest) GetOnlyIfReserved() bool {
-	if x != nil {
-		return x.OnlyIfReserved
-	}
-	return false
+	return v112.StreamWakeMode(0)
 }
 
 type RecordStreamWakeResponse struct {
@@ -10940,7 +10918,7 @@ var File_temporal_server_api_historyservice_v1_request_response_proto protorefle
 
 const file_temporal_server_api_historyservice_v1_request_response_proto_rawDesc = "" +
 	"\n" +
-	"<temporal/server/api/historyservice/v1/request_response.proto\x12%temporal.server.api.historyservice.v1\x1a google/protobuf/descriptor.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a&temporal/api/activity/v1/message.proto\x1a$temporal/api/common/v1/message.proto\x1a(temporal/api/deployment/v1/message.proto\x1a$temporal/api/enums/v1/workflow.proto\x1a%temporal/api/failure/v1/message.proto\x1a%temporal/api/history/v1/message.proto\x1a#temporal/api/nexus/v1/message.proto\x1a&temporal/api/protocol/v1/message.proto\x1a#temporal/api/query/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\x1a'temporal/api/taskqueue/v1/message.proto\x1a&temporal/api/workflow/v1/message.proto\x1a6temporal/api/workflowservice/v1/request_response.proto\x1a:temporal/server/api/adminservice/v1/request_response.proto\x1a*temporal/server/api/clock/v1/message.proto\x1a'temporal/server/api/common/v1/dlq.proto\x1a*temporal/server/api/enums/v1/cluster.proto\x1a)temporal/server/api/enums/v1/common.proto\x1a+temporal/server/api/enums/v1/workflow.proto\x1a+temporal/server/api/health/v1/message.proto\x1a,temporal/server/api/history/v1/message.proto\x1a.temporal/server/api/namespace/v1/message.proto\x1a3temporal/server/api/persistence/v1/executions.proto\x1a,temporal/server/api/persistence/v1/hsm.proto\x1a?temporal/server/api/persistence/v1/workflow_mutable_state.proto\x1a0temporal/server/api/replication/v1/message.proto\x1a.temporal/server/api/taskqueue/v1/message.proto\x1a*temporal/server/api/token/v1/message.proto\x1a-temporal/server/api/workflow/v1/message.proto\"\x90\x02\n" +
+	"<temporal/server/api/historyservice/v1/request_response.proto\x12%temporal.server.api.historyservice.v1\x1a google/protobuf/descriptor.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a&temporal/api/activity/v1/message.proto\x1a$temporal/api/common/v1/message.proto\x1a(temporal/api/deployment/v1/message.proto\x1a$temporal/api/enums/v1/workflow.proto\x1a%temporal/api/failure/v1/message.proto\x1a%temporal/api/history/v1/message.proto\x1a#temporal/api/nexus/v1/message.proto\x1a&temporal/api/protocol/v1/message.proto\x1a#temporal/api/query/v1/message.proto\x1a$temporal/api/stream/v1/message.proto\x1a'temporal/api/taskqueue/v1/message.proto\x1a&temporal/api/workflow/v1/message.proto\x1a6temporal/api/workflowservice/v1/request_response.proto\x1a:temporal/server/api/adminservice/v1/request_response.proto\x1a*temporal/server/api/clock/v1/message.proto\x1a'temporal/server/api/common/v1/dlq.proto\x1a*temporal/server/api/enums/v1/cluster.proto\x1a)temporal/server/api/enums/v1/common.proto\x1a.temporal/server/api/enums/v1/stream_wake.proto\x1a+temporal/server/api/enums/v1/workflow.proto\x1a+temporal/server/api/health/v1/message.proto\x1a,temporal/server/api/history/v1/message.proto\x1a.temporal/server/api/namespace/v1/message.proto\x1a3temporal/server/api/persistence/v1/executions.proto\x1a,temporal/server/api/persistence/v1/hsm.proto\x1a?temporal/server/api/persistence/v1/workflow_mutable_state.proto\x1a0temporal/server/api/replication/v1/message.proto\x1a.temporal/server/api/taskqueue/v1/message.proto\x1a*temporal/server/api/token/v1/message.proto\x1a-temporal/server/api/workflow/v1/message.proto\"\x90\x02\n" +
 	"\x0eRoutingOptions\x12\x16\n" +
 	"\x06custom\x18\x01 \x01(\bR\x06custom\x12\x19\n" +
 	"\bany_host\x18\x02 \x01(\bR\aanyHost\x12\x19\n" +
@@ -11723,14 +11701,12 @@ const file_temporal_server_api_historyservice_v1_request_response_proto_rawDesc 
 	")PollWorkflowExecutionTimeSkippingResponse\x12f\n" +
 	"\bresponse\x18\x01 \x01(\v2J.temporal.api.workflowservice.v1.PollWorkflowExecutionTimeSkippingResponseR\bresponse\"\xa3\x01\n" +
 	"\x1cOrphanedChildReplacementInfo\x12\x82\x01\n" +
-	"$parent_current_version_history_items\x18\x01 \x03(\v22.temporal.server.api.history.v1.VersionHistoryItemR parentCurrentVersionHistoryItems\"\xc1\x02\n" +
+	"$parent_current_version_history_items\x18\x01 \x03(\v22.temporal.server.api.history.v1.VersionHistoryItemR parentCurrentVersionHistoryItems\"\x9c\x02\n" +
 	"\x17RecordStreamWakeRequest\x12!\n" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12G\n" +
 	"\texecution\x18\x02 \x01(\v2).temporal.api.common.v1.WorkflowExecutionR\texecution\x126\n" +
-	"\x04wake\x18\x03 \x01(\v2\".temporal.api.stream.v1.StreamWakeR\x04wake\x12!\n" +
-	"\freserve_only\x18\x04 \x01(\bR\vreserveOnly\x12\x18\n" +
-	"\arelease\x18\x05 \x01(\bR\arelease\x12(\n" +
-	"\x10only_if_reserved\x18\x06 \x01(\bR\x0eonlyIfReserved:\x1b\x92\xc4\x03\x17*\x15execution.workflow_id\"6\n" +
+	"\x04wake\x18\x03 \x01(\v2\".temporal.api.stream.v1.StreamWakeR\x04wake\x12@\n" +
+	"\x04mode\x18\x04 \x01(\x0e2,.temporal.server.api.enums.v1.StreamWakeModeR\x04mode:\x1b\x92\xc4\x03\x17*\x15execution.workflow_id\"6\n" +
 	"\x18RecordStreamWakeResponse\x12\x1a\n" +
 	"\breserved\x18\x01 \x01(\bR\breserved:t\n" +
 	"\arouting\x12\x1f.google.protobuf.MessageOptions\x18\xc28 \x01(\v25.temporal.server.api.historyservice.v1.RoutingOptionsR\arouting\x88\x01\x01B<Z:go.temporal.io/server/api/historyservice/v1;historyserviceb\x06proto3"
@@ -12042,9 +12018,10 @@ var file_temporal_server_api_historyservice_v1_request_response_proto_goTypes = 
 	(*v1.PollWorkflowExecutionTimeSkippingRequest)(nil),   // 290: temporal.api.workflowservice.v1.PollWorkflowExecutionTimeSkippingRequest
 	(*v1.PollWorkflowExecutionTimeSkippingResponse)(nil),  // 291: temporal.api.workflowservice.v1.PollWorkflowExecutionTimeSkippingResponse
 	(*v124.StreamWake)(nil),                               // 292: temporal.api.stream.v1.StreamWake
-	(*v115.WorkflowQuery)(nil),                            // 293: temporal.api.query.v1.WorkflowQuery
-	(*v118.ReplicationMessages)(nil),                      // 294: temporal.server.api.replication.v1.ReplicationMessages
-	(*descriptorpb.MessageOptions)(nil),                   // 295: google.protobuf.MessageOptions
+	(v112.StreamWakeMode)(0),                              // 293: temporal.server.api.enums.v1.StreamWakeMode
+	(*v115.WorkflowQuery)(nil),                            // 294: temporal.api.query.v1.WorkflowQuery
+	(*v118.ReplicationMessages)(nil),                      // 295: temporal.server.api.replication.v1.ReplicationMessages
+	(*descriptorpb.MessageOptions)(nil),                   // 296: google.protobuf.MessageOptions
 }
 var file_temporal_server_api_historyservice_v1_request_response_proto_depIdxs = []int32{
 	176, // 0: temporal.server.api.historyservice.v1.StartWorkflowExecutionRequest.start_request:type_name -> temporal.api.workflowservice.v1.StartWorkflowExecutionRequest
@@ -12311,23 +12288,24 @@ var file_temporal_server_api_historyservice_v1_request_response_proto_depIdxs = 
 	195, // 261: temporal.server.api.historyservice.v1.OrphanedChildReplacementInfo.parent_current_version_history_items:type_name -> temporal.server.api.history.v1.VersionHistoryItem
 	194, // 262: temporal.server.api.historyservice.v1.RecordStreamWakeRequest.execution:type_name -> temporal.api.common.v1.WorkflowExecution
 	292, // 263: temporal.server.api.historyservice.v1.RecordStreamWakeRequest.wake:type_name -> temporal.api.stream.v1.StreamWake
-	1,   // 264: temporal.server.api.historyservice.v1.ExecuteMultiOperationRequest.Operation.start_workflow:type_name -> temporal.server.api.historyservice.v1.StartWorkflowExecutionRequest
-	105, // 265: temporal.server.api.historyservice.v1.ExecuteMultiOperationRequest.Operation.update_workflow:type_name -> temporal.server.api.historyservice.v1.UpdateWorkflowExecutionRequest
-	2,   // 266: temporal.server.api.historyservice.v1.ExecuteMultiOperationResponse.Response.start_workflow:type_name -> temporal.server.api.historyservice.v1.StartWorkflowExecutionResponse
-	106, // 267: temporal.server.api.historyservice.v1.ExecuteMultiOperationResponse.Response.update_workflow:type_name -> temporal.server.api.historyservice.v1.UpdateWorkflowExecutionResponse
-	293, // 268: temporal.server.api.historyservice.v1.RecordWorkflowTaskStartedResponse.QueriesEntry.value:type_name -> temporal.api.query.v1.WorkflowQuery
-	293, // 269: temporal.server.api.historyservice.v1.RecordWorkflowTaskStartedResponseWithRawHistory.QueriesEntry.value:type_name -> temporal.api.query.v1.WorkflowQuery
-	294, // 270: temporal.server.api.historyservice.v1.GetReplicationMessagesResponse.ShardMessagesEntry.value:type_name -> temporal.server.api.replication.v1.ReplicationMessages
-	98,  // 271: temporal.server.api.historyservice.v1.ShardReplicationStatus.RemoteClustersEntry.value:type_name -> temporal.server.api.historyservice.v1.ShardReplicationStatusPerCluster
-	97,  // 272: temporal.server.api.historyservice.v1.ShardReplicationStatus.HandoverNamespacesEntry.value:type_name -> temporal.server.api.historyservice.v1.HandoverNamespaceInfo
-	235, // 273: temporal.server.api.historyservice.v1.AddTasksRequest.Task.blob:type_name -> temporal.api.common.v1.DataBlob
-	295, // 274: temporal.server.api.historyservice.v1.routing:extendee -> google.protobuf.MessageOptions
-	0,   // 275: temporal.server.api.historyservice.v1.routing:type_name -> temporal.server.api.historyservice.v1.RoutingOptions
-	276, // [276:276] is the sub-list for method output_type
-	276, // [276:276] is the sub-list for method input_type
-	275, // [275:276] is the sub-list for extension type_name
-	274, // [274:275] is the sub-list for extension extendee
-	0,   // [0:274] is the sub-list for field type_name
+	293, // 264: temporal.server.api.historyservice.v1.RecordStreamWakeRequest.mode:type_name -> temporal.server.api.enums.v1.StreamWakeMode
+	1,   // 265: temporal.server.api.historyservice.v1.ExecuteMultiOperationRequest.Operation.start_workflow:type_name -> temporal.server.api.historyservice.v1.StartWorkflowExecutionRequest
+	105, // 266: temporal.server.api.historyservice.v1.ExecuteMultiOperationRequest.Operation.update_workflow:type_name -> temporal.server.api.historyservice.v1.UpdateWorkflowExecutionRequest
+	2,   // 267: temporal.server.api.historyservice.v1.ExecuteMultiOperationResponse.Response.start_workflow:type_name -> temporal.server.api.historyservice.v1.StartWorkflowExecutionResponse
+	106, // 268: temporal.server.api.historyservice.v1.ExecuteMultiOperationResponse.Response.update_workflow:type_name -> temporal.server.api.historyservice.v1.UpdateWorkflowExecutionResponse
+	294, // 269: temporal.server.api.historyservice.v1.RecordWorkflowTaskStartedResponse.QueriesEntry.value:type_name -> temporal.api.query.v1.WorkflowQuery
+	294, // 270: temporal.server.api.historyservice.v1.RecordWorkflowTaskStartedResponseWithRawHistory.QueriesEntry.value:type_name -> temporal.api.query.v1.WorkflowQuery
+	295, // 271: temporal.server.api.historyservice.v1.GetReplicationMessagesResponse.ShardMessagesEntry.value:type_name -> temporal.server.api.replication.v1.ReplicationMessages
+	98,  // 272: temporal.server.api.historyservice.v1.ShardReplicationStatus.RemoteClustersEntry.value:type_name -> temporal.server.api.historyservice.v1.ShardReplicationStatusPerCluster
+	97,  // 273: temporal.server.api.historyservice.v1.ShardReplicationStatus.HandoverNamespacesEntry.value:type_name -> temporal.server.api.historyservice.v1.HandoverNamespaceInfo
+	235, // 274: temporal.server.api.historyservice.v1.AddTasksRequest.Task.blob:type_name -> temporal.api.common.v1.DataBlob
+	296, // 275: temporal.server.api.historyservice.v1.routing:extendee -> google.protobuf.MessageOptions
+	0,   // 276: temporal.server.api.historyservice.v1.routing:type_name -> temporal.server.api.historyservice.v1.RoutingOptions
+	277, // [277:277] is the sub-list for method output_type
+	277, // [277:277] is the sub-list for method input_type
+	276, // [276:277] is the sub-list for extension type_name
+	275, // [275:276] is the sub-list for extension extendee
+	0,   // [0:275] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_api_historyservice_v1_request_response_proto_init() }

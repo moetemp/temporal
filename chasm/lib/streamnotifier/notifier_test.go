@@ -17,6 +17,7 @@ import (
 	streampb "go.temporal.io/api/stream/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
@@ -122,7 +123,7 @@ func newNotifierTest(t *testing.T, maxCallbacks int) *notifierTest {
 		) (*historyservice.RecordStreamWakeResponse, error) {
 			nt.reserved = append(nt.reserved, req)
 			return &historyservice.RecordStreamWakeResponse{
-				Reserved: req.GetReserveOnly() && !nt.counted,
+				Reserved: req.GetMode() == enumsspb.STREAM_WAKE_MODE_RESERVE && !nt.counted,
 			}, nt.reserveErr
 		}).
 		AnyTimes()
@@ -239,17 +240,21 @@ func (nt *notifierTest) runDebounce() {
 	require.NoError(nt.t, err)
 }
 
-// runRecheck runs the armed recheck.
+// runRecheck runs the armed recheck task until it fires at the recheck time, as the timer queue
+// would.
 func (nt *notifierTest) runRecheck() {
-	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
-		func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-			task := &streamnotifierpb.RecheckTask{ScheduledTime: n.GetRecheckTime()}
-			valid, err := nt.recheck.Validate(ctx, n, chasm.TaskInvocation{}, task)
-			require.NoError(nt.t, err)
-			require.True(nt.t, valid)
-			return struct{}{}, nt.recheck.Execute(ctx, n, chasm.TaskAttributes{}, task)
-		}, struct{}{})
-	require.NoError(nt.t, err)
+	for due := false; !due; {
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				task := &streamnotifierpb.RecheckTask{ScheduledTime: n.GetRecheckTaskTime()}
+				due = !task.GetScheduledTime().AsTime().Before(n.GetRecheckTime().AsTime())
+				valid, err := nt.recheck.Validate(ctx, n, chasm.TaskInvocation{}, task)
+				require.NoError(nt.t, err)
+				require.True(nt.t, valid)
+				return struct{}{}, nt.recheck.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(nt.t, err)
+	}
 }
 
 func (nt *notifierTest) notify(counter int64, closeStream bool) error {
@@ -356,17 +361,20 @@ func (nt *notifierTest) callbacks() map[string]*callbackspb.CallbackState {
 	return out
 }
 
-// expire runs the expiry the latest activity armed.
+// expire runs the armed expiry task until it fires at the expiry time, as the timer queue would.
 func (nt *notifierTest) expire() {
-	_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
-		func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-			task := &streamnotifierpb.ExpiryTask{LastActivityTime: n.GetLastActivityTime()}
-			valid, err := nt.expiry.Validate(ctx, n, chasm.TaskInvocation{}, task)
-			require.NoError(nt.t, err)
-			require.True(nt.t, valid)
-			return struct{}{}, nt.expiry.Execute(ctx, n, chasm.TaskAttributes{}, task)
-		}, struct{}{})
-	require.NoError(nt.t, err)
+	for due := false; !due; {
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				task := &streamnotifierpb.ExpiryTask{ScheduledTime: n.GetExpiryTaskTime()}
+				due = !task.GetScheduledTime().AsTime().Before(n.GetExpiryTime().AsTime())
+				valid, err := nt.expiry.Validate(ctx, n, chasm.TaskInvocation{}, task)
+				require.NoError(nt.t, err)
+				require.True(nt.t, valid)
+				return struct{}{}, nt.expiry.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(nt.t, err)
+	}
 }
 
 // hasTimer reports whether the notifier scheduled a timer task for at.
@@ -793,6 +801,32 @@ func TestStreamNotifier(t *testing.T) {
 		require.True(t, nt.describe().GetClosed())
 	})
 
+	t.Run("ActivityMovesTheExpiryWithoutANewTask", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attach("a"))
+		var armed time.Time
+		nt.read(func(n *StreamNotifier, _ chasm.Context) { armed = n.GetExpiryTaskTime().AsTime() })
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(2, false))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, armed, n.GetExpiryTaskTime().AsTime(), "the armed task stays")
+		})
+
+		later := armed.Add(time.Minute)
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				n.ExpiryTime = timestamppb.New(later)
+				task := &streamnotifierpb.ExpiryTask{ScheduledTime: timestamppb.New(armed)}
+				return struct{}{}, nt.expiry.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(t, err)
+		nt.read(func(n *StreamNotifier, ctx chasm.Context) {
+			require.Equal(t, chasm.LifecycleStateRunning, n.LifecycleState(ctx))
+			require.Equal(t, later, n.GetExpiryTaskTime().AsTime(), "an early task arms the next")
+		})
+		require.Equal(t, callbackspb.CALLBACK_STATUS_STANDBY, nt.callbacks()["a"].GetStatus())
+	})
+
 	t.Run("AClosedStreamStaysClosed", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.notify(1, true))
@@ -1196,6 +1230,25 @@ func TestAFullNotifierStaysUnderTheBudgetAfterProgressAndClose(t *testing.T) {
 	})
 }
 
+// A request ID is a key or an entry in more than one place of the state, so the limit counts
+// each copy.
+func TestLongRequestIDsCountOncePerCopy(t *testing.T) {
+	nt := newNotifierTest(t, 2000)
+	attached := 0
+	var err error
+	for attached < 2000 {
+		if err = nt.attach(fmt.Sprintf("%0999d", attached)); err != nil {
+			break
+		}
+		attached++
+	}
+	var full *serviceerror.ResourceExhausted
+	require.ErrorAs(t, err, &full)
+	dc := dynamicconfig.NewNoopCollection()
+	room := MaxCallbackBytes.Get(dc)("ns") - dynamicconfig.BlobSizeLimitError.Get(dc)("ns")
+	require.LessOrEqual(t, attached, room/((1+requestIDCopies)*999+progressReserve))
+}
+
 func TestLargeCallbacksHitTheByteLimitBeforeTheCountLimit(t *testing.T) {
 	nt := newNotifierTest(t, 2000)
 	// A header near frontend.callbackHeaderMaxLength.
@@ -1358,7 +1411,7 @@ func TestWorkflowTargets(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
 		require.Len(t, nt.reserved, 1)
-		require.True(t, nt.reserved[0].GetReserveOnly())
+		require.Equal(t, enumsspb.STREAM_WAKE_MODE_RESERVE, nt.reserved[0].GetMode())
 		require.Equal(t, "sub-a", nt.reserved[0].GetWake().GetSubscriptionId())
 		require.Equal(t, "reader", nt.reserved[0].GetExecution().GetWorkflowId())
 
@@ -1375,7 +1428,7 @@ func TestWorkflowTargets(t *testing.T) {
 		var failed *serviceerror.ResourceExhausted
 		require.ErrorAs(t, nt.attachWorkflow("b", "sub-b"), &failed, "the notifier is full")
 		require.Len(t, nt.reserved, 3)
-		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, enumsspb.STREAM_WAKE_MODE_RELEASE, nt.reserved[2].GetMode())
 		require.Equal(t, "sub-b", nt.reserved[2].GetWake().GetSubscriptionId())
 
 		nt.counted = true
@@ -1390,7 +1443,7 @@ func TestWorkflowTargets(t *testing.T) {
 		// The reader's close was taken, so its place was freed, and the attach comes again.
 		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
 		require.Len(t, nt.reserved, 3)
-		require.True(t, nt.reserved[2].GetRelease())
+		require.Equal(t, enumsspb.STREAM_WAKE_MODE_RELEASE, nt.reserved[2].GetMode())
 		require.Equal(t, "sub-a", nt.reserved[2].GetWake().GetSubscriptionId())
 
 		nt.counted = true
@@ -1518,6 +1571,32 @@ func TestRechecks(t *testing.T) {
 				"a notification sets the gap back")
 			require.True(t, nt.now().Add(time.Minute).Equal(n.GetRecheckTime().AsTime()))
 		})
+	})
+
+	t.Run("NotificationsMoveTheRecheckWithoutANewTask", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachWorkflow("a", "sub-a"))
+		var armed time.Time
+		nt.read(func(n *StreamNotifier, _ chasm.Context) { armed = n.GetRecheckTaskTime().AsTime() })
+		require.NoError(t, nt.notify(1, false))
+		require.NoError(t, nt.notify(2, false))
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, armed, n.GetRecheckTaskTime().AsTime(), "the armed task stays")
+		})
+
+		later := armed.Add(time.Minute)
+		_, _, err := chasm.UpdateComponent(nt.ctx, chasm.NewComponentRef[*StreamNotifier](nt.key()),
+			func(n *StreamNotifier, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				n.RecheckTime = timestamppb.New(later)
+				task := &streamnotifierpb.RecheckTask{ScheduledTime: timestamppb.New(armed)}
+				return struct{}{}, nt.recheck.Execute(ctx, n, chasm.TaskAttributes{}, task)
+			}, struct{}{})
+		require.NoError(t, err)
+		nt.read(func(n *StreamNotifier, _ chasm.Context) {
+			require.Equal(t, later, n.GetRecheckTaskTime().AsTime(), "an early task arms the next")
+		})
+		require.False(t, nt.callbacks()["a"].GetPendingProgress().GetRecheck(),
+			"an early task asks for no read")
 	})
 
 	t.Run("OnlyWorkflowReadersArmARecheck", func(t *testing.T) {
