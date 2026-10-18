@@ -44,8 +44,9 @@ func BusinessID(ref *streampb.StreamReference) string {
 var _ chasm.RootComponent = (*StreamNotifier)(nil)
 var _ callback.CompletionSource = (*StreamNotifier)(nil)
 
-// StreamNotifier holds the Nexus callbacks attached to one stream. It hands each notification to
-// them as progress, folded, and completes them when the stream closes.
+// StreamNotifier holds the callbacks attached to one stream. It hands each notification, folded,
+// as progress to the callbacks whose variant takes progress, and completes all of them when the
+// stream closes.
 type StreamNotifier struct {
 	chasm.UnimplementedComponent
 
@@ -103,16 +104,25 @@ func (n *StreamNotifier) Terminate(
 	return chasm.TerminateComponentResponse{}, nil
 }
 
-// touch records activity and arms the expiry for it.
+// touch records activity and moves the expiry to after from now. It arms a task only when none is
+// armed or the expiry moved earlier, so a busy stream does not write a task per notification.
 func (n *StreamNotifier) touch(ctx chasm.MutableContext, after time.Duration) {
-	now := timestamppb.New(ctx.Now(n))
-	n.LastActivityTime = now
+	now := ctx.Now(n)
+	n.LastActivityTime = timestamppb.New(now)
+	n.ExpiryTime = timestamppb.New(now.Add(after))
+	if n.ExpiryTaskTime == nil || n.ExpiryTime.AsTime().Before(n.ExpiryTaskTime.AsTime()) {
+		n.armExpiry(ctx)
+	}
+}
+
+// armExpiry arms the expiry task for the current expiry time.
+func (n *StreamNotifier) armExpiry(ctx chasm.MutableContext) {
+	at := timestamppb.New(n.GetExpiryTime().AsTime())
+	n.ExpiryTaskTime = at
 	ctx.AddTask(
 		n,
-		chasm.TaskAttributes{ScheduledTime: now.AsTime().Add(after)},
-		&streamnotifierpb.ExpiryTask{
-			LastActivityTime: now,
-		},
+		chasm.TaskAttributes{ScheduledTime: at.AsTime()},
+		&streamnotifierpb.ExpiryTask{ScheduledTime: at},
 	)
 }
 
