@@ -17,17 +17,17 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// maxMetadataBytes bounds a notification's metadata, so progress stays a notification and the data
-// travels on the read path.
-const maxMetadataBytes = 2 * 1024
+// MaxProgressMetadataBytes bounds the metadata of a notification or of a Nexus progress delivery,
+// so progress stays a notification and the data travels on the read path.
+const MaxProgressMetadataBytes = 2 * 1024
 
 // maxSubscriptionIDBytes bounds a Workflow reader's subscription ID, which every wake copies into
 // the reader's History.
 const maxSubscriptionIDBytes = 256
 
-// maxPositionBytes bounds a notification's position, which every callback copies into its
-// caller's history.
-const maxPositionBytes = 1024
+// MaxProgressPositionBytes bounds the position of a notification or of a Nexus progress delivery,
+// which every callback copies into its caller's history.
+const MaxProgressPositionBytes = 1024
 
 // notifyBatchParallelism bounds the notifier calls one NotifyStreams request has in flight.
 const notifyBatchParallelism = 32
@@ -359,22 +359,22 @@ func validateNotification(position string, counter int64, metadata map[string]st
 	if counter <= 0 {
 		return serviceerror.NewInvalidArgument("counter must be positive")
 	}
-	if len(position) > maxPositionBytes {
+	if len(position) > MaxProgressPositionBytes {
 		return serviceerror.NewInvalidArgumentf(
 			"position is %d bytes, more than the %d allowed",
 			len(position),
-			maxPositionBytes,
+			MaxProgressPositionBytes,
 		)
 	}
 	size := 0
 	for key, value := range metadata {
 		size += len(key) + len(value)
 	}
-	if size > maxMetadataBytes {
+	if size > MaxProgressMetadataBytes {
 		return serviceerror.NewInvalidArgumentf(
 			"metadata is %d bytes, more than the %d allowed",
 			size,
-			maxMetadataBytes,
+			MaxProgressMetadataBytes,
 		)
 	}
 	return nil

@@ -1229,9 +1229,9 @@ func TestAFullNotifierStaysUnderTheBudgetAfterProgressAndClose(t *testing.T) {
 	require.Less(t, attached, 2000, "the byte limit is reached first")
 	// Every receiver is down, so each callback keeps the largest progress.
 	require.NoError(t, nt.notifyWith(&workflowservice.NotifyStreamRequest{
-		Position: strings.Repeat("p", maxPositionBytes),
+		Position: strings.Repeat("p", MaxProgressPositionBytes),
 		Counter:  1,
-		Metadata: map[string]string{"k": strings.Repeat("m", maxMetadataBytes-1)},
+		Metadata: map[string]string{"k": strings.Repeat("m", MaxProgressMetadataBytes-1)},
 	}))
 	blobLimit := dynamicconfig.BlobSizeLimitError.Get(dynamicconfig.NewNoopCollection())("ns")
 	require.NoError(t, nt.notifyWith(&workflowservice.NotifyStreamRequest{

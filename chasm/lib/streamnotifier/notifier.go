@@ -366,7 +366,7 @@ func (n *StreamNotifier) heldBytes(ctx chasm.Context) int {
 
 // progressReserve is the most a callback's pending progress takes, with room for the counter and
 // the field tags.
-const progressReserve = maxPositionBytes + maxMetadataBytes + 64
+const progressReserve = MaxProgressPositionBytes + MaxProgressMetadataBytes + 64
 
 // requestIDCopies is how many more times the state can hold a callback's request ID, besides the
 // copy inside the callback: as the key of Callbacks and of CallerStarts, and in
