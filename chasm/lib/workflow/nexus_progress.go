@@ -43,8 +43,7 @@ func (w *Workflow) setNexusProgressIndex(
 	ctx chasm.MutableContext,
 	index *chasmworkflowpb.TaskCarriedIndex,
 ) {
-	if len(index.GetPending()) == 0 && len(index.GetScheduled()) == 0 &&
-		len(index.GetFolded()) == 0 && index.GetLastCarriedTime() == nil {
+	if len(index.GetPending()) == 0 && index.GetLastCarriedTime() == nil {
 		if _, ok := w.NexusProgress.TryGet(ctx); ok {
 			w.NexusProgress = chasm.NewEmptyField[*chasmworkflowpb.NexusProgressState]()
 		}
@@ -54,8 +53,7 @@ func (w *Workflow) setNexusProgressIndex(
 }
 
 // OnNexusOperationProgress records that an operation holds progress for the next Workflow Task
-// scheduled event. Progress for an operation that rides a scheduled Workflow Task that has not
-// started folds into that task: it asks for no task of its own until that one starts.
+// scheduled event.
 func (w *Workflow) OnNexusOperationProgress(
 	ctx chasm.MutableContext,
 	op *nexusoperation.Operation,
@@ -78,15 +76,9 @@ func (w *Workflow) HasPendingNexusProgress(ctx chasm.Context) bool {
 	return len(w.nexusProgressIndex(ctx).GetPending()) > 0
 }
 
-// HasScheduledNexusProgress reports whether a scheduled Workflow Task carries progress.
-func (w *Workflow) HasScheduledNexusProgress(ctx chasm.Context) bool {
-	index := w.nexusProgressIndex(ctx)
-	return len(index.GetScheduled()) > 0 || len(index.GetFolded()) > 0
-}
-
 // TakeNexusProgress returns the pending progress of every operation in scheduled event ID order,
 // each naming its operation, for a Workflow Task scheduled event that is being written. The event
-// acknowledges it, and until the task starts newer progress for those operations folds into it.
+// acknowledges it.
 func (w *Workflow) TakeNexusProgress(ctx chasm.MutableContext) []*nexuspb.NexusOperationProgress {
 	previous := w.nexusProgressIndex(ctx)
 	index, keys := carriedIndexTake(previous, ctx.Now(w))
@@ -154,28 +146,14 @@ func (w *Workflow) nexusProgressHeld(ctx chasm.Context) bool {
 	return carriedIndexHeld(w.nexusProgressIndex(ctx))
 }
 
-// ClearScheduledNexusProgress forgets which operations the scheduled Workflow Task carries, once
-// that task starts, fails or times out.
-func (w *Workflow) ClearScheduledNexusProgress(ctx chasm.MutableContext) {
-	if !w.HasScheduledNexusProgress(ctx) {
-		return
-	}
-	w.setNexusProgressIndex(ctx, carriedIndexClearScheduled(w.nexusProgressIndex(ctx)))
-}
-
 // forgetNexusProgress removes a closed operation from the index.
 func (w *Workflow) forgetNexusProgress(ctx chasm.MutableContext, key int64) {
 	indexKey := nexusProgressIndexKey(key)
 	index := w.nexusProgressIndex(ctx)
-	if !slices.Contains(index.GetPending(), indexKey) &&
-		!slices.Contains(index.GetScheduled(), indexKey) &&
-		!slices.Contains(index.GetFolded(), indexKey) {
+	if !slices.Contains(index.GetPending(), indexKey) {
 		return
 	}
 	index = cloneCarriedIndex(index)
-	isKey := func(k string) bool { return k == indexKey }
-	index.Pending = slices.DeleteFunc(index.Pending, isKey)
-	index.Scheduled = slices.DeleteFunc(index.Scheduled, isKey)
-	index.Folded = slices.DeleteFunc(index.Folded, isKey)
+	index.Pending = slices.DeleteFunc(index.Pending, func(k string) bool { return k == indexKey })
 	w.setNexusProgressIndex(ctx, index)
 }
