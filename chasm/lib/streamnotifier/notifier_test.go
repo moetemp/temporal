@@ -1940,6 +1940,19 @@ func TestIdleWorkflowReaders(t *testing.T) {
 		})
 	})
 
+	t.Run("AWaitOnACallbackWhoseReceiverClosedDropsIt", func(t *testing.T) {
+		nt := newNotifierTest(t, 10)
+		require.NoError(t, nt.attachIdleReader("idle", "sub"))
+		// A wake found the reader's place gone, after a rebuild of its run's state.
+		nt.updateCallback("idle", func(cb *callback.Callback) { cb.ReceiverClosed = true })
+		var notFound *serviceerror.NotFound
+		require.ErrorAs(t, nt.waitForReader("idle", 0), &notFound,
+			"the reader attaches again")
+		require.NotContains(t, nt.callbacks(), "idle")
+		require.NoError(t, nt.attachIdleReader("idle", "sub"), "the attach makes a new callback")
+		require.Contains(t, nt.callbacks(), "idle")
+	})
+
 	t.Run("AWaitBelowADeliveredCounterIsCounted", func(t *testing.T) {
 		nt := newNotifierTest(t, 10)
 		capture := nt.metrics.StartCapture()

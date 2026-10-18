@@ -102,4 +102,5 @@ func init() {
 	importMap["temporal/api/worker/v1/message.proto"] = worker.File_temporal_api_worker_v1_message_proto
 	importMap["temporal/api/workflow/v1/message.proto"] = workflow.File_temporal_api_workflow_v1_message_proto
 	importMap["temporal/api/workflowservice/v1/request_response.proto"] = workflowservice.File_temporal_api_workflowservice_v1_request_response_proto
+	importMap["temporal/api/workflowservice/v1/stream_request_response.proto"] = workflowservice.File_temporal_api_workflowservice_v1_stream_request_response_proto
 }
