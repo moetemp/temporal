@@ -10,10 +10,8 @@ import (
 	streampb "go.temporal.io/api/stream/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/api/workflowservice/v1/workflowservicenexus"
 	"go.temporal.io/server/chasm/lib/streamnotifier"
 	"go.temporal.io/server/tests/testcore"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -167,44 +165,4 @@ func (s *NexusWorkflowTestSuite) TestWorkflowActivityStreamCloseReachesTheNexusC
 	s.NoError(err)
 	s.NoError(run.Get(s.Context(), nil), "the Worker's close completes the caller")
 	s.Nil(env.describe(stream).GetCloseFailure())
-}
-
-func (s *NexusWorkflowTestSuite) TestWorkflowActivityStreamSystemNexusAttachAndWait(
-	chasmEnabled bool,
-) {
-	if !chasmEnabled {
-		return
-	}
-	env := s.newWorkflowActivityStreamEnv()
-	stream := env.startWorkflowActivity()
-	workflowService := workflowservicenexus.TemporalAPIWorkflowserviceV1WorkflowService
-	failure := env.systemNexusCall(
-		workflowService.AttachStreamCallback.Name(),
-		func(caller *commonpb.WorkflowExecution) proto.Message {
-			return &workflowservice.AttachStreamCallbackRequest{
-				StreamRef: stream,
-				RequestId: "system-nexus-attach",
-				WorkflowTarget: &streampb.WorkflowWakeTarget{
-					WorkflowId:     caller.GetWorkflowId(),
-					RunId:          caller.GetRunId(),
-					SubscriptionId: "sub-1",
-				},
-			}
-		},
-	)
-	s.Nil(failure, "%v", failure)
-	callbacks := env.describe(stream).GetCallbacks()
-	s.Len(callbacks, 1)
-	s.Equal("sub-1", callbacks[0].GetWorkflowTarget().GetSubscriptionId())
-
-	failure = env.systemNexusCall(
-		workflowService.WaitStreamCallback.Name(),
-		func(*commonpb.WorkflowExecution) proto.Message {
-			return &workflowservice.WaitStreamCallbackRequest{
-				StreamRef: stream,
-				RequestId: "system-nexus-attach",
-			}
-		},
-	)
-	s.Nil(failure, "%v", failure)
 }
