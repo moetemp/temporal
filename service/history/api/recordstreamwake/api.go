@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"go.temporal.io/api/serviceerror"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/common/definition"
 	"go.temporal.io/server/common/namespace"
@@ -35,10 +36,13 @@ func Invoke(
 	if len(wake.GetSubscriptionId()) > maxSubscriptionIDBytes {
 		return nil, serviceerror.NewInvalidArgument("wake.subscription_id is too long")
 	}
-	if req.GetReserveOnly() && (req.GetRelease() || req.GetOnlyIfReserved()) {
-		return nil, serviceerror.NewInvalidArgument(
-			"reserve_only can't be set with release or only_if_reserved",
-		)
+	mode := req.GetMode()
+	switch mode {
+	case enumsspb.STREAM_WAKE_MODE_WAKE,
+		enumsspb.STREAM_WAKE_MODE_RESERVE,
+		enumsspb.STREAM_WAKE_MODE_RELEASE:
+	default:
+		return nil, serviceerror.NewInvalidArgumentf("unknown stream wake mode %v", mode)
 	}
 	namespaceEntry, err := api.GetActiveNamespace(
 		shard,
@@ -68,13 +72,20 @@ func Invoke(
 				releaseFn(nil)
 				return nil, consts.ErrWorkflowCompleted
 			}
-			if req.GetReserveOnly() || req.GetRelease() || req.GetOnlyIfReserved() {
-				view, viewCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
-				if err == nil {
-					counted := view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId())
-					if counted == req.GetReserveOnly() {
-						return &api.UpdateWorkflowAction{Noop: true, CreateWorkflowTask: false}, nil
-					}
+			view, viewCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
+			if err == nil {
+				counted := view.HasStreamWakeSource(viewCtx, wake.GetSubscriptionId())
+				switch {
+				case mode == enumsspb.STREAM_WAKE_MODE_WAKE && !counted:
+					// The reader's place is gone, after a close it took, a detach or a rebuild of
+					// the run's state. NotFound ends its callback, so the reader attaches again.
+					releaseFn(nil)
+					return nil, serviceerror.NewNotFound(
+						"the stream reader holds no place in this Workflow run",
+					)
+				case mode == enumsspb.STREAM_WAKE_MODE_RESERVE && counted,
+					mode == enumsspb.STREAM_WAKE_MODE_RELEASE && !counted:
+					return &api.UpdateWorkflowAction{Noop: true, CreateWorkflowTask: false}, nil
 				}
 			}
 			// An error from here on returns without releasing, so the cache drops the mutable
@@ -85,14 +96,14 @@ func Invoke(
 					"stream wakes need the CHASM Workflow, which this execution does not have",
 				)
 			}
-			switch {
-			case req.GetReserveOnly():
+			switch mode {
+			case enumsspb.STREAM_WAKE_MODE_RESERVE:
 				err = wf.ReserveStreamWakeSource(chasmCtx, wake.GetSubscriptionId(), maxSources)
 				resp.Reserved = err == nil
-			case req.GetRelease():
+			case enumsspb.STREAM_WAKE_MODE_RELEASE:
 				wf.ReleaseStreamWakeSource(chasmCtx, wake.GetSubscriptionId())
 			default:
-				err = wf.RecordStreamWake(chasmCtx, wake, maxSources)
+				wf.RecordStreamWake(chasmCtx, wake)
 			}
 			if err != nil {
 				return nil, err

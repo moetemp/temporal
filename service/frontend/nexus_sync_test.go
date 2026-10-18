@@ -56,10 +56,12 @@ func (f *fakeSyncRateLimiter) Allow(
 	return f.err
 }
 
-// fakeSyncAuthorizer records each call target and answers with err.
+// fakeSyncAuthorizer records each call target and answers with err, or denies the calls on
+// denyNamespace.
 type fakeSyncAuthorizer struct {
-	targets []*authorization.CallTarget
-	err     error
+	targets       []*authorization.CallTarget
+	err           error
+	denyNamespace string
 }
 
 func (f *fakeSyncAuthorizer) Authorize(
@@ -68,6 +70,9 @@ func (f *fakeSyncAuthorizer) Authorize(
 	target *authorization.CallTarget,
 ) (*commonpb.Principal, error) {
 	f.targets = append(f.targets, target)
+	if f.denyNamespace != "" && target.Namespace == f.denyNamespace {
+		return nil, serviceerror.NewPermissionDenied("namespace not allowed", "")
+	}
 	return nil, f.err
 }
 
@@ -562,6 +567,21 @@ func TestExecuteSyncNexusOperation_AuthorizesTheEndpoint(t *testing.T) {
 	require.Equal(t, syncTestCallerNamespace, env.authorizer.targets[0].Namespace)
 	require.Equal(t, syncTestEndpoint, env.authorizer.targets[0].NexusEndpointName)
 	require.Empty(t, env.endpointCalls, "a denied caller learns nothing about the endpoint")
+}
+
+func TestExecuteSyncNexusOperation_AuthorizesTheTargetNamespace(t *testing.T) {
+	env := newSyncTestEnv(t, true, true)
+	env.authorizer.denyNamespace = syncTestTargetNamespace
+	_, err := env.handler.ExecuteSyncNexusOperation(context.Background(), syncTestRequest())
+	var denied *serviceerror.PermissionDenied
+	require.ErrorAs(t, err, &denied)
+	require.Len(t, env.authorizer.targets, 2)
+	target := env.authorizer.targets[1]
+	require.Equal(t, configs.DispatchNexusTaskByEndpointAPIName, target.APIName,
+		"the same check as on the Nexus HTTP route")
+	require.Equal(t, syncTestTargetNamespace, target.Namespace)
+	require.Equal(t, syncTestEndpoint, target.NexusEndpointName)
+	require.Empty(t, env.countLimiter.calls, "a denied call dispatches nothing")
 }
 
 func TestExecuteSyncNexusOperation_RefusesATargetThatTakesNoTasks(t *testing.T) {

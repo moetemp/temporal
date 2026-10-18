@@ -457,7 +457,7 @@ func TestNexusHandlerProgressDelivery(t *testing.T) {
 		start := dispatched.GetRequest().GetStartOperation()
 		require.Equal(t, "NotificationService", start.GetService())
 		require.Equal(t, "OnProgress", start.GetOperation())
-		require.Equal(t, "request-id/progress/1", start.GetRequestId())
+		require.Equal(t, "request-id/progress/1/1", start.GetRequestId())
 		require.Equal(
 			t,
 			[]byte("temporal.api.notificationservice.v1.OnProgressRequest"),
@@ -708,6 +708,22 @@ func TestNexusHandlerProgressDelivery(t *testing.T) {
 		require.Equal(t, int64(2), cb.ProgressInFlight)
 	})
 
+	t.Run("ARedeliveryGetsARequestIDOfItsOwn", func(t *testing.T) {
+		nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
+		nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{Behind: true}), nil)
+		nt.answer(syncSuccessResponse(), nil)
+		nt.report(1)
+		require.NoError(t, nt.runInFlight())
+		require.NoError(t, nt.runInFlight())
+		require.Len(t, nt.dispatched, 2)
+		require.Equal(
+			t,
+			"request-id/progress/1/2",
+			nt.dispatched[1].GetRequest().GetStartOperation().GetRequestId(),
+			"a handler that dedupes by request ID takes the redelivery",
+		)
+	})
+
 	t.Run("BehindGivesWayToNewerProgress", func(t *testing.T) {
 		nt := newNexusHandlerProgressTest(t, newNexusHandlerProgressCallback("OnProgress"))
 		nt.answer(onProgressAnswer(t, &notificationservice.OnProgressResponse{
@@ -723,7 +739,7 @@ func TestNexusHandlerProgressDelivery(t *testing.T) {
 		require.Equal(t, int64(4), nt.onProgressRequest(1).GetProgress().GetCounter())
 		require.Equal(
 			t,
-			"request-id/progress/4",
+			"request-id/progress/4/2",
 			nt.dispatched[1].GetRequest().GetStartOperation().GetRequestId(),
 		)
 	})

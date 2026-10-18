@@ -58,9 +58,11 @@ func newStreamWakeTest(t *testing.T) *streamWakeTest {
 	}
 }
 
+// record reserves the reader's place, as its attach would, and records the wake.
 func (st *streamWakeTest) record(wake *streampb.StreamWake) {
 	st.t.Helper()
-	require.NoError(st.t, st.wf.RecordStreamWake(st.ctx, wake, 32))
+	require.NoError(st.t, st.wf.ReserveStreamWakeSource(st.ctx, wake.GetSubscriptionId(), 32))
+	st.wf.RecordStreamWake(st.ctx, wake)
 }
 
 func wakeOf(subscription string, counter int64) *streampb.StreamWake {
@@ -116,29 +118,19 @@ func TestStreamWakeCloseAndResubscribeStaySet(t *testing.T) {
 	require.Equal(t, int64(7), taken[0].GetCounter())
 }
 
-func TestStreamWakeOnAScheduledTaskGetsOneFollowUp(t *testing.T) {
+func TestStreamWakesAfterATakeWaitForTheNextTask(t *testing.T) {
 	st := newStreamWakeTest(t)
 	st.record(wakeOf("a", 1))
 	require.Len(t, st.wf.TakeStreamWakes(st.ctx), 1)
-	require.True(t, st.wf.HasScheduledStreamWakes(st.ctx))
-
-	// The task is scheduled and not started: newer wakes fold into it and ask for no task.
-	st.record(wakeOf("a", 2))
-	st.record(wakeOf("a", 3))
 	require.False(t, st.wf.HasPendingStreamWakes(st.ctx))
 
-	// Once the task starts, what folded into it waits for one follow-up task.
-	st.wf.ClearScheduledStreamWakes(st.ctx)
+	// Wakes after the scheduled event was written wait, folded, for the next task.
+	st.record(wakeOf("a", 2))
+	st.record(wakeOf("a", 3))
 	require.True(t, st.wf.HasPendingStreamWakes(st.ctx))
-	require.False(t, st.wf.HasScheduledStreamWakes(st.ctx))
 	taken := st.wf.TakeStreamWakes(st.ctx)
 	require.Len(t, taken, 1)
 	require.Equal(t, int64(3), taken[0].GetCounter())
-
-	// After that task started, a new wake needs a task of its own.
-	st.wf.ClearScheduledStreamWakes(st.ctx)
-	st.record(wakeOf("a", 4))
-	require.True(t, st.wf.HasPendingStreamWakes(st.ctx))
 }
 
 func TestStreamWakesWaitTheMinInterval(t *testing.T) {
@@ -148,7 +140,6 @@ func TestStreamWakesWaitTheMinInterval(t *testing.T) {
 	st.record(wakeOf("a", 1))
 	carried := st.timeSource.Now()
 	st.wf.TakeStreamWakes(st.ctx)
-	st.wf.ClearScheduledStreamWakes(st.ctx)
 	require.Equal(t, carried.Add(time.Second), st.wf.StreamWakesReadyAt(st.ctx, time.Second))
 
 	st.record(wakeOf("a", 2))
@@ -166,14 +157,15 @@ func TestStreamWakesWaitTheMinInterval(t *testing.T) {
 func TestStreamWakeSourcesAreBounded(t *testing.T) {
 	st := newStreamWakeTest(t)
 	for i := range 3 {
-		require.NoError(t, st.wf.RecordStreamWake(st.ctx, wakeOf(fmt.Sprint(i), 1), 3))
+		require.NoError(t, st.wf.ReserveStreamWakeSource(st.ctx, fmt.Sprint(i), 3))
+		st.wf.RecordStreamWake(st.ctx, wakeOf(fmt.Sprint(i), 1))
 	}
-	require.NoError(t, st.wf.RecordStreamWake(st.ctx, wakeOf("1", 2), 3),
+	require.NoError(t, st.wf.ReserveStreamWakeSource(st.ctx, "1", 3),
 		"a known reader is not counted again")
 	var failed *serviceerror.FailedPrecondition
-	require.ErrorAs(t, st.wf.RecordStreamWake(st.ctx, wakeOf("3", 1), 3), &failed)
+	require.ErrorAs(t, st.wf.ReserveStreamWakeSource(st.ctx, "3", 3), &failed)
 	st.wf.TakeStreamWakes(st.ctx)
-	require.ErrorAs(t, st.wf.RecordStreamWake(st.ctx, wakeOf("3", 1), 3), &failed,
+	require.ErrorAs(t, st.wf.ReserveStreamWakeSource(st.ctx, "3", 3), &failed,
 		"a reader counts for the whole run")
 }
 
