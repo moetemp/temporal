@@ -250,6 +250,30 @@ func (s *StreamWakeSuite) TestAHeartbeatTaskCarriesNoWake() {
 	r.respond(next)
 }
 
+func (s *StreamWakeSuite) TestAWakeWaitsForTheStartDelay() {
+	r := &wakeReader{
+		s: s,
+		env: testcore.NewEnv(
+			s.T(),
+			testcore.WithDynamicConfig(dynamicconfig.EnableChasm, true),
+			testcore.WithDynamicConfig(dynamicconfig.EnableCHASMCallbacks, true),
+		),
+		taskQueue: testcore.RandomizeStr(s.T().Name()),
+	}
+	run, err := r.env.SdkClient().ExecuteWorkflow(
+		s.Context(),
+		client.StartWorkflowOptions{TaskQueue: r.taskQueue, StartDelay: time.Hour},
+		"reader",
+	)
+	s.NoError(err)
+	r.run = run
+	r.wakeAt("reader-1", 1)
+	for _, event := range r.history() {
+		s.NotEqual(enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED, event.GetEventType(),
+			"the first task waits for the start delay")
+	}
+}
+
 func (s *StreamWakeSuite) TestAClosedRunAnswersNotFound() {
 	r := s.newWakeReader()
 	r.wakeAt("reader-1", 1)

@@ -173,7 +173,9 @@ func (ms *MutableStateImpl) scheduleWorkflowTaskForCarriedState() error {
 	if !ms.workflowTaskUpdated && !ms.chasmTree.IsStateDirty() {
 		return nil
 	}
-	if ms.HasPendingWorkflowTask() || ms.IsWorkflowExecutionStatusPaused() {
+	// A start backoff, such as a cron or a start delay, schedules the first task when it ends.
+	if ms.HasPendingWorkflowTask() || ms.IsWorkflowExecutionStatusPaused() ||
+		ms.IsWorkflowPendingOnWorkflowTaskBackoff() {
 		return nil
 	}
 	pending := ms.pendingCarriers()
