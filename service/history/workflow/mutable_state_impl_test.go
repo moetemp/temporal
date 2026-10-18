@@ -2359,11 +2359,8 @@ func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 		ctx := chasm.NewMutableContext(context.Background(), tree)
 		wf := chasmworkflow.NewWorkflow(ctx, chasm.NewMSPointer(s.mutableState))
 		s.NoError(tree.SetRootComponent(wf))
-		s.NoError(wf.RecordStreamWake(
-			ctx,
-			&streampb.StreamWake{SubscriptionId: "reader", Counter: 1},
-			32,
-		))
+		s.NoError(wf.ReserveStreamWakeSource(ctx, "reader", 32))
+		wf.RecordStreamWake(ctx, &streampb.StreamWake{SubscriptionId: "reader", Counter: 1})
 		s.NotEmpty(s.mutableState.pendingCarriers())
 	}
 	scheduledWakes := func() []*streampb.StreamWake {
