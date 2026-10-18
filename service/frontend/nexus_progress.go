@@ -8,15 +8,8 @@ import (
 	"strconv"
 
 	nexuspb "go.temporal.io/api/nexus/v1"
+	"go.temporal.io/server/chasm/lib/streamnotifier"
 )
-
-// maxNexusProgressMetadataBytes bounds the metadata of one progress delivery, so progress stays a
-// notification and the data travels on the read path.
-const maxNexusProgressMetadataBytes = 2 * 1024
-
-// maxNexusProgressPositionBytes bounds the position, which History copies onto the caller's
-// Workflow Task scheduled event.
-const maxNexusProgressPositionBytes = 1024
 
 // nexusProgress is the body of a Nexus progress delivery, the OperationProgress object of the
 // Nexus HTTP spec.
@@ -42,19 +35,19 @@ func parseNexusProgress(body []byte) (nexusProgress, error) {
 	if err != nil {
 		return nexusProgress{}, err
 	}
-	if len(wire.Position) > maxNexusProgressPositionBytes {
+	if len(wire.Position) > streamnotifier.MaxProgressPositionBytes {
 		return nexusProgress{}, fmt.Errorf(
 			"progress position is %d bytes, more than the %d allowed",
-			len(wire.Position), maxNexusProgressPositionBytes)
+			len(wire.Position), streamnotifier.MaxProgressPositionBytes)
 	}
 	size := 0
 	for key, value := range wire.Metadata {
 		size += len(key) + len(value)
 	}
-	if size > maxNexusProgressMetadataBytes {
+	if size > streamnotifier.MaxProgressMetadataBytes {
 		return nexusProgress{}, fmt.Errorf(
 			"progress metadata is %d bytes, more than the %d allowed",
-			size, maxNexusProgressMetadataBytes)
+			size, streamnotifier.MaxProgressMetadataBytes)
 	}
 	return nexusProgress{Position: wire.Position, Counter: counter, Metadata: wire.Metadata}, nil
 }

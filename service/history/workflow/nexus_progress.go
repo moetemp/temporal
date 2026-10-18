@@ -17,10 +17,6 @@ func (nexusProgressCarrier) hasPending(wf *chasmworkflow.Workflow, ctx chasm.Con
 	return wf.HasPendingNexusProgress(ctx)
 }
 
-func (nexusProgressCarrier) hasScheduled(wf *chasmworkflow.Workflow, ctx chasm.Context) bool {
-	return wf.HasScheduledNexusProgress(ctx)
-}
-
 func (nexusProgressCarrier) take(
 	wf *chasmworkflow.Workflow,
 	ctx chasm.MutableContext,
@@ -34,10 +30,6 @@ func (nexusProgressCarrier) take(
 		attrs.Attachments = append(attrs.Attachments, attachment)
 	}
 	return nil
-}
-
-func (nexusProgressCarrier) clearScheduled(wf *chasmworkflow.Workflow, ctx chasm.MutableContext) {
-	wf.ClearScheduledNexusProgress(ctx)
 }
 
 func (nexusProgressCarrier) readyAt(

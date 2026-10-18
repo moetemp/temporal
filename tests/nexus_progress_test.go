@@ -397,9 +397,9 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgress(chasmEnabled bool) {
 	s.Len(carriedNexusProgress(resp.GetHistory().GetEvents()), 3, "the progress is part of History")
 }
 
-// TestNexusOperationProgressSkipsHeartbeatTasks checks that progress arriving during a long local
-// activity stays off the tasks a worker forces to heartbeat it, and rides the next normal task.
-func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatTasks(chasmEnabled bool) {
+// TestNexusOperationProgressRidesHeartbeatTasks checks that progress arriving during a long local
+// activity rides the next task a worker forces to heartbeat it, and that the run replays.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgressRidesHeartbeatTasks(chasmEnabled bool) {
 	if !chasmEnabled {
 		// An HSM caller refuses progress; TestNexusOperationProgress covers it.
 		return
@@ -501,32 +501,11 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatTasks(c
 			2,
 			"the worker keeps heartbeating the local activity",
 		)
+		s.Len(carriedNexusProgress(duringLA), 1, "a heartbeat task carries the progress")
 	}, 10*time.Second, 50*time.Millisecond)
-	s.Empty(carriedNexusProgress(duringLA), "no heartbeat task carries progress")
+	s.Equal(int64(1), carriedNexusProgress(duringLA)[0].GetCounter())
 
 	close(releaseLA)
-	var afterLA []*historypb.HistoryEvent
-	s.Await(func(s *NexusWorkflowTestSuite) {
-		afterLA = history()[len(beforeProgress):]
-		s.Len(carriedNexusProgress(afterLA), 1)
-	}, 10*time.Second, 50*time.Millisecond)
-	markerIdx := -1
-	carrierIdx := -1
-	for i, event := range afterLA {
-		if event.GetEventType() == enumspb.EVENT_TYPE_MARKER_RECORDED {
-			markerIdx = i
-		}
-		if len(scheduledNexusProgress(event)) > 0 {
-			carrierIdx = i
-		}
-	}
-	s.Positive(markerIdx, "the local activity's result is recorded")
-	s.Greater(
-		carrierIdx,
-		markerIdx,
-		"the first normal task after the heartbeats carries the progress",
-	)
-	s.Equal(int64(1), carriedNexusProgress(afterLA)[0].GetCounter())
 
 	s.NoError(s.sendNexusCompletionRequest(ctx, callbackURL, nexusrpc.CompleteOperationOptions{
 		Result: testcore.MustToPayload(s.T(), "result"),
@@ -541,10 +520,10 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatTasks(c
 	s.NoError(replayer.ReplayWorkflowHistory(nil, &historypb.History{Events: history()}))
 }
 
-// TestNexusOperationProgressSkipsHeartbeatRetries checks that the retry of a failed heartbeat task
-// holds progress like the task it retries, and that the next normal task carries it. A Signal
-// arrives before the retry starts, so the retry gets a scheduled event of its own.
-func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatRetries(
+// TestNexusOperationProgressRidesHeartbeatRetries checks that the retry of a failed heartbeat task
+// carries the progress that came while the task ran. A Signal arrives before the retry starts, so
+// the retry gets a scheduled event of its own.
+func (s *NexusWorkflowTestSuite) TestNexusOperationProgressRidesHeartbeatRetries(
 	chasmEnabled bool,
 ) {
 	if !chasmEnabled {
@@ -660,17 +639,10 @@ func (s *NexusWorkflowTestSuite) TestNexusOperationProgressSkipsHeartbeatRetries
 		retryTask.GetHistory().GetEvents(),
 		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED,
 	)
-	s.Empty(
-		scheduledNexusProgress(lastScheduled(retryTask)),
-		"the retry of a heartbeat task carries no progress",
-	)
-	respond(retryTask, false)
-
-	normalTask := poll()
-	carried := scheduledNexusProgress(lastScheduled(normalTask))
-	s.Len(carried, 1, "the next normal task carries the progress")
+	carried := scheduledNexusProgress(lastScheduled(retryTask))
+	s.Len(carried, 1, "the retry of a heartbeat task carries the progress")
 	s.Equal(int64(1), carried[0].GetCounter())
-	respond(normalTask, false, completeWorkflowCmd())
+	respond(retryTask, false, completeWorkflowCmd())
 	s.NoError(run.Get(ctx, nil))
 }
 

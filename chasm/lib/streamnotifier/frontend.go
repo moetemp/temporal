@@ -17,17 +17,17 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// maxMetadataBytes bounds a notification's metadata, so progress stays a notification and the data
-// travels on the read path.
-const maxMetadataBytes = 2 * 1024
+// MaxProgressMetadataBytes bounds the metadata of a notification or of a Nexus progress delivery,
+// so progress stays a notification and the data travels on the read path.
+const MaxProgressMetadataBytes = 2 * 1024
 
 // maxSubscriptionIDBytes bounds a Workflow reader's subscription ID, which every wake copies into
 // the reader's History.
 const maxSubscriptionIDBytes = 256
 
-// maxPositionBytes bounds a notification's position, which every callback copies into its
-// caller's history.
-const maxPositionBytes = 1024
+// MaxProgressPositionBytes bounds the position of a notification or of a Nexus progress delivery,
+// which every callback copies into its caller's history.
+const MaxProgressPositionBytes = 1024
 
 // notifyBatchParallelism bounds the notifier calls one NotifyStreams request has in flight.
 const notifyBatchParallelism = 32
@@ -108,19 +108,20 @@ func (h *frontendHandler) resolve(
 			"the stream notifier requires CHASM, which is not enabled for this namespace",
 		)
 	}
-	if err := ValidateReference(ref); err != nil {
+	if err := h.validateOwner(namespaceName, ref); err != nil {
 		return "", "", err
 	}
-	if err := checkOwnerKindEnabled(h.config, namespaceName, ref); err != nil {
-		return "", "", err
+	if ref.GetTopic() == "" {
+		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is required")
+	}
+	// The run that keys the notifier: without it the request would reach a different notifier.
+	if ref.GetRunId() == "" {
+		return "", "", serviceerror.NewInvalidArgument(
+			"stream_ref.run_id must name the run chain's first run, the Activity run or " +
+				"the run that scheduled the Activity",
+		)
 	}
 	// They become part of the notifier's business ID.
-	if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
-	}
-	if len(ref.GetActivityId()) > h.config.MaxIDLength() {
-		return "", "", serviceerror.NewInvalidArgument("stream_ref.activity_id is too long")
-	}
 	if len(ref.GetTopic()) > h.config.MaxIDLength() {
 		return "", "", serviceerror.NewInvalidArgument("stream_ref.topic is too long")
 	}
@@ -131,9 +132,13 @@ func (h *frontendHandler) resolve(
 	return id.String(), BusinessID(ref), nil
 }
 
-// ValidateReference rejects a stream reference the notifier cannot key a stream by. Each owner
-// kind takes its own owner field and refuses the other kind's.
-func ValidateReference(ref *streampb.StreamReference) error {
+// validateOwner checks the owner fields of each kind. A kind that is off for the namespace is a
+// failed precondition and never Unimplemented, since Core takes Unimplemented as a server with no
+// notifier and stops its notifier calls for every stream.
+func (h *frontendHandler) validateOwner(
+	namespaceName string,
+	ref *streampb.StreamReference,
+) error {
 	switch ref.GetOwnerKind() {
 	case enumspb.STREAM_OWNER_KIND_WORKFLOW:
 		if ref.GetWorkflowId() == "" {
@@ -144,6 +149,9 @@ func ValidateReference(ref *streampb.StreamReference) error {
 				"stream_ref.activity_id must be empty for STREAM_OWNER_KIND_WORKFLOW",
 			)
 		}
+		if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
+		}
 	case enumspb.STREAM_OWNER_KIND_ACTIVITY:
 		if ref.GetActivityId() == "" {
 			return serviceerror.NewInvalidArgument("stream_ref.activity_id is required")
@@ -153,47 +161,33 @@ func ValidateReference(ref *streampb.StreamReference) error {
 				"stream_ref.workflow_id must be empty for STREAM_OWNER_KIND_ACTIVITY",
 			)
 		}
+		if len(ref.GetActivityId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.activity_id is too long")
+		}
+		if !h.config.ActivityEnabled(namespaceName) {
+			return serviceerror.NewFailedPrecondition(
+				"streams owned by a standalone Activity need standalone Activities, " +
+					"which are not enabled for this namespace",
+			)
+		}
 	case enumspb.STREAM_OWNER_KIND_WORKFLOW_ACTIVITY:
+		// Every namespace has Workflow Activities, so this kind has no namespace gate.
 		if ref.GetWorkflowId() == "" {
 			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is required")
 		}
 		if ref.GetActivityId() == "" {
 			return serviceerror.NewInvalidArgument("stream_ref.activity_id is required")
 		}
+		if len(ref.GetWorkflowId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.workflow_id is too long")
+		}
+		if len(ref.GetActivityId()) > h.config.MaxIDLength() {
+			return serviceerror.NewInvalidArgument("stream_ref.activity_id is too long")
+		}
 	default:
 		return serviceerror.NewInvalidArgument(
 			"stream_ref.owner_kind must be STREAM_OWNER_KIND_WORKFLOW, " +
 				"STREAM_OWNER_KIND_ACTIVITY or STREAM_OWNER_KIND_WORKFLOW_ACTIVITY",
-		)
-	}
-	if ref.GetTopic() == "" {
-		return serviceerror.NewInvalidArgument("stream_ref.topic is required")
-	}
-	// The run that keys the notifier: without it the request would reach a different notifier.
-	if ref.GetRunId() == "" {
-		return serviceerror.NewInvalidArgument(
-			"stream_ref.run_id must name the run chain's first run, the Activity run or " +
-				"the run that scheduled the Activity",
-		)
-	}
-	return nil
-}
-
-// checkOwnerKindEnabled refuses an owner kind that is off for the namespace. It is a failed
-// precondition and never Unimplemented, since Core takes Unimplemented as a server with no
-// notifier and stops its notifier calls for every stream. The frontend and the System Nexus
-// notifier both resolve through it. Every namespace has Workflow Activities, so that kind has no
-// gate.
-func checkOwnerKindEnabled(
-	config *Config,
-	namespaceName string,
-	ref *streampb.StreamReference,
-) error {
-	if ref.GetOwnerKind() == enumspb.STREAM_OWNER_KIND_ACTIVITY &&
-		!config.ActivityEnabled(namespaceName) {
-		return serviceerror.NewFailedPrecondition(
-			"streams owned by a standalone Activity need standalone Activities, " +
-				"which are not enabled for this namespace",
 		)
 	}
 	return nil
@@ -365,22 +359,22 @@ func validateNotification(position string, counter int64, metadata map[string]st
 	if counter <= 0 {
 		return serviceerror.NewInvalidArgument("counter must be positive")
 	}
-	if len(position) > maxPositionBytes {
+	if len(position) > MaxProgressPositionBytes {
 		return serviceerror.NewInvalidArgumentf(
 			"position is %d bytes, more than the %d allowed",
 			len(position),
-			maxPositionBytes,
+			MaxProgressPositionBytes,
 		)
 	}
 	size := 0
 	for key, value := range metadata {
 		size += len(key) + len(value)
 	}
-	if size > maxMetadataBytes {
+	if size > MaxProgressMetadataBytes {
 		return serviceerror.NewInvalidArgumentf(
 			"metadata is %d bytes, more than the %d allowed",
 			size,
-			maxMetadataBytes,
+			MaxProgressMetadataBytes,
 		)
 	}
 	return nil

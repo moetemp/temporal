@@ -2323,7 +2323,7 @@ func (s *mutableStateSuite) TestTransientWorkflowTaskSchedule_CurrentVersionChan
 }
 
 // TestStreamWakesAcrossFailoverConversion checks that a transient Workflow Task a failover converts
-// doesn't carry stream wakes, and that the wakes wait for a later task instead of being dropped.
+// carries the pending stream wakes, since its scheduled event is new to the worker.
 func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 	version := int64(2000)
 	// prepare leaves a failed first task, so the next task is a transient retry.
@@ -2361,11 +2361,8 @@ func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 		ctx := chasm.NewMutableContext(context.Background(), tree)
 		wf := chasmworkflow.NewWorkflow(ctx, chasm.NewMSPointer(s.mutableState))
 		s.NoError(tree.SetRootComponent(wf))
-		s.NoError(wf.RecordStreamWake(
-			ctx,
-			&streampb.StreamWake{SubscriptionId: "reader", Counter: 1},
-			32,
-		))
+		s.NoError(wf.ReserveStreamWakeSource(ctx, "reader", 32))
+		wf.RecordStreamWake(ctx, &streampb.StreamWake{SubscriptionId: "reader", Counter: 1})
 		s.NotEmpty(s.mutableState.pendingCarriers())
 	}
 	scheduledWakes := func() []*streampb.StreamWake {
@@ -2404,8 +2401,8 @@ func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 		s.NoError(s.mutableState.UpdateCurrentVersion(version+1, true))
 		s.NoError(s.mutableState.scheduleWorkflowTaskForCarriedState())
 		s.True(s.mutableState.HasPendingWorkflowTask())
-		s.Empty(scheduledWakes(), "the converted task doesn't carry the wake")
-		s.NotEmpty(s.mutableState.pendingCarriers(), "the wake waits for a later task")
+		s.Len(scheduledWakes(), 1, "the converted task carries the wake")
+		s.Empty(s.mutableState.pendingCarriers())
 	})
 
 	s.Run("StartedAfterTheVersionChanged", func() {
@@ -2433,14 +2430,14 @@ func (s *mutableStateSuite) TestStreamWakesAcrossFailoverConversion() {
 		s.NoError(err)
 		s.NotNil(started)
 		s.Equal(int32(1), started.Attempt, "the transient task was converted")
-		s.Empty(scheduledWakes(), "the converted task doesn't carry the wake")
-		s.NotEmpty(s.mutableState.pendingCarriers())
+		s.Len(scheduledWakes(), 1, "the converted task carries the wake")
+		s.Empty(s.mutableState.pendingCarriers())
 	})
 }
 
 // TestNexusProgressAcrossFailoverConversion checks that a transient Workflow Task a failover
-// converts doesn't carry Nexus operation progress, and that the progress waits for a later task
-// instead of being dropped.
+// converts carries the pending Nexus operation progress, since its scheduled event is new to the
+// worker.
 func (s *mutableStateSuite) TestNexusProgressAcrossFailoverConversion() {
 	version := int64(2000)
 	// prepare leaves a failed first task, so the next task is a transient retry.
@@ -2514,8 +2511,8 @@ func (s *mutableStateSuite) TestNexusProgressAcrossFailoverConversion() {
 		s.NoError(s.mutableState.UpdateCurrentVersion(version+1, true))
 		s.NoError(s.mutableState.scheduleWorkflowTaskForCarriedState())
 		s.True(s.mutableState.HasPendingWorkflowTask())
-		s.Empty(scheduledProgress(), "the converted task doesn't carry the progress")
-		s.NotEmpty(s.mutableState.pendingCarriers(), "the progress waits for a later task")
+		s.Len(scheduledProgress(), 1, "the converted task carries the progress")
+		s.Empty(s.mutableState.pendingCarriers())
 	})
 
 	s.Run("StartedAfterTheVersionChanged", func() {
@@ -2543,8 +2540,8 @@ func (s *mutableStateSuite) TestNexusProgressAcrossFailoverConversion() {
 		s.NoError(err)
 		s.NotNil(started)
 		s.Equal(int32(1), started.Attempt, "the transient task was converted")
-		s.Empty(scheduledProgress(), "the converted task doesn't carry the progress")
-		s.NotEmpty(s.mutableState.pendingCarriers())
+		s.Len(scheduledProgress(), 1, "the converted task carries the progress")
+		s.Empty(s.mutableState.pendingCarriers())
 	})
 }
 
