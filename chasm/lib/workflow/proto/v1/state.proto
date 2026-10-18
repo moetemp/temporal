@@ -34,24 +34,17 @@ message IncomingSignalData {
 message TaskCarriedIndex {
   // Keys whose state waits for the next Workflow Task scheduled event.
   repeated string pending = 1;
-  // Keys whose latest state rides a scheduled Workflow Task that has not started yet. Newer state
-  // for one of them folds into that task, since the read it triggers sees it.
-  repeated string scheduled = 2;
-  // Keys whose state folded into that task but is newer than what its scheduled event carries.
-  // Once the task starts, fails or times out they wait like pending ones, so one follow-up task
-  // carries the latest state.
-  repeated string folded = 3;
   // When a Workflow Task last carried this state. Waiting state waits a minimum interval after it
   // before it schedules a task of its own, so a busy source can't fill the Workflow's History.
-  google.protobuf.Timestamp last_carried_time = 4;
+  google.protobuf.Timestamp last_carried_time = 2;
   // When the armed release task lets waiting state schedule a Workflow Task.
-  google.protobuf.Timestamp release_time = 5;
+  google.protobuf.Timestamp release_time = 3;
 }
 
 // The stream wakes of a Workflow run, by the subscription ID of each reader.
 message StreamWakeState {
   TaskCarriedIndex index = 1;
-  // The latest wake of each reader that waits for, or folded into, a Workflow Task.
+  // The latest wake of each reader that waits for a Workflow Task.
   map<string, temporal.api.stream.v1.StreamWake> wakes = 2;
   // Every reader that got a wake in this run, sorted. Bounded by
   // history.maximumStreamWakeSources.

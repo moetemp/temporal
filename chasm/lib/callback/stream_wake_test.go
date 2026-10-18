@@ -9,6 +9,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
 	streampb "go.temporal.io/api/stream/v1"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
 	"go.temporal.io/server/chasm"
@@ -102,7 +103,8 @@ func TestStreamWakeProgressDelivery(t *testing.T) {
 			require.Equal(t, "ns-id", got[0].GetNamespaceId(), "the reader is in the namespace")
 			require.Equal(t, "reader", got[0].GetExecution().GetWorkflowId())
 			require.Equal(t, "run", got[0].GetExecution().GetRunId())
-			require.True(t, got[0].GetOnlyIfReserved(), "a wake takes no place it lost")
+			require.Equal(t, enumsspb.STREAM_WAKE_MODE_WAKE, got[0].GetMode(),
+				"a wake takes no place it lost")
 			require.True(t, proto.Equal(&streampb.StreamWake{
 				SubscriptionId: "sub",
 				Position:       "p",
@@ -189,8 +191,11 @@ func TestStreamWakeCompletion(t *testing.T) {
 			require.Len(t, got, tc.calls)
 			if tc.calls > 0 {
 				require.Equal(t, "sub", got[0].GetWake().GetSubscriptionId())
-				require.Equal(t, tc.wake == nil, got[0].GetRelease())
-				require.True(t, got[0].GetOnlyIfReserved(), "a wake takes no place it lost")
+				mode := enumsspb.STREAM_WAKE_MODE_WAKE
+				if tc.wake == nil {
+					mode = enumsspb.STREAM_WAKE_MODE_RELEASE
+				}
+				require.Equal(t, mode, got[0].GetMode())
 			}
 			if tc.calls > 0 && tc.wake != nil {
 				require.True(t, got[0].GetWake().GetClosed())
