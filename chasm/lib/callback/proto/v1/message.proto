@@ -53,6 +53,7 @@ message CallbackState {
   // progress or completion and its parent may drop it. Dropping it drops its pending completion
   // too, which a closed receiver wouldn't take.
   bool receiver_closed = 15;
+  reserved 16;
   // The number of progress deliveries started so far. The next one is numbered one higher.
   int64 progress_deliveries = 17;
   // The counter that the progress delivery in flight carries.

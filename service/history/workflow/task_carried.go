@@ -13,20 +13,18 @@ import (
 )
 
 // taskCarrier is one kind of state that writes no event and rides the attachments of the next
-// Workflow Task scheduled event. The scheduling rules are the same for every kind. A pending task
-// takes the state, state that lands on a scheduled task that has not started gets one follow-up
-// task, a heartbeat task carries none, and tasks that carry only this state are rate limited. Each
+// Workflow Task scheduled event. The scheduling rules are the same for every kind. The next
+// scheduled event that a worker has not seen takes the state, state that comes while a task is
+// pending waits for the task after it, and tasks that carry only this state are rate limited. Each
 // kind keeps its own index on the CHASM Workflow.
 type taskCarrier interface {
 	hasPending(wf *chasmworkflow.Workflow, ctx chasm.Context) bool
-	hasScheduled(wf *chasmworkflow.Workflow, ctx chasm.Context) bool
 	// take moves the pending state onto the attachments of a scheduled event being written.
 	take(
 		wf *chasmworkflow.Workflow,
 		ctx chasm.MutableContext,
 		attrs *historypb.WorkflowTaskScheduledEventAttributes,
 	) error
-	clearScheduled(wf *chasmworkflow.Workflow, ctx chasm.MutableContext)
 	readyAt(wf *chasmworkflow.Workflow, ctx chasm.Context, minInterval time.Duration) time.Time
 	hold(wf *chasmworkflow.Workflow, ctx chasm.MutableContext, readyAt time.Time)
 	minInterval(ms *MutableStateImpl) time.Duration
@@ -39,10 +37,6 @@ type streamWakeCarrier struct{}
 
 func (streamWakeCarrier) hasPending(wf *chasmworkflow.Workflow, ctx chasm.Context) bool {
 	return wf.HasPendingStreamWakes(ctx)
-}
-
-func (streamWakeCarrier) hasScheduled(wf *chasmworkflow.Workflow, ctx chasm.Context) bool {
-	return wf.HasScheduledStreamWakes(ctx)
 }
 
 func (streamWakeCarrier) take(
@@ -58,10 +52,6 @@ func (streamWakeCarrier) take(
 		attrs.Attachments = append(attrs.Attachments, attachment)
 	}
 	return nil
-}
-
-func (streamWakeCarrier) clearScheduled(wf *chasmworkflow.Workflow, ctx chasm.MutableContext) {
-	wf.ClearScheduledStreamWakes(ctx)
 }
 
 func (streamWakeCarrier) readyAt(
@@ -119,18 +109,9 @@ func (ms *MutableStateImpl) pendingCarriers() []taskCarrier {
 	return pending
 }
 
-// HoldCarriedState keeps carried state off the Workflow Task scheduled in this transaction and off
-// its retries, so it waits for a later task.
-func (ms *MutableStateImpl) HoldCarriedState() {
-	ms.holdCarriedState = true
-}
-
 // attachCarriedState puts the pending carried state on a WorkflowTaskScheduled event for a task no
 // worker has seen yet. The event is the acknowledgment, so the state is taken.
 func (ms *MutableStateImpl) attachCarriedState(event *historypb.HistoryEvent) {
-	if ms.executionInfo.GetWorkflowTaskHoldsCarriedState() {
-		return
-	}
 	pending := ms.pendingCarriers()
 	if len(pending) == 0 {
 		return
@@ -148,33 +129,6 @@ func (ms *MutableStateImpl) attachCarriedState(event *historypb.HistoryEvent) {
 	}
 }
 
-// clearScheduledCarriedState forgets which state the scheduled Workflow Task carries, once that
-// task starts, fails or times out, so newer state schedules a task of its own. Checked through a
-// read-only view first, since almost no Workflow has any.
-func (ms *MutableStateImpl) clearScheduledCarriedState() {
-	wf, chasmCtx, ok := ms.chasmWorkflowView()
-	if !ok {
-		return
-	}
-	var scheduled []taskCarrier
-	for _, carrier := range taskCarriers {
-		if carrier.hasScheduled(wf, chasmCtx) {
-			scheduled = append(scheduled, carrier)
-		}
-	}
-	if len(scheduled) == 0 {
-		return
-	}
-	wf, mutableCtx, err := ms.ChasmWorkflowComponent(context.Background())
-	if err != nil {
-		ms.logger.Warn("cannot clear the carried state of a Workflow Task", tag.Error(err))
-		return
-	}
-	for _, carrier := range scheduled {
-		carrier.clearScheduled(wf, mutableCtx)
-	}
-}
-
 // scheduleWorkflowTaskForCarriedState schedules a Workflow Task to carry pending state when no task
 // is pending to carry it, unless a task carried state of that kind too recently.
 func (ms *MutableStateImpl) scheduleWorkflowTaskForCarriedState() error {
@@ -183,7 +137,9 @@ func (ms *MutableStateImpl) scheduleWorkflowTaskForCarriedState() error {
 	if !ms.workflowTaskUpdated && !ms.chasmTree.IsStateDirty() {
 		return nil
 	}
-	if ms.HasPendingWorkflowTask() || ms.IsWorkflowExecutionStatusPaused() {
+	// A start backoff, such as a cron or a start delay, schedules the first task when it ends.
+	if ms.HasPendingWorkflowTask() || ms.IsWorkflowExecutionStatusPaused() ||
+		ms.IsWorkflowPendingOnWorkflowTaskBackoff() {
 		return nil
 	}
 	pending := ms.pendingCarriers()
@@ -215,9 +171,9 @@ func (ms *MutableStateImpl) scheduleWorkflowTaskForCarriedState() error {
 	if len(stillPending) == 0 {
 		return nil
 	}
-	// The task can't carry the state, for example after a failover converted it. Without a hold,
-	// every later transaction would schedule another task for it. The floor stops that loop when
-	// the interval is zero.
+	// The task can't carry the state yet, for example a transient retry, which writes its scheduled
+	// event only when it starts. Without a hold, every later transaction would schedule another
+	// task for it. The floor stops that loop when the interval is zero.
 	ms.logger.Info("held carried state that a scheduled Workflow Task can't carry")
 	var minInterval time.Duration
 	for _, carrier := range stillPending {

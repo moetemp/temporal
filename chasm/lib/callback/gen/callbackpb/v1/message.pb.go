@@ -710,7 +710,7 @@ var File_temporal_server_chasm_lib_callback_proto_v1_message_proto protoreflect.
 
 const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\"\x91\b\n" +
+	"9temporal/server/chasm/lib/callback/proto/v1/message.proto\x12,temporal.server.chasm.lib.callbacks.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$temporal/api/common/v1/message.proto\x1a%temporal/api/failure/v1/message.proto\"\x97\b\n" +
 	"\rCallbackState\x12R\n" +
 	"\bcallback\x18\x01 \x01(\v26.temporal.server.chasm.lib.callbacks.proto.v1.CallbackR\bcallback\x12G\n" +
 	"\x11registration_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x10registrationTime\x12T\n" +
@@ -730,7 +730,7 @@ const file_temporal_server_chasm_lib_callback_proto_v1_message_proto_rawDesc = "
 	"\x0freceiver_closed\x18\x0f \x01(\bR\x0ereceiverClosed\x12/\n" +
 	"\x13progress_deliveries\x18\x11 \x01(\x03R\x12progressDeliveries\x12;\n" +
 	"\x1aprogress_in_flight_counter\x18\x12 \x01(\x03R\x17progressInFlightCounter\x1a\x10\n" +
-	"\x0eWorkflowClosed\"\xf9\x01\n" +
+	"\x0eWorkflowClosedJ\x04\b\x10\x10\x11\"\xf9\x01\n" +
 	"\bProgress\x12\x1a\n" +
 	"\bposition\x18\x01 \x01(\tR\bposition\x12\x18\n" +
 	"\acounter\x18\x02 \x01(\x03R\acounter\x12`\n" +
