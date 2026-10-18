@@ -69,8 +69,9 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 		return nil, errCallerNamespaceHeaderSet
 	}
 
-	// The gRPC interceptor authorized the caller namespace without the endpoint. An authorizer that
-	// limits endpoints by name on the Nexus HTTP route gets the name here too.
+	// The gRPC interceptor authorized the caller namespace without the endpoint. This check passes
+	// the endpoint name under this API's name, so an authorizer can limit the endpoints a caller
+	// namespace may call.
 	claims, _ := ctx.Value(authorization.MappedClaims).(*authorization.Claims)
 	if _, err := wh.syncNexusChecks.Authorizer.Authorize(ctx, claims, &authorization.CallTarget{
 		APIName:           api.WorkflowServicePrefix + "ExecuteSyncNexusOperation",
@@ -81,8 +82,9 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 		return nil, err
 	}
 
-	// The registry is the allowlist seam. It answers NotFound for an endpoint that the caller
-	// namespace can't reach, so a caller can't probe endpoint names.
+	// A registry that scopes endpoints by namespace answers NotFound for an endpoint the caller
+	// namespace can't reach. The OSS registry ignores the namespace, so the target namespace check
+	// below is what limits the call.
 	entry, err := wh.endpointRegistry.GetByName(ctx, callerNamespace.ID(), request.GetEndpoint())
 	if err != nil {
 		return nil, err
@@ -98,6 +100,15 @@ func (wh *WorkflowHandler) ExecuteSyncNexusOperation(
 		namespace.ID(workerTarget.GetNamespaceId()),
 	)
 	if err != nil {
+		return nil, err
+	}
+	// The Nexus HTTP route authorizes the target namespace, so this call does too.
+	if _, err := wh.syncNexusChecks.Authorizer.Authorize(ctx, claims, &authorization.CallTarget{
+		APIName:           configs.DispatchNexusTaskByEndpointAPIName,
+		Namespace:         targetNamespace.Name().String(),
+		NexusEndpointName: request.GetEndpoint(),
+		Request:           request,
+	}); err != nil {
 		return nil, err
 	}
 	// A target that is deleted or in a handover takes no task, as on the Nexus HTTP route.
