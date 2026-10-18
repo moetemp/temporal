@@ -23,6 +23,7 @@ import "temporal/server/api/clock/v1/message.proto";
 import "temporal/server/api/common/v1/dlq.proto";
 import "temporal/server/api/enums/v1/cluster.proto";
 import "temporal/server/api/enums/v1/common.proto";
+import "temporal/server/api/enums/v1/stream_wake.proto";
 import "temporal/server/api/enums/v1/workflow.proto";
 import "temporal/server/api/health/v1/message.proto";
 import "temporal/server/api/history/v1/message.proto";
@@ -1488,15 +1489,7 @@ message RecordStreamWakeRequest {
   // The run whose reader the wake is for. A closed run answers NotFound.
   temporal.api.common.v1.WorkflowExecution execution = 2;
   temporal.api.stream.v1.StreamWake wake = 3;
-  // Counts the wake's reader toward history.maximumStreamWakeSources and records no wake. A
-  // reader's attach asks for this, so an attach past the limit fails.
-  bool reserve_only = 4;
-  // Stops counting the wake's reader toward history.maximumStreamWakeSources and records no wake.
-  // A reader that detached, or whose attach failed after its reserve, frees its place this way.
-  bool release = 5;
-  // Drops the wake when its reader holds no place, instead of giving it one. A callback's wake can
-  // land after the reader's place was freed, and it must not take the place again.
-  bool only_if_reserved = 6;
+  temporal.server.api.enums.v1.StreamWakeMode mode = 4;
 }
 
 message RecordStreamWakeResponse {

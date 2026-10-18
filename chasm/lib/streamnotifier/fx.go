@@ -20,7 +20,6 @@ var HistoryModule = fx.Module(
 		newRecheckTaskHandler,
 		newDebounceTaskHandler,
 		newLibrary,
-		newSystemNexusHandler,
 	),
 	fx.Invoke(func(l *library, registry *chasm.Registry) error {
 		return registry.Register(l)
