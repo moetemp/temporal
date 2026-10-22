@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.stream.proto.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/stream/gen/streampb;streampb";
+
+// Fires at the earliest deadline of a Stream: the auto close, the TTL, the Retention of the
+// oldest batch, or the create wait of a parked read. Each transition arms one for the next
+// deadline, so a task whose deadline is not the armed one does nothing.
+message StreamTimerTask {
+  google.protobuf.Timestamp deadline = 1;
+}
