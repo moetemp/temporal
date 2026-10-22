@@ -151,9 +151,15 @@ type ReadInput struct {
 	Limits   Limits
 }
 
-// StartForRead is the start of an execution for a read. The Stream waits for its create.
-func StartForRead(ctx chasm.MutableContext, _ ReadInput) (*Stream, error) {
-	return NewStream(ctx, streampb.STREAM_PHASE_PENDING), nil
+// StartForRead is the start of an execution for a read. The Stream waits for its create. The
+// start parks the read itself, since a child node that the update of a new execution adds is
+// not persisted.
+func StartForRead(ctx chasm.MutableContext, in ReadInput) (*Stream, error) {
+	s := NewStream(ctx, streampb.STREAM_PHASE_PENDING)
+	if _, err := s.ReadOrPark(ctx, in); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // ReadOrPark answers a read that has Records or ends, and parks any other read until the
