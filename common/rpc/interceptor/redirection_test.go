@@ -222,6 +222,7 @@ func (s *redirectionInterceptorSuite) TestGlobalAPI() {
 		"PollNexusOperationExecution":          {},
 		"RequestCancelNexusOperationExecution": {},
 		"StartNexusOperationExecution":         {},
+		"StartNexusOperation":                  {},
 		"TerminateNexusOperationExecution":     {},
 	}, apis)
 }

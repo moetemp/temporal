@@ -1009,6 +1009,16 @@ func (c *clientImpl) StartBatchOperation(
 	return c.client.StartBatchOperation(ctx, request, opts...)
 }
 
+func (c *clientImpl) StartNexusOperation(
+	ctx context.Context,
+	request *workflowservice.StartNexusOperationRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.StartNexusOperationResponse, error) {
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return c.client.StartNexusOperation(ctx, request, opts...)
+}
+
 func (c *clientImpl) StartNexusOperationExecution(
 	ctx context.Context,
 	request *workflowservice.StartNexusOperationExecutionRequest,

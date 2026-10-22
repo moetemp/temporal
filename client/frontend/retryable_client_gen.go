@@ -1511,6 +1511,21 @@ func (c *retryableClient) StartBatchOperation(
 	return resp, err
 }
 
+func (c *retryableClient) StartNexusOperation(
+	ctx context.Context,
+	request *workflowservice.StartNexusOperationRequest,
+	opts ...grpc.CallOption,
+) (*workflowservice.StartNexusOperationResponse, error) {
+	var resp *workflowservice.StartNexusOperationResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.StartNexusOperation(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) StartNexusOperationExecution(
 	ctx context.Context,
 	request *workflowservice.StartNexusOperationExecutionRequest,

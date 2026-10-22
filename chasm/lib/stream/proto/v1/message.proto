@@ -124,4 +124,6 @@ message ParkedReadState {
   temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata callback_metadata = 9;
   // When the read answers an empty page, from its wait. Unset for a read with no wait.
   google.protobuf.Timestamp wait_deadline = 10;
+  // Where the read started. A wake_only read answers it as its next offset.
+  int64 start_offset = 11;
 }

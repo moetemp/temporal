@@ -41,6 +41,7 @@ func (s *StreamTestSuite) newEnv() *testcore.TestEnv {
 	return testcore.NewEnv(s.T(),
 		testcore.WithDynamicConfig(dynamicconfig.EnableChasm, true),
 		testcore.WithDynamicConfig(stream.Enabled, true),
+		testcore.WithDynamicConfig(dynamicconfig.EnableDirectNexusCalls, true),
 	)
 }
 
@@ -624,4 +625,73 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 	})
 	s.NoError(err)
 	s.Equal(payload.EncodeString("run-2").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
+}
+
+// directRead reads through the direct System Nexus call, which adds no History event.
+func (s *StreamTestSuite) directRead(env *testcore.TestEnv, req *streamservice.ReadRecordsRequest) (*streamservice.ReadRecordsResponse, *failurepb.Failure) {
+	resp, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
+		Namespace: env.Namespace().String(),
+		Endpoint:  commonnexus.SystemEndpoint,
+		Service:   stream.ServiceName,
+		Operation: "ReadRecords",
+		Input:     payloads.MustEncodeSingle(req),
+	})
+	s.NoError(err)
+	if failure := resp.GetOperationFailure().GetFailure(); failure != nil {
+		return nil, failure
+	}
+	var page streamservice.ReadRecordsResponse
+	s.NoError(sdkconverter.PreferProtoDataConverter.FromPayloads(
+		&commonpb.Payloads{Payloads: []*commonpb.Payload{resp.GetSyncSuccess().GetPayload()}}, &page))
+	return &page, nil
+}
+
+func (s *StreamTestSuite) historyLength(env *testcore.TestEnv, c *streamCaller) int {
+	resp, err := env.FrontendClient().GetWorkflowExecutionHistory(s.Context(), &workflowservice.GetWorkflowExecutionHistoryRequest{
+		Namespace: env.Namespace().String(),
+		Execution: &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: c.run.GetRunID()},
+	})
+	s.NoError(err)
+	return len(resp.GetHistory().GetEvents())
+}
+
+// A Workflow wakes with offsets only and reads its pages directly. The pages add no History
+// event, and a read bounded by to_offset answers the same page after more appends, as replay
+// needs.
+func (s *StreamTestSuite) TestWorkflowReadsDirectlyWithNoRecordsInHistory() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	ns := env.Namespace().String()
+	appendTopics := func(sequence int64, topics ...string) {
+		_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: owned, Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: sequence, Records: records(topics...),
+		})
+		s.NoError(err)
+	}
+
+	wake := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: owned, WakeOnly: true}})[0]
+	appendTopics(1, "a", "b")
+	var woke streamservice.ReadRecordsResponse
+	failure, started := c.outcome(wake, &woke)
+	s.Nil(failure)
+	s.True(started)
+	s.Empty(woke.GetRecords())
+	s.Equal(int64(0), woke.GetNextOffset())
+
+	before := s.historyLength(env, c)
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: woke.GetNextOffset()})
+	s.Nil(failure)
+	s.Equal([]string{"a", "b"}, kindsAndTopics(page))
+	s.Equal(before, s.historyLength(env, c))
+
+	appendTopics(2, "c")
+	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, ToOffset: page.GetNextOffset()})
+	s.Nil(failure)
+	s.Equal(page.GetRecords(), again.GetRecords())
+	s.Equal(page.GetNextOffset(), again.GetNextOffset())
+
+	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))})
+	s.Equal(stream.ReasonNotFound, causeType(failure))
 }

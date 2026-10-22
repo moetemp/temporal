@@ -3369,6 +3369,12 @@ Requires service restart to take effect.`,
 		`SendRawHistoryBytesToMatchingService controls whether to use the new raw_history_bytes field (21) instead of raw_history field (20) when sending history to matching service. Only enable after all services are upgraded. NOTE: This flag only has effect when SendRawHistoryBetweenInternalServices is also enabled.`,
 	)
 
+	EnableDirectNexusCalls = NewNamespaceBoolSetting(
+		"frontend.enableDirectNexusCalls",
+		false,
+		`Enables WorkflowService.StartNexusOperation, a direct Nexus call with no caller-side state.
+Only the __temporal_system endpoint is served.`,
+	)
 	EnableChasm = NewNamespaceBoolSetting(
 		"history.enableChasm",
 		true,

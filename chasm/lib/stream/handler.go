@@ -331,14 +331,18 @@ func (h *handler) ReadRecords(
 	if err := h.applyDue(ctx, t, limits); err != nil {
 		return nil, streamError(ctx, t, err)
 	}
-	cursor, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
+	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
 	if err != nil {
 		return nil, streamError(ctx, t, err)
 	}
+	cursor := start
 	for {
 		from := cursor
 		page, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (pagedRead, error) {
 			resp, found, err := s.Page(cctx, req, from)
+			if found && req.GetWakeOnly() {
+				resp = s.wakeAnswer(start)
+			}
 			return pagedRead{resp: resp, found: found}, err
 		})
 		if err != nil {
@@ -346,6 +350,9 @@ func (h *handler) ReadRecords(
 		}
 		// nolint:forbidigo // A long poll measures wall-clock time, not component time.
 		if page.found || !time.Now().Before(deadline) {
+			if !page.found && req.GetWakeOnly() {
+				return &streamservice.ReadRecordsResponse{NextOffset: start}, nil
+			}
 			return page.resp, nil
 		}
 		cursor = max(cursor, page.resp.GetNextOffset())

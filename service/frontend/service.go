@@ -188,6 +188,8 @@ type Config struct {
 
 	// Enable CHASM tree infrastructure
 	EnableChasm dynamicconfig.BoolPropertyFnWithNamespaceFilter
+
+	EnableDirectNexusCalls dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	// Enable creation of new schedules on CHASM (V2) engine
 	EnableCHASMSchedulerCreation dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	// Per-namespace percentage [0-100] of new schedules routed to CHASM when
@@ -405,6 +407,7 @@ func NewConfig(
 		SchedulerV1VersionCeiling:            dynamicconfig.SchedulerV1VersionCeiling.Get(dc),
 		SchedulerV1VersionOverride:           dynamicconfig.SchedulerV1VersionOverride.Get(dc),
 		EnableChasm:                          dynamicconfig.EnableChasm.Get(dc),
+		EnableDirectNexusCalls:               dynamicconfig.EnableDirectNexusCalls.Get(dc),
 		EnableCHASMSchedulerCreation:         dynamicconfig.EnableCHASMSchedulerCreation.Get(dc),
 		CHASMSchedulerCreationRolloutPercent: dynamicconfig.CHASMSchedulerCreationRolloutPercent.Get(dc),
 		EnableCHASMSchedulerRouting:          dynamicconfig.EnableCHASMSchedulerRouting.Get(dc),

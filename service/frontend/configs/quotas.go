@@ -99,6 +99,7 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/StartBatchOperation":              1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartActivityExecution":           1,
 		"/temporal.api.workflowservice.v1.WorkflowService/StartNexusOperationExecution":     1,
+		"/temporal.api.workflowservice.v1.WorkflowService/StartNexusOperation":              1,
 		DispatchNexusTaskByNamespaceAndTaskQueueAPIName:                                     1,
 		DispatchNexusTaskByEndpointAPIName:                                                  1,
 

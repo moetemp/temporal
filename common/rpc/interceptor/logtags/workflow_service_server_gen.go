@@ -526,6 +526,10 @@ func (wt *WorkflowTags) extractFromWorkflowServiceServerMessage(message any) []t
 		return nil
 	case *workflowservice.StartBatchOperationResponse:
 		return nil
+	case *workflowservice.StartNexusOperationRequest:
+		return nil
+	case *workflowservice.StartNexusOperationResponse:
+		return nil
 	case *workflowservice.StartNexusOperationExecutionRequest:
 		return []tag.Tag{
 			tag.OperationID(r.GetOperationId()),

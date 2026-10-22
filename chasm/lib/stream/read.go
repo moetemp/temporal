@@ -53,8 +53,11 @@ func (s *Stream) Page(
 	if n := int(req.GetMaxRecords()); n > 0 && n < MaxRecords {
 		limit = n
 	}
+	if end := req.GetToOffset(); end > 0 && from >= end {
+		return &streamservice.ReadRecordsResponse{NextOffset: from}, false, nil
+	}
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && from > s.CloseOffset {
-		records, after := s.afterClose(ctx, from)
+		records, after := s.afterClose(ctx, from, req.GetToOffset())
 		return &streamservice.ReadRecordsResponse{
 			Records:    append(records, s.closeRecord(ctx)),
 			NextOffset: max(from, after),
@@ -92,6 +95,9 @@ func (s *Stream) scan(
 			if entry.GetOffset() < start {
 				continue
 			}
+			if end := req.GetToOffset(); end > 0 && entry.GetOffset() >= end {
+				return resp, nil
+			}
 			if resp.Done || len(resp.Records) >= limit || scanned >= maxScan {
 				return resp, nil
 			}
@@ -119,7 +125,7 @@ func (s *Stream) take(
 ) {
 	switch entry.GetKind() {
 	case streamservice.STREAM_RECORD_KIND_CLOSE:
-		records, after := s.afterClose(ctx, entry.GetOffset()+1)
+		records, after := s.afterClose(ctx, entry.GetOffset()+1, req.GetToOffset())
 		resp.Records = append(append(resp.Records, records...), common.CloneProto(entry))
 		resp.NextOffset = max(resp.NextOffset, after)
 		resp.Done = true
@@ -149,10 +155,16 @@ func passes(req *streamservice.ReadRecordsRequest, topic string) bool {
 	return false
 }
 
+// wakeAnswer is the answer of a wake_only read: no Records, the read's start as its next
+// offset, and whether the Stream is closed.
+func (s *Stream) wakeAnswer(start int64) *streamservice.ReadRecordsResponse {
+	return &streamservice.ReadRecordsResponse{NextOffset: start, Done: s.Phase == streampb.STREAM_PHASE_CLOSED}
+}
+
 // afterClose gives the Superseded items written after the close from the offset from, and the
 // offset after the last entry, zero if none. A Workflow Task that completes after the close
 // still withdraws, and a reader stops at the close Record, so a page puts them before it.
-func (s *Stream) afterClose(ctx chasm.Context, from int64) ([]*streamservice.StreamRecord, int64) {
+func (s *Stream) afterClose(ctx chasm.Context, from, end int64) ([]*streamservice.StreamRecord, int64) {
 	var records []*streamservice.StreamRecord
 	var after int64
 	for _, info := range s.Index {
@@ -162,6 +174,9 @@ func (s *Stream) afterClose(ctx chasm.Context, from int64) ([]*streamservice.Str
 		for _, entry := range s.Batches[info.GetFirstOffset()].Get(ctx).GetRecords() {
 			if entry.GetOffset() < from || entry.GetOffset() <= s.CloseOffset {
 				continue
+			}
+			if end > 0 && entry.GetOffset() >= end {
+				return records, after
 			}
 			after = entry.GetOffset() + 1
 			if entry.GetKind() == streamservice.STREAM_RECORD_KIND_SUPERSEDED {
@@ -247,8 +262,12 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 		}
 		if found || in.Callback == nil {
 			s.finish(ctx, in.Limits)
+			if in.Request.GetWakeOnly() {
+				return s.wakeAnswer(from), nil
+			}
 			return resp, nil
 		}
+		read.StartOffset = from
 		read.ScanOffset = max(from, resp.GetNextOffset())
 	}
 	if s.waitingReads(ctx) >= in.Limits.MaxParkedReads {
@@ -293,11 +312,15 @@ func (s *Stream) wake(ctx chasm.MutableContext, read *ParkedRead) (readOutcome, 
 			return readOutcome{err: err}, true
 		}
 		read.CreateDeadline = nil
+		read.StartOffset = from
 		read.ScanOffset = from
 	}
 	resp, found, err := s.Page(ctx, read.GetRequest(), read.GetScanOffset())
 	if err != nil {
 		return readOutcome{err: err}, true
+	}
+	if found && read.GetRequest().GetWakeOnly() {
+		return readOutcome{resp: s.wakeAnswer(read.GetStartOffset())}, true
 	}
 	if found {
 		return readOutcome{resp: resp}, true
