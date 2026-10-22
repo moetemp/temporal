@@ -315,9 +315,9 @@ func (s *Stream) Describe() (*streamservice.DescribeStreamResponse, error) {
 
 // Due says whether a deadline passed that a write step applies, such as the auto close. A read
 // step writes nothing, so the caller runs an update first.
-func (s *Stream) Due(ctx chasm.Context, limits Limits) bool {
+func (s *Stream) Due(ctx chasm.Context, limits Limits) (bool, error) {
 	deadline, ok := s.nextDeadline(ctx, limits)
-	return ok && !deadline.After(ctx.Now(s))
+	return ok && !deadline.After(ctx.Now(s)), nil
 }
 
 // ApplyDue applies the deadlines that passed.

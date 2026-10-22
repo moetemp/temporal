@@ -9,6 +9,7 @@ var HistoryModule = fx.Module(
 	"stream-history",
 	fx.Provide(
 		ConfigProvider,
+		newHandler,
 		newTimerTaskHandler,
 		newLibrary,
 	),
