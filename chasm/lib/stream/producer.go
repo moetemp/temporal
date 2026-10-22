@@ -1,7 +1,9 @@
 package stream
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"go.temporal.io/api/streamservice/v1"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
@@ -110,6 +112,74 @@ func supersededRecord(producer *streamservice.Producer, w Withdrawal) *streamser
 			RunId:                 producer.GetRunId(),
 		},
 	}
+}
+
+// orphans applies to a Local Activity write with its run's last completed task (S110). It splits
+// the run's open Local Activity tasks into those that never completed and those still open.
+func (s *Stream) orphans(req *streamservice.AppendRecordsRequest) (bool, taskSplit) {
+	producer := req.GetProducer()
+	if producer.GetKind() != streamservice.PRODUCER_KIND_LOCAL_ACTIVITY ||
+		req.GetPreviousCompletedTask() == nil || producer.GetRunId() == "" {
+		return false, taskSplit{}
+	}
+	return true, withdrawTasks(s.Runs[producer.GetRunId()].GetOpenLocal(), taskOf(producer.GetEpoch()),
+		completedTask(req), req.GetFailedTasks())
+}
+
+// settleOrphans keeps the open Local Activity tasks and fences the withdrawn ones.
+func (s *Stream) settleOrphans(producer *streamservice.Producer, split taskSplit, wroteRecords bool) {
+	run := s.Runs[producer.GetRunId()]
+	run.OpenLocal = split.kept
+	task := taskOf(producer.GetEpoch())
+	if wroteRecords && !slices.ContainsFunc(run.OpenLocal, func(t *streamservice.WorkflowTaskEpoch) bool { return compareTasks(t, task) == 0 }) {
+		run.OpenLocal = append(run.OpenLocal, task)
+	}
+	run.Withdrawn = append(run.Withdrawn, split.withdrawn...)
+}
+
+// completedTask is the run's last completed task of a write, or nil before the first.
+func completedTask(req *streamservice.AppendRecordsRequest) *streamservice.WorkflowTaskEpoch {
+	if c := req.GetPreviousCompletedTask(); c.GetStartedEventId() > 0 {
+		return c
+	}
+	return nil
+}
+
+// orphanRecord withdraws a run's orphaned Local Activity Records. It names the run's Workflow
+// Producer in the write's task, so a reader's Workflow rule withdraws the run's Local Activity
+// Records of the tasks after the completed one and before that task, and of the failed ones.
+func orphanRecord(req *streamservice.AppendRecordsRequest) *streamservice.StreamRecord {
+	producer := req.GetProducer()
+	epoch := producer.GetEpoch()
+	return &streamservice.StreamRecord{
+		Kind: streamservice.STREAM_RECORD_KIND_SUPERSEDED,
+		Supersession: &streamservice.Supersession{
+			ProducerKind: streamservice.PRODUCER_KIND_WORKFLOW,
+			ProducerId:   "wf:" + encodePart(producer.GetRunId()),
+			Epoch: &streamservice.ProducerEpoch{
+				TaskStartedEventId: epoch.GetTaskStartedEventId(),
+				TaskAttempt:        epoch.GetTaskAttempt(),
+				TaskStartedTime:    epoch.GetTaskStartedTime(),
+			},
+			PreviousCompletedTask: completedTask(req),
+			FailedTasks:           req.GetFailedTasks(),
+			RunId:                 producer.GetRunId(),
+		},
+	}
+}
+
+// encodePart percent-encodes an id part as the crate does, so a Producer id matches its.
+func encodePart(text string) string {
+	var out strings.Builder
+	for _, b := range []byte(text) {
+		if ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z') || ('0' <= b && b <= '9') ||
+			b == '_' || b == '.' || b == '-' || b == '~' {
+			out.WriteByte(b)
+		} else {
+			fmt.Fprintf(&out, "%%%02X", b)
+		}
+	}
+	return out.String()
 }
 
 type taskSplit struct {

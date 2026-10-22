@@ -42,7 +42,7 @@ func (g *grpcHandler) CloseStream(ctx context.Context, req *streampb.CloseStream
 }
 
 func (g *grpcHandler) ReadRecords(ctx context.Context, req *streampb.ReadRecordsRequest) (*streampb.ReadRecordsResponse, error) {
-	resp, err := g.handler.ReadRecords(ctx, req.GetFrontendRequest())
+	resp, err := g.handler.ReadRecords(ctx, req.GetFrontendRequest(), nil)
 	if err != nil {
 		return nil, err
 	}

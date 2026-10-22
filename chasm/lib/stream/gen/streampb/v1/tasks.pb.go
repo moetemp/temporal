@@ -116,6 +116,52 @@ func (x *StreamCloseChainTask) GetFirstRunId() string {
 	return ""
 }
 
+// Drops the floors of the reader runs that closed, so the Retention trims past them again. It
+// runs while the Stream has floors.
+type StreamReadersCheckTask struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deadline      *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=deadline,proto3" json:"deadline,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamReadersCheckTask) Reset() {
+	*x = StreamReadersCheckTask{}
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamReadersCheckTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamReadersCheckTask) ProtoMessage() {}
+
+func (x *StreamReadersCheckTask) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamReadersCheckTask.ProtoReflect.Descriptor instead.
+func (*StreamReadersCheckTask) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *StreamReadersCheckTask) GetDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Deadline
+	}
+	return nil
+}
+
 var File_temporal_server_chasm_lib_stream_proto_v1_tasks_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDesc = "" +
@@ -125,7 +171,9 @@ const file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDesc = "" +
 	"\bdeadline\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bdeadline\"8\n" +
 	"\x14StreamCloseChainTask\x12 \n" +
 	"\ffirst_run_id\x18\x01 \x01(\tR\n" +
-	"firstRunIdB>Z<go.temporal.io/server/chasm/lib/stream/gen/streampb;streampbb\x06proto3"
+	"firstRunId\"P\n" +
+	"\x16StreamReadersCheckTask\x126\n" +
+	"\bdeadline\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bdeadlineB>Z<go.temporal.io/server/chasm/lib/stream/gen/streampb;streampbb\x06proto3"
 
 var (
 	file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDescOnce sync.Once
@@ -139,19 +187,21 @@ func file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDescGZIP() []
 	return file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDescData
 }
 
-var file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_goTypes = []any{
-	(*StreamTimerTask)(nil),       // 0: temporal.server.chasm.lib.stream.proto.v1.StreamTimerTask
-	(*StreamCloseChainTask)(nil),  // 1: temporal.server.chasm.lib.stream.proto.v1.StreamCloseChainTask
-	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
+	(*StreamTimerTask)(nil),        // 0: temporal.server.chasm.lib.stream.proto.v1.StreamTimerTask
+	(*StreamCloseChainTask)(nil),   // 1: temporal.server.chasm.lib.stream.proto.v1.StreamCloseChainTask
+	(*StreamReadersCheckTask)(nil), // 2: temporal.server.chasm.lib.stream.proto.v1.StreamReadersCheckTask
+	(*timestamppb.Timestamp)(nil),  // 3: google.protobuf.Timestamp
 }
 var file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_depIdxs = []int32{
-	2, // 0: temporal.server.chasm.lib.stream.proto.v1.StreamTimerTask.deadline:type_name -> google.protobuf.Timestamp
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	3, // 0: temporal.server.chasm.lib.stream.proto.v1.StreamTimerTask.deadline:type_name -> google.protobuf.Timestamp
+	3, // 1: temporal.server.chasm.lib.stream.proto.v1.StreamReadersCheckTask.deadline:type_name -> google.protobuf.Timestamp
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_init() }
@@ -165,7 +215,7 @@ func file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDesc), len(file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

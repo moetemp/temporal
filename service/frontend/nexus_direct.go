@@ -4,11 +4,14 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/nexus-rpc/sdk-go/nexus"
+	commonpb "go.temporal.io/api/common/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
+	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
 )
@@ -50,6 +53,7 @@ func (wh *WorkflowHandler) StartNexusOperation(
 			Operation: req.GetOperation(),
 			Payload:   processed.ReserializedInputPayload,
 			RequestId: requestID,
+			Links:     workflowEventLinks(req.GetLinks(), requestID),
 		},
 	})
 	if err != nil {
@@ -81,4 +85,25 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	default:
 		return nil, serviceerror.NewInternal("unexpected Nexus start response")
 	}
+}
+
+// workflowEventLinks passes on the caller's Workflow links, so an operation knows the reading run.
+// A direct call names no event of its caller, and the Nexus form of a link needs a reference, so a
+// link with none refers to the call's request id.
+func workflowEventLinks(links []*commonpb.Link, requestID string) []*nexuspb.Link {
+	var out []nexus.Link
+	for _, link := range links {
+		event := link.GetWorkflowEvent()
+		if event == nil {
+			continue
+		}
+		if event.GetReference() == nil {
+			event = common.CloneProto(event)
+			event.Reference = &commonpb.Link_WorkflowEvent_RequestIdRef{
+				RequestIdRef: &commonpb.Link_WorkflowEvent_RequestIdReference{RequestId: requestID},
+			}
+		}
+		out = append(out, commonnexus.ConvertLinkWorkflowEventToNexusLink(event))
+	}
+	return commonnexus.ConvertLinksToProto(out)
 }

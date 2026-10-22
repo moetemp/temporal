@@ -54,6 +54,20 @@ under limit.mutableStateSize.error, which terminates a run.`,
 retryable error, so the caller backs off.`,
 	)
 
+	MaxWorkflowReaders = dynamicconfig.NewNamespaceIntSetting(
+		"stream.maxWorkflowReaders",
+		100,
+		`The most open Workflow runs whose read floor one Workflow Stream keeps. A page of a new
+reader past the cap fails with a retryable error, so the caller backs off.`,
+	)
+
+	ReaderCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
+		"stream.readerCheckInterval",
+		5*time.Minute,
+		`How often a Workflow Stream with read floors checks whether their runs are still open. The
+floor of a closed run goes at the next check.`,
+	)
+
 	MaxProducers = dynamicconfig.NewNamespaceIntSetting(
 		"stream.maxProducers",
 		1000,
@@ -72,6 +86,8 @@ type Config struct {
 	MaxWorkflowStateBytes dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxParkedReads        dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxProducers          dynamicconfig.IntPropertyFnWithNamespaceFilter
+	MaxWorkflowReaders    dynamicconfig.IntPropertyFnWithNamespaceFilter
+	ReaderCheckInterval   dynamicconfig.DurationPropertyFnWithNamespaceFilter
 }
 
 func ConfigProvider(dc *dynamicconfig.Collection) *Config {
@@ -85,6 +101,8 @@ func ConfigProvider(dc *dynamicconfig.Collection) *Config {
 		MaxWorkflowStateBytes: MaxWorkflowStateBytes.Get(dc),
 		MaxParkedReads:        MaxParkedReads.Get(dc),
 		MaxProducers:          MaxProducers.Get(dc),
+		MaxWorkflowReaders:    MaxWorkflowReaders.Get(dc),
+		ReaderCheckInterval:   ReaderCheckInterval.Get(dc),
 	}
 }
 
@@ -96,6 +114,8 @@ type Limits struct {
 	MaxBatchBytes    int64
 	MaxParkedReads   int
 	MaxProducers     int
+	MaxReaders       int
+	ReaderCheck      time.Duration
 	// Set for a Workflow Stream only.
 	MaxWorkflowStateBytes int64
 }
@@ -109,5 +129,7 @@ func (c *Config) LimitsFor(namespaceName string) Limits {
 		MaxBatchBytes:    int64(c.MaxBatchBytes(namespaceName)),
 		MaxParkedReads:   c.MaxParkedReads(namespaceName),
 		MaxProducers:     c.MaxProducers(namespaceName),
+		MaxReaders:       c.MaxWorkflowReaders(namespaceName),
+		ReaderCheck:      c.ReaderCheckInterval(namespaceName),
 	}
 }

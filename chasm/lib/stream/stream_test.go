@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/server/common/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type harness struct {
@@ -36,7 +37,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
 	config := ConfigProvider(dynamicconfig.NewNoopCollection())
-	require.NoError(t, registry.Register(newLibrary(config, nil, nil, newTimerTaskHandler(config), nil)))
+	require.NoError(t, registry.Register(newLibrary(config, nil, nil, newTimerTaskHandler(config), nil, nil)))
 	ts := clock.NewEventTimeSource()
 	ts.Update(time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC))
 	engine := chasmtest.NewEngine(t, registry, chasmtest.WithTimeSource(ts))
@@ -516,23 +517,33 @@ func TestErrorsCarryTheReason(t *testing.T) {
 	require.Equal(t, ReasonFenced, details[0].(*streamservice.StreamErrorDetails).GetReason())
 }
 
-func TestHeldStreamRefusesPastTheCapAndKeepsItsRecords(t *testing.T) {
+// A reader's floor keeps its Records past the Retention and the cap, and the Records below it
+// trim. When the reader goes, the Retention trims the rest.
+func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	h := newHarness(t)
 	h.limits.MaxStoredBytes = 200
 	_, err := h.create(&streamservice.CreateStreamRequest{
 		StreamId: "chat-1", Retention: durationpb.New(time.Minute), Owner: workflowProducer(1),
 	})
 	require.NoError(t, err)
-	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), func(s *Stream, _ chasm.MutableContext, _ struct{}) (struct{}, error) {
-		s.HoldRecords = true
-		return struct{}{}, nil
-	}, struct{}{})
-	require.NoError(t, err)
-
 	_, err = h.append(activityProducer(1), 1, "a")
 	require.NoError(t, err)
-	big := &streamservice.AppendRecordsRequest{Producer: activityProducer(1), Sequence: 2, Records: []*streamservice.AppendRecord{
-		{Topic: "b", Body: &commonpb.Payload{Data: make([]byte, 300)}},
+	b, err := h.append(activityProducer(1), 2, "b")
+	require.NoError(t, err)
+	setReaders := func(fn func(*Stream, chasm.MutableContext) error) {
+		_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			return struct{}{}, fn(s, mctx)
+		}, struct{}{})
+		require.NoError(t, err)
+	}
+	setReaders(func(s *Stream, mctx chasm.MutableContext) error {
+		s.Nested = true
+		return s.AddReader(mctx, ReaderRun{WorkflowID: "wf", RunID: "run-1"},
+			b.GetFirstOffset(), h.limits)
+	})
+
+	big := &streamservice.AppendRecordsRequest{Producer: activityProducer(1), Sequence: 3, Records: []*streamservice.AppendRecord{
+		{Topic: "c", Body: &commonpb.Payload{Data: make([]byte, 300)}},
 	}}
 	_, err = h.appendRequest(big)
 	require.ErrorContains(t, err, ReasonTooLarge)
@@ -540,5 +551,89 @@ func TestHeldStreamRefusesPastTheCapAndKeepsItsRecords(t *testing.T) {
 	h.advance(2 * time.Minute)
 	all, err := h.read(&streamservice.ReadRecordsRequest{})
 	require.NoError(t, err)
-	require.Equal(t, []string{"a"}, topics(all))
+	require.Equal(t, []string{"b"}, topics(all))
+
+	setReaders(func(s *Stream, mctx chasm.MutableContext) error {
+		delete(s.Readers, "run-1")
+		s.ApplyDue(mctx, h.limits)
+		return nil
+	})
+	_, err = h.read(&streamservice.ReadRecordsRequest{FromOffset: b.GetFirstOffset()})
+	require.ErrorContains(t, err, ReasonExpired)
+}
+
+// localActivityWrite is a write of the Local Activity call of the run, dispatched by task
+// started, with the run's last completed task (0 before the first), as the crate's S110 test has.
+func localActivityWrite(call string, started, completed int64, topic string) *streamservice.AppendRecordsRequest {
+	return &streamservice.AppendRecordsRequest{
+		Producer: &streamservice.Producer{
+			Kind: streamservice.PRODUCER_KIND_LOCAL_ACTIVITY,
+			Id:   "la:run:" + call,
+			Epoch: &streamservice.ProducerEpoch{
+				TaskStartedEventId: started, TaskAttempt: 1,
+				TaskStartedTime: timestamppb.New(time.Unix(100+started, 0)), Attempt: 1,
+			},
+			RunId: "run",
+		},
+		Sequence:              1,
+		Records:               records(topic),
+		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: completed},
+	}
+}
+
+func TestLocalActivityOfATaskThatNeverCompletedIsWithdrawnByTheNextWrite(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	// Task 2 completed. Task 3 runs a Local Activity that writes, then task 3 fails.
+	_, err = h.appendRequest(localActivityWrite("call-1", 2, 0, "done"))
+	require.NoError(t, err)
+	_, err = h.appendRequest(localActivityWrite("call-2", 3, 2, "orphan"))
+	require.NoError(t, err)
+	// Task 4 takes another path and writes once.
+	other, err := h.appendRequest(localActivityWrite("call-3", 4, 2, "other"))
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"done", "orphan", "superseded", "other"}, topics(read))
+	require.Equal(t, read.GetRecords()[3].GetOffset(), other.GetFirstOffset())
+	require.Equal(t, &streamservice.Supersession{
+		ProducerKind:          streamservice.PRODUCER_KIND_WORKFLOW,
+		ProducerId:            "wf:run",
+		Epoch:                 &streamservice.ProducerEpoch{TaskStartedEventId: 4, TaskAttempt: 1, TaskStartedTime: timestamppb.New(time.Unix(104, 0))},
+		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: 2},
+		RunId:                 "run",
+	}, read.GetRecords()[2].GetSupersession())
+
+	// A late write of the orphaned call is fenced.
+	late := localActivityWrite("call-2", 3, 2, "late")
+	late.Sequence = 2
+	_, err = h.appendRequest(late)
+	require.ErrorContains(t, err, ReasonFenced)
+
+	// A later write that knows task 4 completed withdraws nothing more.
+	_, err = h.appendRequest(localActivityWrite("call-4", 7, 4, "later"))
+	require.NoError(t, err)
+	read, err = h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"done", "orphan", "superseded", "other", "later"}, topics(read))
+}
+
+func TestFailedTaskBeforeTheLastCompletedOneIsWithdrawnByItsID(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.appendRequest(localActivityWrite("call-1", 3, 2, "orphan"))
+	require.NoError(t, err)
+	// Task 3 failed and task 4 completed with no write here. Task 5 knows both.
+	next := localActivityWrite("call-2", 5, 4, "next")
+	next.FailedTasks = []int64{3}
+	_, err = h.appendRequest(next)
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"orphan", "superseded", "next"}, topics(read))
+	require.Equal(t, []int64{3}, read.GetRecords()[1].GetSupersession().GetFailedTasks())
 }

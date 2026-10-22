@@ -214,36 +214,30 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && !settles {
 		return nil, NewError(ReasonClosed, "The Stream is closed")
 	}
-	w := Withdrawal{
-		PreviousCompleted: req.GetPreviousCompletedTask(),
-		FailedTasks:       req.GetFailedTasks(),
-		WithdrawRun:       req.GetWithdrawRun(),
-		Defer:             deferred,
+	w := Withdrawal{WithdrawRun: req.GetWithdrawRun(), Defer: deferred}
+	if producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
+		w.PreviousCompleted, w.FailedTasks = req.GetPreviousCompletedTask(), req.GetFailedTasks()
 	}
 	flagged, err := s.admit(producer, w)
 	if err != nil {
 		return nil, err
 	}
+	orphans, orphaned := s.orphans(req)
 
-	var entries []*streamservice.StreamRecord
-	if flagged {
-		entries = append(entries, supersededRecord(producer, w))
-	}
-	for _, record := range req.GetRecords() {
-		entries = append(entries, &streamservice.StreamRecord{
-			Kind:     streamservice.STREAM_RECORD_KIND_DATA,
-			Topic:    record.GetTopic(),
-			Producer: producer,
-			Body:     record.GetBody(),
-		})
-	}
+	entries := batchEntries(req, w, flagged, len(orphaned.withdrawn) > 0)
 	if err := s.checkSize(ctx, batchSize(entries), in.Limits); err != nil {
 		return nil, err
 	}
 
 	first, last := s.write(ctx, entries)
+	if len(orphaned.withdrawn) > 0 && len(entries) > 1 {
+		first = entries[1].GetOffset()
+	}
 	wrote := len(req.GetRecords()) > 0
 	s.settle(producer, w, wrote)
+	if orphans {
+		s.settleOrphans(producer, orphaned, wrote)
+	}
 	if s.Producers == nil {
 		s.Producers = make(map[string]*streampb.ProducerState)
 	}
@@ -270,14 +264,38 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
 }
 
-// checkSize refuses a batch over the batch limit, or one that a held Stream or its Workflow can't
-// take.
+// batchEntries are the entries of one write: the orphans' Superseded Record, the batch's own
+// Superseded Record, then the Records.
+func batchEntries(req *streamservice.AppendRecordsRequest, w Withdrawal, flagged, orphans bool) []*streamservice.StreamRecord {
+	producer := req.GetProducer()
+	var entries []*streamservice.StreamRecord
+	// The orphans go in an entry of their own, since the batch's first entry may carry its own
+	// Superseded Record.
+	if orphans {
+		entries = append(entries, orphanRecord(req))
+	}
+	if flagged {
+		entries = append(entries, supersededRecord(producer, w))
+	}
+	for _, record := range req.GetRecords() {
+		entries = append(entries, &streamservice.StreamRecord{
+			Kind:     streamservice.STREAM_RECORD_KIND_DATA,
+			Topic:    record.GetTopic(),
+			Producer: producer,
+			Body:     record.GetBody(),
+		})
+	}
+	return entries
+}
+
+// checkSize refuses a batch over the batch limit, or one that the Stream can't take while its
+// readers keep their Records, or one that its Workflow can't take.
 func (s *Stream) checkSize(ctx chasm.MutableContext, size int64, limits Limits) error {
 	if size > limits.MaxBatchBytes {
 		return NewError(ReasonTooLarge, "The batch has %d bytes, more than %d", size, limits.MaxBatchBytes)
 	}
-	if s.HoldRecords && s.StoredBytes+size > limits.MaxStoredBytes {
-		return NewError(ReasonTooLarge, "The Stream holds %d bytes, and the cap is %d", s.StoredBytes, limits.MaxStoredBytes)
+	if kept := s.keptBytes(); kept+size > limits.MaxStoredBytes {
+		return NewError(ReasonTooLarge, "The Stream keeps %d bytes for its readers, and the cap is %d", kept, limits.MaxStoredBytes)
 	}
 	// The Records of a Workflow Stream are in the Workflow's mutable state, which terminates the
 	// run past its own limit, so the write fails first.
@@ -430,7 +448,7 @@ func (s *Stream) expire(ctx chasm.MutableContext) {
 func (s *Stream) trimTo(offset int64) {
 	for len(s.Index) > 0 {
 		oldest := s.Index[0]
-		if oldest.GetLastOffset() > offset || oldest.GetFirstOffset() == s.CloseOffset {
+		if oldest.GetLastOffset() > offset || s.kept(oldest) {
 			return
 		}
 		s.dropOldest()
@@ -448,9 +466,45 @@ func (s *Stream) dropOldest() {
 // limitStored drops the oldest batches while the Stream holds more than the cap. The newest
 // batch stays, since one batch is at most the batch limit.
 func (s *Stream) limitStored(maxBytes int64) {
-	for !s.HoldRecords && s.StoredBytes > maxBytes && len(s.Index) > 1 && s.Index[0].GetFirstOffset() != s.CloseOffset {
+	for s.StoredBytes > maxBytes && len(s.Index) > 1 && !s.kept(s.Index[0]) {
 		s.dropOldest()
 	}
+}
+
+// kept says whether a batch stays when the Retention or the size cap would drop it. The close
+// Record stays so that every read past the close ends with it. A batch at or past a reader's
+// floor stays so that the reader's replay finds it.
+func (s *Stream) kept(info *streampb.BatchInfo) bool {
+	if info.GetFirstOffset() == s.CloseOffset {
+		return true
+	}
+	floor, ok := s.floor()
+	return ok && info.GetLastOffset() >= floor
+}
+
+// keptBytes is the size of the batches that no trim can drop now.
+func (s *Stream) keptBytes() int64 {
+	if len(s.Readers) == 0 {
+		return 0
+	}
+	var kept int64
+	for _, info := range s.Index {
+		if s.kept(info) {
+			kept += info.GetBytes()
+		}
+	}
+	return kept
+}
+
+// floor is the lowest offset that an open Workflow reader read.
+func (s *Stream) floor() (int64, bool) {
+	var floor int64
+	for _, reader := range s.Readers {
+		if floor == 0 || reader.GetOffset() < floor {
+			floor = reader.GetOffset()
+		}
+	}
+	return floor, floor > 0
 }
 
 func (s *Stream) limitProducers(maxProducers int) {
@@ -466,10 +520,11 @@ func (s *Stream) limitProducers(maxProducers int) {
 	}
 }
 
-// retainedFrom is the offset below which the Retention hides the Records at now.
+// retainedFrom is the offset below which the Retention hides the Records at now. A Workflow Stream
+// hides none that it still stores, so a read from the start begins at the same offset on replay.
 func (s *Stream) retainedFrom(now time.Time) int64 {
 	retained := s.TrimmedOffset + 1
-	if retention := s.GetRetention().AsDuration(); retention > 0 && !s.HoldRecords {
+	if retention := s.GetRetention().AsDuration(); retention > 0 && !s.Nested {
 		if cutMs := now.Add(-retention).UnixMilli(); cutMs > 0 {
 			retained = max(retained, cutMs<<seqBits)
 		}
@@ -493,13 +548,14 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 		if at, ok := s.autoCloseAt(); ok && !at.After(now) {
 			s.LastWriteTime = timestamppb.New(at)
 			s.close(ctx, &streamservice.Producer{}, nil, nil)
-		} else if !s.ttlAt(limits).After(now) {
+		} else if !s.ttlAt(limits).After(now) && len(s.Readers) == 0 {
 			s.expire(ctx)
 			return
 		}
 	default:
 	}
-	if s.Phase == streampb.STREAM_PHASE_CLOSED && !s.closedExpiryAt().After(now) {
+	// A reader's replay needs its Records, so the Stream expires only when it has no reader.
+	if s.Phase == streampb.STREAM_PHASE_CLOSED && !s.closedExpiryAt().After(now) && len(s.Readers) == 0 {
 		s.expire(ctx)
 		return
 	}
@@ -514,7 +570,7 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 		}
 		return readOutcome{}, false
 	})
-	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 && !s.HoldRecords {
+	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 {
 		if cutMs := now.Add(-retention).UnixMilli(); cutMs > 0 {
 			s.trimTo((cutMs << seqBits) - 1)
 		}
@@ -565,9 +621,13 @@ func (s *Stream) nextDeadline(ctx chasm.Context, limits Limits) (time.Time, bool
 		if at, ok := s.autoCloseAt(); ok {
 			consider(at)
 		}
-		consider(s.ttlAt(limits))
+		if len(s.Readers) == 0 {
+			consider(s.ttlAt(limits))
+		}
 	case streampb.STREAM_PHASE_CLOSED:
-		consider(s.closedExpiryAt())
+		if len(s.Readers) == 0 {
+			consider(s.closedExpiryAt())
+		}
 	default:
 		return deadline, false
 	}
@@ -576,8 +636,7 @@ func (s *Stream) nextDeadline(ctx chasm.Context, limits Limits) (time.Time, bool
 			consider(read.GetWaitDeadline().AsTime())
 		}
 	}
-	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 && !s.HoldRecords &&
-		s.Index[0].GetFirstOffset() != s.CloseOffset {
+	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 && !s.kept(s.Index[0]) {
 		consider(time.UnixMilli(s.Index[0].GetLastOffset() >> seqBits).Add(retention + time.Millisecond))
 	}
 	return deadline, found
@@ -596,6 +655,7 @@ func (s *Stream) finish(ctx chasm.MutableContext, limits Limits) {
 		s.Phase = streampb.STREAM_PHASE_ABANDONED
 	}
 	s.pruneReads(ctx)
+	s.armReadersCheck(ctx, limits)
 	deadline, ok := s.nextDeadline(ctx, limits)
 	if !ok {
 		s.TimerDeadline = nil

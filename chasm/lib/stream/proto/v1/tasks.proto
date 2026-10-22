@@ -18,3 +18,9 @@ message StreamTimerTask {
 message StreamCloseChainTask {
   string first_run_id = 1;
 }
+
+// Drops the floors of the reader runs that closed, so the Retention trims past them again. It
+// runs while the Stream has floors.
+message StreamReadersCheckTask {
+  google.protobuf.Timestamp deadline = 1;
+}

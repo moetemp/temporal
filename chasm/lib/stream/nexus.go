@@ -20,7 +20,7 @@ const ServiceName = "temporal.api.streamservice.v1.StreamService"
 
 // readerOf gives the Nexus request id and the completion callback of a read.
 func readerOf(options nexus.StartOperationOptions) Reader {
-	reader := Reader{RequestID: options.RequestID}
+	reader := Reader{RequestID: options.RequestID, Run: readerRunOf(options.Links)}
 	if options.CallbackURL != "" {
 		reader.Callback = &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
 			Url:    options.CallbackURL,
@@ -85,7 +85,12 @@ func (o *readRecordsOperation) Start(
 ) (nexus.HandlerStartOperationResult[*streamservice.ReadRecordsResponse], error) {
 	// A direct call has no callback, so it reads as the frontend does, a long poll up to wait.
 	if options.CallbackURL == "" {
-		resp, err := o.handler.ReadRecords(ctx, req)
+		resp, err := o.handler.ReadRecords(ctx, req, readerRunOf(options.Links))
+		// The direct call answers a gRPC error, and the frontend masks a Nexus handler error as
+		// Unknown. So the reader cap stays ResourceExhausted, which the caller backs off on.
+		if _, ok := errors.AsType[*serviceerror.ResourceExhausted](err); ok {
+			return nil, err
+		}
 		if err != nil {
 			return nil, nexusError(err)
 		}

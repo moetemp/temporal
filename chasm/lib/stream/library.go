@@ -25,6 +25,7 @@ type library struct {
 	grpc    *grpcHandler
 	timer   *timerTaskHandler
 	chain   *closeChainTaskHandler
+	readers *readersCheckTaskHandler
 }
 
 func newLibrary(
@@ -33,8 +34,9 @@ func newLibrary(
 	grpcHandler *grpcHandler,
 	timer *timerTaskHandler,
 	chain *closeChainTaskHandler,
+	readers *readersCheckTaskHandler,
 ) *library {
-	return &library{config: config, handler: handler, grpc: grpcHandler, timer: timer, chain: chain}
+	return &library{config: config, handler: handler, grpc: grpcHandler, timer: timer, chain: chain, readers: readers}
 }
 
 // NewNilLibrary creates a Library with nil handlers, for readers that only decode a Stream.
@@ -60,6 +62,7 @@ func (l *library) Tasks() []*chasm.RegistrableTask {
 	return []*chasm.RegistrableTask{
 		chasm.NewRegistrablePureTask("timer", l.timer),
 		chasm.NewRegistrableSideEffectTask("closeChain", l.chain),
+		chasm.NewRegistrableSideEffectTask("readersCheck", l.readers),
 	}
 }
 
