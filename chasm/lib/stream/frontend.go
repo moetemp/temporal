@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/streamservice/v1"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
@@ -61,6 +62,10 @@ func (h *FrontendHandler) CreateStream(
 	ctx context.Context,
 	req *streamservice.CreateStreamRequest,
 ) (*streamservice.CreateStreamResponse, error) {
+	// Outside a Workflow an empty id asks the service for one, as the crate's Store does.
+	if req.GetStreamId() == "" {
+		req.StreamId = uuid.NewString()
+	}
 	namespaceID, err := h.namespaceID(req.GetNamespace(), req.GetStreamId())
 	if err != nil {
 		return nil, err
