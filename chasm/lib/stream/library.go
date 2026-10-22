@@ -3,6 +3,8 @@ package stream
 import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"go.temporal.io/server/chasm"
+	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -20,11 +22,12 @@ type library struct {
 
 	config  *Config
 	handler *handler
+	grpc    *grpcHandler
 	timer   *timerTaskHandler
 }
 
-func newLibrary(config *Config, handler *handler, timer *timerTaskHandler) *library {
-	return &library{config: config, handler: handler, timer: timer}
+func newLibrary(config *Config, handler *handler, grpcHandler *grpcHandler, timer *timerTaskHandler) *library {
+	return &library{config: config, handler: handler, grpc: grpcHandler, timer: timer}
 }
 
 // NewNilLibrary creates a Library with nil handlers, for readers that only decode a Stream.
@@ -64,4 +67,8 @@ func (l *library) NexusServiceProcessors() []*chasm.NexusServiceProcessor {
 		return nil
 	}
 	return []*chasm.NexusServiceProcessor{newNexusServiceProcessor(l.config)}
+}
+
+func (l *library) RegisterServices(server *grpc.Server) {
+	server.RegisterService(&streampb.StreamService_ServiceDesc, l.grpc)
 }

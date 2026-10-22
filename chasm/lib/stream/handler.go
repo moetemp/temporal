@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
@@ -309,5 +310,105 @@ func (h *handler) CancelRead(ctx context.Context, namespaceName, streamID, reque
 		func(s *Stream, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
 			return struct{}{}, s.CancelRead(ctx, requestID, limits)
 		}, struct{}{})
+	return err
+}
+
+// pollTick is how often a read looks again for a Stream that nobody created yet.
+const pollTick = 100 * time.Millisecond
+
+// longPollBuffer is the time a read leaves before the caller's deadline, so the empty answer
+// gets back in time.
+const longPollBuffer = time.Second
+
+// ReadRecords is a frontend read. It waits up to create_wait for the create and up to wait for
+// a Record, and answers an empty page after the wait.
+func (h *handler) ReadRecords(
+	ctx context.Context,
+	req *streamservice.ReadRecordsRequest,
+) (*streamservice.ReadRecordsResponse, error) {
+	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
+	if err != nil {
+		return nil, err
+	}
+	ref := chasm.NewComponentRef[*Stream](key)
+	wait, createWait := ReadTimeout(req)
+	// nolint:forbidigo // A long poll measures wall-clock time, not component time.
+	started := time.Now()
+	deadline := started.Add(wait)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Add(-longPollBuffer).Before(deadline) {
+		deadline = ctxDeadline.Add(-longPollBuffer)
+	}
+
+	if err := h.waitForCreate(ctx, key, started.Add(createWait)); err != nil {
+		return nil, err
+	}
+	if err := h.applyDue(ctx, key, limits); err != nil {
+		return nil, streamError(ctx, key, err)
+	}
+	cursor, err := chasm.ReadComponent(ctx, ref,
+		func(s *Stream, _ chasm.Context, req *streamservice.ReadRecordsRequest) (int64, error) {
+			return s.StartOffset(req)
+		}, req)
+	if err != nil {
+		return nil, streamError(ctx, key, err)
+	}
+	for {
+		page, err := chasm.ReadComponent(ctx, ref,
+			func(s *Stream, ctx chasm.Context, from int64) (pagedRead, error) {
+				resp, found, err := s.Page(ctx, req, from)
+				return pagedRead{resp: resp, found: found}, err
+			}, cursor)
+		if err != nil {
+			return nil, streamError(ctx, key, err)
+		}
+		// nolint:forbidigo // A long poll measures wall-clock time, not component time.
+		if page.found || !time.Now().Before(deadline) {
+			return page.resp, nil
+		}
+		cursor = max(cursor, page.resp.GetNextOffset())
+		if err := h.waitForChange(ctx, ref, cursor, deadline); err != nil {
+			return nil, streamError(ctx, key, err)
+		}
+	}
+}
+
+type pagedRead struct {
+	resp  *streamservice.ReadRecordsResponse
+	found bool
+}
+
+// waitForCreate waits until the Stream exists, polling, since nothing notifies the create of
+// an execution that does not exist yet.
+func (h *handler) waitForCreate(ctx context.Context, key chasm.ExecutionKey, until time.Time) error {
+	for {
+		p, found := phase(ctx, key)
+		if found && p != streampb.STREAM_PHASE_PENDING && p != streampb.STREAM_PHASE_ABANDONED {
+			return nil
+		}
+		// nolint:forbidigo // A long poll measures wall-clock time, not component time.
+		left := time.Until(until)
+		if left <= 0 {
+			return notFound()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(min(left, pollTick)):
+		}
+	}
+}
+
+// waitForChange waits until the Stream has an entry at or past cursor, or is no longer open, or
+// the deadline passes. The auto close and the expiry are timer tasks, so they end the wait too.
+func (h *handler) waitForChange(ctx context.Context, ref chasm.ComponentRef, cursor int64, deadline time.Time) error {
+	pollCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	_, _, err := chasm.PollComponent(pollCtx, ref,
+		func(s *Stream, _ chasm.Context, cursor int64) (struct{}, bool, error) {
+			return struct{}{}, s.NewestOffset >= cursor || s.Phase != streampb.STREAM_PHASE_OPEN, nil
+		}, max(cursor, 1))
+	if err != nil && pollCtx.Err() != nil && ctx.Err() == nil {
+		return nil
+	}
 	return err
 }

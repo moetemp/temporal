@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/api/operatorservice/v1"
+	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	expmaps "golang.org/x/exp/maps"
 )
@@ -22,6 +23,11 @@ func TestWorkflowServiceMetadata(t *testing.T) {
 func TestOperatorServiceMetadata(t *testing.T) {
 	tp := reflect.TypeFor[operatorservice.OperatorServiceServer]()
 	checkService(t, tp, operatorServiceMetadata)
+}
+
+func TestStreamServiceMetadata(t *testing.T) {
+	tp := reflect.TypeFor[streamservice.StreamServiceServer]()
+	checkService(t, tp, streamServiceMetadata)
 }
 
 func checkService(t *testing.T, tp reflect.Type, m map[string]MethodMetadata) {
