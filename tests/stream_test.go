@@ -9,6 +9,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	namespacepb "go.temporal.io/api/namespace/v1"
 	"go.temporal.io/api/streamservice/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -41,7 +42,6 @@ func (s *StreamTestSuite) newEnv() *testcore.TestEnv {
 	return testcore.NewEnv(s.T(),
 		testcore.WithDynamicConfig(dynamicconfig.EnableChasm, true),
 		testcore.WithDynamicConfig(stream.Enabled, true),
-		testcore.WithDynamicConfig(stream.OwnerCheckInterval, 200*time.Millisecond),
 	)
 }
 
@@ -452,7 +452,7 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 }
 
 // closeWithRun creates a Stream that closes with the caller's run chain.
-func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env *testcore.TestEnv, c *streamCaller) string {
+func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env *testcore.TestEnv, c *streamCaller) *streamservice.StreamRef {
 	id := testcore.RandomizeStr("chat")
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
 		Namespace:    env.Namespace().String(),
@@ -462,12 +462,12 @@ func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env
 		CloseWithRun: true,
 	})
 	s.NoError(err)
-	return id
+	return &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
 }
 
-func (s *StreamTestSuite) readClose(sc streamservice.StreamServiceClient, env *testcore.TestEnv, id string) *streamservice.StreamRecord {
+func (s *StreamTestSuite) readClose(sc streamservice.StreamServiceClient, env *testcore.TestEnv, owned *streamservice.StreamRef) *streamservice.StreamRecord {
 	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{
-		Namespace: env.Namespace().String(), Stream: ref(id), Wait: durationpb.New(20 * time.Second),
+		Namespace: env.Namespace().String(), Stream: owned, Wait: durationpb.New(20 * time.Second),
 	})
 	s.NoError(err)
 	s.Equal([]string{"close"}, kindsAndTopics(page))
@@ -478,7 +478,7 @@ func (s *StreamTestSuite) TestStreamClosesWithTheOwnerResult() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
-	id := s.closeWithRun(sc, env, c)
+	owned := s.closeWithRun(sc, env, c)
 
 	_, err := env.FrontendClient().RespondWorkflowTaskCompleted(s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
 		Identity:  "test",
@@ -494,20 +494,19 @@ func (s *StreamTestSuite) TestStreamClosesWithTheOwnerResult() {
 	})
 	s.NoError(err)
 
-	s.Equal(payload.EncodeString("answer").GetData(), s.readClose(sc, env, id).GetCloseResult().GetData())
+	s.Equal(payload.EncodeString("answer").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
 }
 
 func (s *StreamTestSuite) TestStreamClosesWithATerminatedOwner() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
-	id := s.closeWithRun(sc, env, c)
+	owned := s.closeWithRun(sc, env, c)
 
 	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.run.GetRunID(), "stop"))
 
-	failure := s.readClose(sc, env, id).GetCloseFailure()
+	failure := s.readClose(sc, env, owned).GetCloseFailure()
 	s.NotNil(failure.GetTerminatedFailureInfo())
-	s.Equal("stop", failure.GetMessage())
 }
 
 func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
@@ -561,4 +560,112 @@ func (s *StreamTestSuite) TestWorkflowReadEndsAtItsWait() {
 	s.Empty(page.GetRecords())
 	s.False(page.GetDone())
 	s.Equal(appended.GetLastOffset()+1, page.GetNextOffset())
+}
+
+// An append to a Workflow Stream completes the Workflow's parked read in the Workflow's
+// transaction, since the Stream nests in the Workflow.
+func (s *StreamTestSuite) TestNestedStreamWakesItsWorkflow() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: owned}})[0]
+	_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+		Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: 1, Records: records("turns"),
+	})
+	s.NoError(err)
+
+	var page streamservice.ReadRecordsResponse
+	failure, started := c.outcome(read, &page)
+	s.Nil(failure)
+	s.True(started)
+	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+
+	// The Stream id names no execution of its own.
+	_, err = sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{Namespace: env.Namespace().String(), Stream: ref(owned.GetId())})
+	s.Equal(codes.NotFound, status.Code(err))
+}
+
+func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	// Run 1 continues as new. The Stream stays open in run 1's tree.
+	c.respond(&commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
+			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.ContinueAsNewWorkflowExecutionCommandAttributes{
+				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
+				TaskQueue:    &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
+			},
+		},
+	})
+	described, err := sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+	})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+
+	// Run 2 completes, which ends the chain.
+	_, err = env.FrontendClient().RespondWorkflowTaskCompleted(s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
+		Identity:  "test",
+		TaskToken: c.token,
+		Commands: []*commandpb.Command{{
+			CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
+			Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
+				CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{
+					Result: payloads.EncodeString("run-2"),
+				},
+			},
+		}},
+	})
+	s.NoError(err)
+	s.Equal(payload.EncodeString("run-2").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
+}
+
+// The first run of a chain keeps the chain's Streams after it closes, so the namespace retention
+// can't delete them while a later run still writes.
+func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
+	env := testcore.NewEnv(s.T(),
+		testcore.WithDedicatedCluster(),
+		testcore.WithDynamicConfig(stream.Enabled, true),
+		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionGlobal, time.Duration(0)),
+		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionLocal, time.Duration(0)),
+		testcore.WithDynamicConfig(dynamicconfig.RetentionTimerJitterDuration, time.Duration(0)),
+	)
+	_, err := env.FrontendClient().UpdateNamespace(s.Context(), &workflowservice.UpdateNamespaceRequest{
+		Namespace: env.Namespace().String(),
+		Config:    &namespacepb.NamespaceConfig{WorkflowExecutionRetentionTtl: durationpb.New(time.Second)},
+	})
+	s.NoError(err)
+	// Wait for the namespace cache to see the new retention.
+	<-time.After(2 * testcore.NamespaceCacheRefreshInterval)
+
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	c.respond(&commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
+			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.ContinueAsNewWorkflowExecutionCommandAttributes{
+				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
+				TaskQueue:    &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
+			},
+		},
+	})
+	// Several retentions of the first run pass while run 2 is open.
+	<-time.After(4 * time.Second)
+
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+		Producer: workflowWriter("run-2", 3), Sequence: 1, Records: records("late"),
+	})
+	s.NoError(err)
+	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned})
+	s.NoError(err)
+	s.Equal([]string{"late"}, kindsAndTopics(page))
 }

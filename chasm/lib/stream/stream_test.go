@@ -515,3 +515,30 @@ func TestErrorsCarryTheReason(t *testing.T) {
 	require.Len(t, details, 1)
 	require.Equal(t, ReasonFenced, details[0].(*streamservice.StreamErrorDetails).GetReason())
 }
+
+func TestHeldStreamRefusesPastTheCapAndKeepsItsRecords(t *testing.T) {
+	h := newHarness(t)
+	h.limits.MaxStoredBytes = 200
+	_, err := h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Retention: durationpb.New(time.Minute), Owner: workflowProducer(1),
+	})
+	require.NoError(t, err)
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), func(s *Stream, _ chasm.MutableContext, _ struct{}) (struct{}, error) {
+		s.HoldRecords = true
+		return struct{}{}, nil
+	}, struct{}{})
+	require.NoError(t, err)
+
+	_, err = h.append(activityProducer(1), 1, "a")
+	require.NoError(t, err)
+	big := &streamservice.AppendRecordsRequest{Producer: activityProducer(1), Sequence: 2, Records: []*streamservice.AppendRecord{
+		{Topic: "b", Body: &commonpb.Payload{Data: make([]byte, 300)}},
+	}}
+	_, err = h.appendRequest(big)
+	require.ErrorContains(t, err, ReasonTooLarge)
+
+	h.advance(2 * time.Minute)
+	all, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a"}, topics(all))
+}

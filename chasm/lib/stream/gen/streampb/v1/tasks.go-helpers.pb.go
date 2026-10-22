@@ -42,35 +42,35 @@ func (this *StreamTimerTask) Equal(that interface{}) bool {
 	return proto.Equal(this, that1)
 }
 
-// Marshal an object of type StreamOwnerCheckTask to the protobuf v3 wire format
-func (val *StreamOwnerCheckTask) Marshal() ([]byte, error) {
+// Marshal an object of type StreamCloseChainTask to the protobuf v3 wire format
+func (val *StreamCloseChainTask) Marshal() ([]byte, error) {
 	return proto.Marshal(val)
 }
 
-// Unmarshal an object of type StreamOwnerCheckTask from the protobuf v3 wire format
-func (val *StreamOwnerCheckTask) Unmarshal(buf []byte) error {
+// Unmarshal an object of type StreamCloseChainTask from the protobuf v3 wire format
+func (val *StreamCloseChainTask) Unmarshal(buf []byte) error {
 	return proto.Unmarshal(buf, val)
 }
 
 // Size returns the size of the object, in bytes, once serialized
-func (val *StreamOwnerCheckTask) Size() int {
+func (val *StreamCloseChainTask) Size() int {
 	return proto.Size(val)
 }
 
-// Equal returns whether two StreamOwnerCheckTask values are equivalent by recursively
+// Equal returns whether two StreamCloseChainTask values are equivalent by recursively
 // comparing the message's fields.
 // For more information see the documentation for
 // https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
-func (this *StreamOwnerCheckTask) Equal(that interface{}) bool {
+func (this *StreamCloseChainTask) Equal(that interface{}) bool {
 	if that == nil {
 		return this == nil
 	}
 
-	var that1 *StreamOwnerCheckTask
+	var that1 *StreamCloseChainTask
 	switch t := that.(type) {
-	case *StreamOwnerCheckTask:
+	case *StreamCloseChainTask:
 		that1 = t
-	case StreamOwnerCheckTask:
+	case StreamCloseChainTask:
 		that1 = &t
 	default:
 		return false

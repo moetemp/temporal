@@ -111,8 +111,6 @@ func (s *Stream) Exists() bool {
 type CreateInput struct {
 	Request *streamservice.CreateStreamRequest
 	Limits  Limits
-	// How often a Stream that closes with its run chain checks the owner.
-	OwnerCheckInterval time.Duration
 }
 
 // CreateOutput is the answer of a create.
@@ -151,12 +149,8 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 		s.WorkflowOwned = in.Request.GetOwner().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW
 		s.CreateTime = now
 		s.LastWriteTime = now
-		if in.Request.GetCloseWithRun() {
-			s.Owner = in.Request.GetOwner()
-			s.OwnerWorkflowId = in.Request.GetRef().GetWorkflowId()
-			s.OwnerFirstRunId = in.Request.GetRef().GetFirstExecutionRunId()
-			s.armOwnerCheck(ctx, in.OwnerCheckInterval)
-		}
+		s.Owner = in.Request.GetOwner()
+		s.CloseWithRun = in.Request.GetCloseWithRun()
 		s.withdrawOnCreate(ctx, in.Request)
 		s.finish(ctx, in.Limits)
 		return CreateOutput{Created: true, Status: s.Status()}, nil
@@ -243,8 +237,8 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 			Body:     record.GetBody(),
 		})
 	}
-	if size := batchSize(entries); size > in.Limits.MaxBatchBytes {
-		return nil, NewError(ReasonTooLarge, "The batch has %d bytes, more than %d", size, in.Limits.MaxBatchBytes)
+	if err := s.checkSize(ctx, batchSize(entries), in.Limits); err != nil {
+		return nil, err
 	}
 
 	first, last := s.write(ctx, entries)
@@ -274,6 +268,24 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	s.limitProducers(in.Limits.MaxProducers)
 	s.finish(ctx, in.Limits)
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
+}
+
+// checkSize refuses a batch over the batch limit, or one that a held Stream or its Workflow can't
+// take.
+func (s *Stream) checkSize(ctx chasm.MutableContext, size int64, limits Limits) error {
+	if size > limits.MaxBatchBytes {
+		return NewError(ReasonTooLarge, "The batch has %d bytes, more than %d", size, limits.MaxBatchBytes)
+	}
+	if s.HoldRecords && s.StoredBytes+size > limits.MaxStoredBytes {
+		return NewError(ReasonTooLarge, "The Stream holds %d bytes, and the cap is %d", s.StoredBytes, limits.MaxStoredBytes)
+	}
+	// The Records of a Workflow Stream are in the Workflow's mutable state, which terminates the
+	// run past its own limit, so the write fails first.
+	if limits.MaxWorkflowStateBytes > 0 &&
+		int64(ctx.ExecutionInfo().ApproximateStateSize)+size > limits.MaxWorkflowStateBytes {
+		return NewError(ReasonTooLarge, "The Workflow state would pass %d bytes", limits.MaxWorkflowStateBytes)
+	}
+	return nil
 }
 
 // CloseInput is a close of the Stream.
@@ -436,7 +448,7 @@ func (s *Stream) dropOldest() {
 // limitStored drops the oldest batches while the Stream holds more than the cap. The newest
 // batch stays, since one batch is at most the batch limit.
 func (s *Stream) limitStored(maxBytes int64) {
-	for s.StoredBytes > maxBytes && len(s.Index) > 1 && s.Index[0].GetFirstOffset() != s.CloseOffset {
+	for !s.HoldRecords && s.StoredBytes > maxBytes && len(s.Index) > 1 && s.Index[0].GetFirstOffset() != s.CloseOffset {
 		s.dropOldest()
 	}
 }
@@ -457,7 +469,7 @@ func (s *Stream) limitProducers(maxProducers int) {
 // retainedFrom is the offset below which the Retention hides the Records at now.
 func (s *Stream) retainedFrom(now time.Time) int64 {
 	retained := s.TrimmedOffset + 1
-	if retention := s.GetRetention().AsDuration(); retention > 0 {
+	if retention := s.GetRetention().AsDuration(); retention > 0 && !s.HoldRecords {
 		if cutMs := now.Add(-retention).UnixMilli(); cutMs > 0 {
 			retained = max(retained, cutMs<<seqBits)
 		}
@@ -498,7 +510,7 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 		}
 		return readOutcome{}, false
 	})
-	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 {
+	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 && !s.HoldRecords {
 		if cutMs := now.Add(-retention).UnixMilli(); cutMs > 0 {
 			s.trimTo((cutMs << seqBits) - 1)
 		}
@@ -560,7 +572,7 @@ func (s *Stream) nextDeadline(ctx chasm.Context, limits Limits) (time.Time, bool
 			consider(read.GetWaitDeadline().AsTime())
 		}
 	}
-	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 &&
+	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 && !s.HoldRecords &&
 		s.Index[0].GetFirstOffset() != s.CloseOffset {
 		consider(time.UnixMilli(s.Index[0].GetLastOffset() >> seqBits).Add(retention + time.Millisecond))
 	}

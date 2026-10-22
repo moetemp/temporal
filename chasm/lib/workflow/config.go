@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"go.temporal.io/server/chasm/lib/stream"
 	commoncallbacks "go.temporal.io/server/common/callbacks"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/retrypolicy"
@@ -22,6 +23,7 @@ type Config struct {
 	workflowTimeSkippingEnabled        dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	timeSkippingMaxSkipPerSession      dynamicconfig.IntPropertyFnWithNamespaceFilter
 	timeSkippingMaxAccumulatedDuration dynamicconfig.DurationPropertyFn
+	streamsEnabled                     dynamicconfig.BoolPropertyFnWithNamespaceFilter
 }
 
 func NewConfig(dc *dynamicconfig.Collection) Config {
@@ -34,5 +36,6 @@ func NewConfig(dc *dynamicconfig.Collection) Config {
 		workflowTimeSkippingEnabled:        dynamicconfig.WorkflowTimeSkippingEnabled.Get(dc),
 		timeSkippingMaxSkipPerSession:      dynamicconfig.TimeSkippingMaxSkipPerSession.Get(dc),
 		timeSkippingMaxAccumulatedDuration: dynamicconfig.TimeSkippingMaxAccumulatedDuration.Get(dc),
+		streamsEnabled:                     stream.Enabled.Get(dc),
 	}
 }

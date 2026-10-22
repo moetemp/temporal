@@ -137,6 +137,25 @@ func (t *timerQueueTaskExecutorBase) executeDeleteHistoryEventTask(
 		return err
 	}
 
+	if task.ArchetypeID == chasm.WorkflowArchetypeID && mutableState.ChasmEnabled() {
+		wf, chasmCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
+		if err != nil {
+			return err
+		}
+		// The first run of a chain keeps the chain's Streams, which the chain may still write
+		// after this run closed. The run stays one more retention, until its Streams expire.
+		if wf.HoldsStreams(chasmCtx) {
+			mutableState.AddTasks(&tasks.DeleteHistoryEventTask{
+				WorkflowKey:         task.WorkflowKey,
+				VisibilityTimestamp: t.shardContext.GetTimeSource().Now().Add(mutableState.GetNamespaceEntry().Retention()),
+				Version:             task.Version,
+				BranchToken:         task.BranchToken,
+				ArchetypeID:         task.ArchetypeID,
+			})
+			return weContext.SubmitClosedWorkflowSnapshot(ctx, t.shardContext, historyi.TransactionPolicyActive)
+		}
+	}
+
 	return t.deleteManager.DeleteWorkflowExecutionByRetention(
 		ctx,
 		namespace.ID(task.GetNamespaceID()),

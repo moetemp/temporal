@@ -68,18 +68,24 @@ func CheckStreamID(id string) error {
 	return nil
 }
 
-func (h *handler) key(namespaceName, streamID string) (chasm.ExecutionKey, Limits, error) {
+// target resolves the namespace, the limits and the place of a Stream.
+func (h *handler) target(namespaceName, streamID string, ref *streamservice.StreamRef) (target, Limits, error) {
 	if err := CheckStreamID(streamID); err != nil {
-		return chasm.ExecutionKey{}, Limits{}, err
+		return target{}, Limits{}, err
 	}
 	if !h.config.Enabled(namespaceName) {
-		return chasm.ExecutionKey{}, Limits{}, serviceerror.NewUnimplemented("The Stream service is disabled")
+		return target{}, Limits{}, serviceerror.NewUnimplemented("The Stream service is disabled")
 	}
 	namespaceID, err := h.namespaceRegistry.GetNamespaceID(namespace.Name(namespaceName))
 	if err != nil {
-		return chasm.ExecutionKey{}, Limits{}, err
+		return target{}, Limits{}, err
 	}
-	return chasm.ExecutionKey{NamespaceID: namespaceID.String(), BusinessID: streamID}, h.config.LimitsFor(namespaceName), nil
+	t, err := targetOf(namespaceID.String(), streamID, ref)
+	limits := h.config.LimitsFor(namespaceName)
+	if t.nested {
+		limits.MaxWorkflowStateBytes = int64(h.config.MaxWorkflowStateBytes(namespaceName))
+	}
+	return t, limits, err
 }
 
 var (
@@ -89,22 +95,21 @@ var (
 		chasm.BusinessIDReusePolicyAllowDuplicate, chasm.BusinessIDConflictPolicyUseExisting)
 )
 
-// phase is the phase of the current run of a Stream, or false when there is none.
-func phase(ctx context.Context, key chasm.ExecutionKey) (streampb.StreamPhase, bool) {
-	p, err := chasm.ReadComponent(ctx, chasm.NewComponentRef[*Stream](key),
-		func(s *Stream, _ chasm.Context, _ struct{}) (streampb.StreamPhase, error) {
-			return s.Phase, nil
-		}, struct{}{})
+// phase is the phase of a Stream, or false when there is none.
+func phase(ctx context.Context, t target) (streampb.StreamPhase, bool) {
+	p, err := read(ctx, t, func(s *Stream, _ chasm.Context) (streampb.StreamPhase, error) {
+		return s.Phase, nil
+	})
 	return p, err == nil
 }
 
 // streamError gives a Stream error for err. An error of the framework, such as a missing or a
 // closed execution, becomes the error of the Stream's state.
-func streamError(ctx context.Context, key chasm.ExecutionKey, err error) error {
+func streamError(ctx context.Context, t target, err error) error {
 	if err == nil || ReasonOf(err) != "" {
 		return err
 	}
-	p, found := phase(ctx, key)
+	p, found := phase(ctx, t)
 	if !found {
 		if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 			return notFound()
@@ -121,12 +126,13 @@ func streamError(ctx context.Context, key chasm.ExecutionKey, err error) error {
 	}
 }
 
-// CreateStream creates a Stream, or answers the state of the one that has the id.
+// CreateStream creates a Stream, or answers the state of the one that has the id. A Stream
+// whose ref names a Workflow nests in that Workflow's chain.
 func (h *handler) CreateStream(
 	ctx context.Context,
 	req *streamservice.CreateStreamRequest,
 ) (*streamservice.CreateStreamResponse, error) {
-	key, limits, err := h.key(req.GetNamespace(), req.GetStreamId())
+	t, limits, err := h.target(req.GetNamespace(), req.GetStreamId(), req.GetRef())
 	if err != nil {
 		return nil, err
 	}
@@ -135,35 +141,48 @@ func (h *handler) CreateStream(
 			return nil, err
 		}
 	}
-	if req.GetCloseWithRun() && (req.GetOwner().GetKind() != streamservice.PRODUCER_KIND_WORKFLOW ||
-		req.GetRef().GetWorkflowId() == "" || req.GetRef().GetFirstExecutionRunId() == "") {
+	if req.GetCloseWithRun() && (!t.nested || req.GetOwner().GetKind() != streamservice.PRODUCER_KIND_WORKFLOW) {
 		return nil, invalid("close_with_run needs a Workflow owner and a ref with workflow_id and first_execution_run_id")
 	}
-	in := CreateInput{Request: req, Limits: limits, OwnerCheckInterval: h.config.OwnerCheckInterval(req.GetNamespace())}
+	in := CreateInput{Request: req, Limits: limits}
+	var out CreateOutput
+	if t.nested {
+		out, err = update(ctx, t,
+			func(mctx chasm.MutableContext) (*Stream, error) {
+				return NewStream(mctx, streampb.STREAM_PHASE_PENDING), nil
+			},
+			func(s *Stream, mctx chasm.MutableContext) (CreateOutput, error) { return s.Create(mctx, in) })
+	} else {
+		out, err = h.createStandalone(ctx, t, in)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &streamservice.CreateStreamResponse{
+		Stream:  &streamservice.StreamRef{Id: req.GetStreamId(), WorkflowId: req.GetRef().GetWorkflowId(), FirstExecutionRunId: req.GetRef().GetFirstExecutionRunId()},
+		Created: out.Created,
+		Status:  out.Status,
+	}, nil
+}
+
+func (h *handler) createStandalone(ctx context.Context, t target, in CreateInput) (CreateOutput, error) {
 	create := func(policy chasm.TransitionOption) (CreateOutput, error) {
-		result, err := chasm.UpdateWithStartExecution(ctx, key, StartStream, (*Stream).Create, in, policy)
+		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartStream, (*Stream).Create, in, policy)
 		out := result.UpdateOutput
 		out.Created = out.Created || result.Created
 		return out, err
 	}
 	out, err := create(useExisting)
 	if err != nil && ReasonOf(err) == "" {
-		switch p, _ := phase(ctx, key); p {
+		switch p, _ := phase(ctx, t); p {
 		case streampb.STREAM_PHASE_ABANDONED:
-			out, err = create(replaceAbandoned)
+			return create(replaceAbandoned)
 		case streampb.STREAM_PHASE_EXPIRED:
-			out, err = CreateOutput{Status: streamservice.STREAM_STATUS_EXPIRED}, nil
+			return CreateOutput{Status: streamservice.STREAM_STATUS_EXPIRED}, nil
 		default:
 		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &streamservice.CreateStreamResponse{
-		Stream:  &streamservice.StreamRef{Id: req.GetStreamId()},
-		Created: out.Created,
-		Status:  out.Status,
-	}, nil
+	return out, err
 }
 
 // AppendRecords appends one batch.
@@ -171,16 +190,17 @@ func (h *handler) AppendRecords(
 	ctx context.Context,
 	req *streamservice.AppendRecordsRequest,
 ) (*streamservice.AppendRecordsResponse, error) {
-	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
+	t, limits, err := h.target(req.GetNamespace(), req.GetStream().GetId(), req.GetStream())
 	if err != nil {
 		return nil, err
 	}
 	if err := checkProducer(req.GetProducer()); err != nil {
 		return nil, err
 	}
-	resp, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](key), (*Stream).Append,
-		AppendInput{Request: req, Limits: limits})
-	return resp, streamError(ctx, key, err)
+	resp, err := update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (*streamservice.AppendRecordsResponse, error) {
+		return s.Append(mctx, AppendInput{Request: req, Limits: limits})
+	})
+	return resp, streamError(ctx, t, err)
 }
 
 // CloseStream closes a Stream.
@@ -188,16 +208,17 @@ func (h *handler) CloseStream(
 	ctx context.Context,
 	req *streamservice.CloseStreamRequest,
 ) (*streamservice.CloseStreamResponse, error) {
-	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
+	t, limits, err := h.target(req.GetNamespace(), req.GetStream().GetId(), req.GetStream())
 	if err != nil {
 		return nil, err
 	}
 	if err := checkProducer(req.GetProducer()); err != nil {
 		return nil, err
 	}
-	resp, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](key), (*Stream).Close,
-		CloseInput{Request: req, Limits: limits})
-	return resp, streamError(ctx, key, err)
+	resp, err := update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (*streamservice.CloseStreamResponse, error) {
+		return s.Close(mctx, CloseInput{Request: req, Limits: limits})
+	})
+	return resp, streamError(ctx, t, err)
 }
 
 // DescribeStream answers the state of a Stream.
@@ -205,33 +226,30 @@ func (h *handler) DescribeStream(
 	ctx context.Context,
 	req *streamservice.DescribeStreamRequest,
 ) (*streamservice.DescribeStreamResponse, error) {
-	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
+	t, limits, err := h.target(req.GetNamespace(), req.GetStream().GetId(), req.GetStream())
 	if err != nil {
 		return nil, err
 	}
-	if err := h.applyDue(ctx, key, limits); err != nil {
-		return nil, streamError(ctx, key, err)
+	if err := h.applyDue(ctx, t, limits); err != nil {
+		return nil, streamError(ctx, t, err)
 	}
-	resp, err := chasm.ReadComponent(ctx, chasm.NewComponentRef[*Stream](key),
-		func(s *Stream, _ chasm.Context, _ struct{}) (*streamservice.DescribeStreamResponse, error) {
-			return s.Describe()
-		}, struct{}{})
-	return resp, streamError(ctx, key, err)
+	resp, err := read(ctx, t, func(s *Stream, _ chasm.Context) (*streamservice.DescribeStreamResponse, error) {
+		return s.Describe()
+	})
+	return resp, streamError(ctx, t, err)
 }
 
 // applyDue runs a write step when a deadline such as the auto close passed, so that a read
 // never sees the Stream open after it.
-func (h *handler) applyDue(ctx context.Context, key chasm.ExecutionKey, limits Limits) error {
-	ref := chasm.NewComponentRef[*Stream](key)
-	due, err := chasm.ReadComponent(ctx, ref, (*Stream).Due, limits)
+func (h *handler) applyDue(ctx context.Context, t target, limits Limits) error {
+	due, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (bool, error) { return s.Due(cctx, limits) })
 	if err != nil || !due {
 		return err
 	}
-	_, _, err = chasm.UpdateComponent(ctx, ref,
-		func(s *Stream, ctx chasm.MutableContext, limits Limits) (struct{}, error) {
-			s.ApplyDue(ctx, limits)
-			return struct{}{}, nil
-		}, limits)
+	_, err = update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
+		s.ApplyDue(mctx, limits)
+		return struct{}{}, nil
+	})
 	return err
 }
 
@@ -243,37 +261,46 @@ func (h *handler) ReadOrPark(
 	req *streamservice.ReadRecordsRequest,
 	reader Reader,
 ) (*streamservice.ReadRecordsResponse, error) {
-	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
+	t, limits, err := h.target(req.GetNamespace(), req.GetStream().GetId(), req.GetStream())
 	if err != nil {
 		return nil, err
 	}
 	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Limits: limits}
-	read := func(policy chasm.TransitionOption) (*streamservice.ReadRecordsResponse, error) {
-		result, err := chasm.UpdateWithStartExecution(ctx, key, StartForRead, (*Stream).ReadOrPark, in, policy)
+	if t.nested {
+		resp, err := update(ctx, t,
+			func(mctx chasm.MutableContext) (*Stream, error) {
+				return NewStream(mctx, streampb.STREAM_PHASE_PENDING), nil
+			},
+			func(s *Stream, mctx chasm.MutableContext) (*streamservice.ReadRecordsResponse, error) {
+				return s.ReadOrPark(mctx, in)
+			})
+		return resp, streamError(ctx, t, err)
+	}
+	readStandalone := func(policy chasm.TransitionOption) (*streamservice.ReadRecordsResponse, error) {
+		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartForRead, (*Stream).ReadOrPark, in, policy)
 		return result.UpdateOutput, err
 	}
-	resp, err := read(useExisting)
+	resp, err := readStandalone(useExisting)
 	if err != nil && ReasonOf(err) == "" {
-		if p, _ := phase(ctx, key); p == streampb.STREAM_PHASE_ABANDONED {
-			resp, err = read(replaceAbandoned)
+		if p, _ := phase(ctx, t); p == streampb.STREAM_PHASE_ABANDONED {
+			resp, err = readStandalone(replaceAbandoned)
 		}
 	}
 	if err != nil {
-		return nil, streamError(ctx, key, err)
+		return nil, streamError(ctx, t, err)
 	}
 	return resp, nil
 }
 
 // CancelRead completes a parked read as canceled.
-func (h *handler) CancelRead(ctx context.Context, namespaceName, streamID, requestID string) error {
-	key, limits, err := h.key(namespaceName, streamID)
+func (h *handler) CancelRead(ctx context.Context, namespaceName string, ref *streamservice.StreamRef, requestID string) error {
+	t, limits, err := h.target(namespaceName, ref.GetId(), ref)
 	if err != nil {
 		return err
 	}
-	_, _, err = chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](key),
-		func(s *Stream, ctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-			return struct{}{}, s.CancelRead(ctx, requestID, limits)
-		}, struct{}{})
+	_, err = update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
+		return struct{}{}, s.CancelRead(mctx, requestID, limits)
+	})
 	return err
 }
 
@@ -290,11 +317,10 @@ func (h *handler) ReadRecords(
 	ctx context.Context,
 	req *streamservice.ReadRecordsRequest,
 ) (*streamservice.ReadRecordsResponse, error) {
-	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
+	t, limits, err := h.target(req.GetNamespace(), req.GetStream().GetId(), req.GetStream())
 	if err != nil {
 		return nil, err
 	}
-	ref := chasm.NewComponentRef[*Stream](key)
 	wait, createWait := ReadTimeout(req)
 	// nolint:forbidigo // A long poll measures wall-clock time, not component time.
 	started := time.Now()
@@ -303,35 +329,32 @@ func (h *handler) ReadRecords(
 		deadline = ctxDeadline.Add(-longPollBuffer)
 	}
 
-	if err := h.waitForCreate(ctx, key, started.Add(createWait)); err != nil {
+	if err := h.waitForCreate(ctx, t, started.Add(createWait)); err != nil {
 		return nil, err
 	}
-	if err := h.applyDue(ctx, key, limits); err != nil {
-		return nil, streamError(ctx, key, err)
+	if err := h.applyDue(ctx, t, limits); err != nil {
+		return nil, streamError(ctx, t, err)
 	}
-	cursor, err := chasm.ReadComponent(ctx, ref,
-		func(s *Stream, _ chasm.Context, req *streamservice.ReadRecordsRequest) (int64, error) {
-			return s.StartOffset(req)
-		}, req)
+	cursor, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
 	if err != nil {
-		return nil, streamError(ctx, key, err)
+		return nil, streamError(ctx, t, err)
 	}
 	for {
-		page, err := chasm.ReadComponent(ctx, ref,
-			func(s *Stream, ctx chasm.Context, from int64) (pagedRead, error) {
-				resp, found, err := s.Page(ctx, req, from)
-				return pagedRead{resp: resp, found: found}, err
-			}, cursor)
+		from := cursor
+		page, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (pagedRead, error) {
+			resp, found, err := s.Page(cctx, req, from)
+			return pagedRead{resp: resp, found: found}, err
+		})
 		if err != nil {
-			return nil, streamError(ctx, key, err)
+			return nil, streamError(ctx, t, err)
 		}
 		// nolint:forbidigo // A long poll measures wall-clock time, not component time.
 		if page.found || !time.Now().Before(deadline) {
 			return page.resp, nil
 		}
 		cursor = max(cursor, page.resp.GetNextOffset())
-		if err := h.waitForChange(ctx, ref, cursor, deadline); err != nil {
-			return nil, streamError(ctx, key, err)
+		if err := h.waitForChange(ctx, t, cursor, deadline); err != nil {
+			return nil, streamError(ctx, t, err)
 		}
 	}
 }
@@ -343,9 +366,9 @@ type pagedRead struct {
 
 // waitForCreate waits until the Stream exists, polling, since nothing notifies the create of
 // an execution that does not exist yet.
-func (h *handler) waitForCreate(ctx context.Context, key chasm.ExecutionKey, until time.Time) error {
+func (h *handler) waitForCreate(ctx context.Context, t target, until time.Time) error {
 	for {
-		p, found := phase(ctx, key)
+		p, found := phase(ctx, t)
 		if found && p != streampb.STREAM_PHASE_PENDING && p != streampb.STREAM_PHASE_ABANDONED {
 			return nil
 		}
@@ -364,13 +387,13 @@ func (h *handler) waitForCreate(ctx context.Context, key chasm.ExecutionKey, unt
 
 // waitForChange waits until the Stream has an entry at or past cursor, or is no longer open, or
 // the deadline passes. The auto close and the expiry are timer tasks, so they end the wait too.
-func (h *handler) waitForChange(ctx context.Context, ref chasm.ComponentRef, cursor int64, deadline time.Time) error {
+func (h *handler) waitForChange(ctx context.Context, t target, cursor int64, deadline time.Time) error {
 	pollCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	_, _, err := chasm.PollComponent(pollCtx, ref,
-		func(s *Stream, _ chasm.Context, cursor int64) (struct{}, bool, error) {
-			return struct{}{}, s.NewestOffset >= cursor || s.Phase != streampb.STREAM_PHASE_OPEN, nil
-		}, max(cursor, 1))
+	cursor = max(cursor, 1)
+	err := poll(pollCtx, t, func(s *Stream) bool {
+		return s.NewestOffset >= cursor || s.Phase != streampb.STREAM_PHASE_OPEN
+	})
 	if err != nil && pollCtx.Err() != nil && ctx.Err() == nil {
 		return nil
 	}

@@ -55,6 +55,8 @@ func (l *library) Name() string {
 
 type workflowContext struct {
 	registry *Registry
+	// Whether the Stream service is on for a namespace. Nil when the library has no config.
+	streamsEnabled func(string) bool
 }
 
 type ctxKeyWorkflowContextType struct{}
@@ -75,7 +77,7 @@ func (l *library) Components() []*chasm.RegistrableComponent {
 			chasm.WorkflowComponentName,
 			chasm.WithExecutionType(enumspb.EXECUTION_TYPE_WORKFLOW),
 			chasm.WithContextValues(map[any]any{
-				ctxKeyWorkflowContext: &workflowContext{registry: l.registry},
+				ctxKeyWorkflowContext: &workflowContext{registry: l.registry, streamsEnabled: l.config.streamsEnabled},
 			}),
 		),
 		chasm.NewRegistrableComponent[*WorkflowUpdate]("update"),

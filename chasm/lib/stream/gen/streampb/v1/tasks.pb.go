@@ -70,29 +70,29 @@ func (x *StreamTimerTask) GetDeadline() *timestamppb.Timestamp {
 	return nil
 }
 
-// Describes the owner's run chain of a Stream that closes with it. Nothing tells a Stream when a
-// Workflow closes, so the check runs on an interval while the Stream is open.
-type StreamOwnerCheckTask struct {
+// Closes the close-with-run Streams nested in the chain's first run, with the outcome of the
+// run this task is on. A run's final close adds it to its Workflow component.
+type StreamCloseChainTask struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ScheduledTime *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=scheduled_time,json=scheduledTime,proto3" json:"scheduled_time,omitempty"`
+	FirstRunId    string                 `protobuf:"bytes,1,opt,name=first_run_id,json=firstRunId,proto3" json:"first_run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *StreamOwnerCheckTask) Reset() {
-	*x = StreamOwnerCheckTask{}
+func (x *StreamCloseChainTask) Reset() {
+	*x = StreamCloseChainTask{}
 	mi := &file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *StreamOwnerCheckTask) String() string {
+func (x *StreamCloseChainTask) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*StreamOwnerCheckTask) ProtoMessage() {}
+func (*StreamCloseChainTask) ProtoMessage() {}
 
-func (x *StreamOwnerCheckTask) ProtoReflect() protoreflect.Message {
+func (x *StreamCloseChainTask) ProtoReflect() protoreflect.Message {
 	mi := &file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -104,16 +104,16 @@ func (x *StreamOwnerCheckTask) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use StreamOwnerCheckTask.ProtoReflect.Descriptor instead.
-func (*StreamOwnerCheckTask) Descriptor() ([]byte, []int) {
+// Deprecated: Use StreamCloseChainTask.ProtoReflect.Descriptor instead.
+func (*StreamCloseChainTask) Descriptor() ([]byte, []int) {
 	return file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *StreamOwnerCheckTask) GetScheduledTime() *timestamppb.Timestamp {
+func (x *StreamCloseChainTask) GetFirstRunId() string {
 	if x != nil {
-		return x.ScheduledTime
+		return x.FirstRunId
 	}
-	return nil
+	return ""
 }
 
 var File_temporal_server_chasm_lib_stream_proto_v1_tasks_proto protoreflect.FileDescriptor
@@ -122,9 +122,10 @@ const file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDesc = "" +
 	"\n" +
 	"5temporal/server/chasm/lib/stream/proto/v1/tasks.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"I\n" +
 	"\x0fStreamTimerTask\x126\n" +
-	"\bdeadline\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bdeadline\"Y\n" +
-	"\x14StreamOwnerCheckTask\x12A\n" +
-	"\x0escheduled_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\rscheduledTimeB>Z<go.temporal.io/server/chasm/lib/stream/gen/streampb;streampbb\x06proto3"
+	"\bdeadline\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bdeadline\"8\n" +
+	"\x14StreamCloseChainTask\x12 \n" +
+	"\ffirst_run_id\x18\x01 \x01(\tR\n" +
+	"firstRunIdB>Z<go.temporal.io/server/chasm/lib/stream/gen/streampb;streampbb\x06proto3"
 
 var (
 	file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDescOnce sync.Once
@@ -141,17 +142,16 @@ func file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_rawDescGZIP() []
 var file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_goTypes = []any{
 	(*StreamTimerTask)(nil),       // 0: temporal.server.chasm.lib.stream.proto.v1.StreamTimerTask
-	(*StreamOwnerCheckTask)(nil),  // 1: temporal.server.chasm.lib.stream.proto.v1.StreamOwnerCheckTask
+	(*StreamCloseChainTask)(nil),  // 1: temporal.server.chasm.lib.stream.proto.v1.StreamCloseChainTask
 	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
 }
 var file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_depIdxs = []int32{
 	2, // 0: temporal.server.chasm.lib.stream.proto.v1.StreamTimerTask.deadline:type_name -> google.protobuf.Timestamp
-	2, // 1: temporal.server.chasm.lib.stream.proto.v1.StreamOwnerCheckTask.scheduled_time:type_name -> google.protobuf.Timestamp
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_stream_proto_v1_tasks_proto_init() }

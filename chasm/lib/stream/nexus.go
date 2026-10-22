@@ -89,9 +89,11 @@ func (o *readRecordsOperation) Start(
 	}
 	if resp == nil {
 		token, err := json.Marshal(readToken{
-			Namespace: req.GetNamespace(),
-			StreamID:  req.GetStream().GetId(),
-			RequestID: options.RequestID,
+			Namespace:  req.GetNamespace(),
+			StreamID:   req.GetStream().GetId(),
+			WorkflowID: req.GetStream().GetWorkflowId(),
+			FirstRunID: req.GetStream().GetFirstExecutionRunId(),
+			RequestID:  options.RequestID,
 		})
 		if err != nil {
 			return nil, err
@@ -106,14 +108,17 @@ func (o *readRecordsOperation) Cancel(ctx context.Context, token string, _ nexus
 	if err := json.Unmarshal([]byte(token), &t); err != nil {
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid operation token")
 	}
-	return nexusError(o.handler.CancelRead(ctx, t.Namespace, t.StreamID, t.RequestID))
+	ref := &streamservice.StreamRef{Id: t.StreamID, WorkflowId: t.WorkflowID, FirstExecutionRunId: t.FirstRunID}
+	return nexusError(o.handler.CancelRead(ctx, t.Namespace, ref, t.RequestID))
 }
 
 // readToken names a parked read.
 type readToken struct {
-	Namespace string `json:"n"`
-	StreamID  string `json:"s"`
-	RequestID string `json:"r"`
+	Namespace  string `json:"n"`
+	StreamID   string `json:"s"`
+	WorkflowID string `json:"w,omitempty"`
+	FirstRunID string `json:"f,omitempty"`
+	RequestID  string `json:"r"`
 }
 
 // operationError gives the failed or canceled operation error of a failure.
@@ -140,13 +145,13 @@ func operationError(failure *failurepb.Failure) (*nexus.OperationError, error) {
 // streamRequest is what the processor needs of each request.
 type streamRequest interface {
 	GetNamespace() string
+	GetStream() *streamservice.StreamRef
 }
 
 // processor checks a request where the command is accepted and routes the operation to the
-// shard of the Stream.
+// shard of the Stream. A Workflow Stream is on its Workflow's shard.
 type processor[R streamRequest] struct {
 	config       *Config
-	streamID     func(R) string
 	setNamespace func(R, string)
 }
 
@@ -158,8 +163,8 @@ func (p processor[R]) ProcessInput(
 	if !p.config.Enabled(name) {
 		return nil, serviceerror.NewUnimplemented("The Stream service is disabled")
 	}
-	id := p.streamID(req)
-	if err := CheckStreamID(id); err != nil {
+	ref := req.GetStream()
+	if err := CheckStreamID(ref.GetId()); err != nil {
 		return nil, err
 	}
 	switch req.GetNamespace() {
@@ -169,10 +174,14 @@ func (p processor[R]) ProcessInput(
 	default:
 		return nil, serviceerror.NewInvalidArgumentf("Namespace in request %q does not match namespace in context %q", req.GetNamespace(), name)
 	}
+	businessID := ref.GetWorkflowId()
+	if businessID == "" {
+		businessID = ref.GetId()
+	}
 	return &chasm.NexusOperationProcessorResult{
 		RoutingKey: chasm.NexusOperationRoutingKeyExecution{
 			NamespaceID: ctx.Namespace.ID().String(),
-			BusinessID:  id,
+			BusinessID:  businessID,
 		},
 	}, nil
 }
@@ -181,12 +190,10 @@ func newNexusServiceProcessor(config *Config) *chasm.NexusServiceProcessor {
 	sp := chasm.NewNexusServiceProcessor(ServiceName)
 	sp.MustRegisterOperation("ReadRecords", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.ReadRecordsRequest]{
 		config:       config,
-		streamID:     func(r *streamservice.ReadRecordsRequest) string { return r.GetStream().GetId() },
 		setNamespace: func(r *streamservice.ReadRecordsRequest, ns string) { r.Namespace = ns },
 	}))
 	sp.MustRegisterOperation("DescribeStream", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.DescribeStreamRequest]{
 		config:       config,
-		streamID:     func(r *streamservice.DescribeStreamRequest) string { return r.GetStream().GetId() },
 		setNamespace: func(r *streamservice.DescribeStreamRequest, ns string) { r.Namespace = ns },
 	}))
 	return sp
