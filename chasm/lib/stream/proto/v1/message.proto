@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.stream.proto.v1;
+
+import "chasm/lib/callback/proto/v1/message.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "temporal/api/failure/v1/message.proto";
+import "temporal/api/streamservice/v1/stream_service.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/stream/gen/streampb;streampb";
+
+enum StreamPhase {
+  STREAM_PHASE_UNSPECIFIED = 0;
+  // A Workflow read waits for a create that has not come yet. Calls other than CreateStream
+  // see no Stream.
+  STREAM_PHASE_PENDING = 1;
+  STREAM_PHASE_OPEN = 2;
+  // The close Record is written. The Records stay readable for the Retention.
+  STREAM_PHASE_CLOSED = 3;
+  // The Retention or the safety TTL passed. The Records are gone, and the state stays so that a
+  // read tells an expired Stream from a missing one.
+  STREAM_PHASE_EXPIRED = 4;
+  // No create came for a pending Stream before its reads stopped waiting. A later create
+  // starts a new Stream with the id.
+  STREAM_PHASE_ABANDONED = 5;
+}
+
+// The state of one Stream. It grows with the batches and the Producers, not with the Records.
+// The Records are in the batch data nodes.
+message StreamState {
+  StreamPhase phase = 1;
+  // The Retention in effect, the Store default when the create had none.
+  google.protobuf.Duration retention = 2;
+  // Unset when the Stream never closes on its own.
+  google.protobuf.Duration auto_close = 3;
+  // A Workflow created the Stream, so an open Stream lives for the safety TTL after its last
+  // write, not for one Retention.
+  bool workflow_owned = 4;
+  google.protobuf.Timestamp create_time = 5;
+  // The auto close and the TTL of an open Stream count from it. The create sets it too.
+  google.protobuf.Timestamp last_write_time = 6;
+  google.protobuf.Timestamp close_time = 7;
+  // The offset of the newest entry, zero when there is none.
+  int64 newest_offset = 8;
+  // The offset of the close Record, zero while the Stream is open.
+  int64 close_offset = 9;
+  // The offset of the newest entry that the Retention or the size cap dropped, zero if none.
+  int64 trimmed_offset = 10;
+  // The stored batches in offset order.
+  repeated BatchInfo index = 11;
+  int64 stored_bytes = 12;
+  // Keyed by the Producer kind, id and run.
+  map<string, ProducerState> producers = 13;
+  // Runs that a retry run withdrew. Their Producers are fenced.
+  repeated string fenced_runs = 14;
+  // The Workflow Task facts of each run that wrote, keyed by run id.
+  map<string, RunTasks> runs = 16;
+  // The deadline of the armed timer task, so an older task is a no-op.
+  google.protobuf.Timestamp timer_deadline = 15;
+}
+
+message BatchInfo {
+  int64 first_offset = 1;
+  int64 last_offset = 2;
+  int64 bytes = 3;
+}
+
+message ProducerState {
+  reserved 5;
+
+  // The newest epoch. A lower one is fenced.
+  temporal.api.streamservice.v1.ProducerEpoch epoch = 1;
+  // The last sequence of that epoch.
+  int64 sequence = 2;
+  // The offsets of the last batch, which a resend of it gets again.
+  int64 first_offset = 3;
+  int64 last_offset = 4;
+  // The epoch of the newest batch with Records, outside Workflow code. The first batch of a
+  // higher epoch withdraws them.
+  temporal.api.streamservice.v1.ProducerEpoch holds = 6;
+}
+
+// The Workflow Task facts of one run, as the crate's task index keeps them.
+message RunTasks {
+  // The tasks of the run and of its Local Activities that wrote Records and are not settled.
+  repeated temporal.api.streamservice.v1.WorkflowTaskEpoch index = 1;
+  // The tasks a Superseded Record withdrew. A Local Activity of one of them is fenced.
+  repeated temporal.api.streamservice.v1.WorkflowTaskEpoch withdrawn = 2;
+  // The facts of the run's last Workflow batch, which also fence a Local Activity of a task they
+  // withdraw.
+  temporal.api.streamservice.v1.WorkflowTaskEpoch last_task = 3;
+  temporal.api.streamservice.v1.WorkflowTaskEpoch last_completed = 4;
+  repeated int64 last_failed = 5;
+  // The run wrote a Record, so a retry run's withdrawal of it gets a Superseded Record.
+  bool wrote = 6;
+}
+
+// The Records of one append, with their offsets.
+message RecordBatch {
+  repeated temporal.api.streamservice.v1.StreamRecord records = 1;
+}
+
+// A Workflow read that found no Record. The Stream completes it when Records come, when the
+// Stream closes or expires, or when the create wait ends.
+message ParkedReadState {
+  temporal.api.streamservice.v1.ReadRecordsRequest request = 1;
+  // The Nexus request id, so a retry of the start finds this read.
+  string request_id = 2;
+  // Where the next look starts. A look that finds only other Topics moves it on.
+  int64 scan_offset = 3;
+  // Set while the read waits for the create.
+  google.protobuf.Timestamp create_deadline = 4;
+  google.protobuf.Timestamp start_time = 5;
+  bool resolved = 6;
+  temporal.api.streamservice.v1.ReadRecordsResponse response = 7;
+  temporal.api.failure.v1.Failure failure = 8;
+  temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata callback_metadata = 9;
+  // When the read answers an empty page, from its wait. Unset for a read with no wait.
+  google.protobuf.Timestamp wait_deadline = 10;
+}
