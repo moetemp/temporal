@@ -83,6 +83,14 @@ func (o *readRecordsOperation) Start(
 	req *streamservice.ReadRecordsRequest,
 	options nexus.StartOperationOptions,
 ) (nexus.HandlerStartOperationResult[*streamservice.ReadRecordsResponse], error) {
+	// A direct call has no callback, so it reads as the frontend does, a long poll up to wait.
+	if options.CallbackURL == "" {
+		resp, err := o.handler.ReadRecords(ctx, req)
+		if err != nil {
+			return nil, nexusError(err)
+		}
+		return &nexus.HandlerStartOperationResultSync[*streamservice.ReadRecordsResponse]{Value: resp}, nil
+	}
 	resp, err := o.handler.ReadOrPark(ctx, req, readerOf(options))
 	if err != nil {
 		return nil, nexusError(err)

@@ -42,6 +42,7 @@ func (s *StreamTestSuite) newEnv() *testcore.TestEnv {
 	return testcore.NewEnv(s.T(),
 		testcore.WithDynamicConfig(dynamicconfig.EnableChasm, true),
 		testcore.WithDynamicConfig(stream.Enabled, true),
+		testcore.WithDynamicConfig(dynamicconfig.EnableDirectNexusCalls, true),
 	)
 }
 
@@ -627,6 +628,82 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 	s.Equal(payload.EncodeString("run-2").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
 }
 
+// directRead reads through the direct System Nexus call, which adds no History event.
+func (s *StreamTestSuite) directRead(env *testcore.TestEnv, req *streamservice.ReadRecordsRequest) (*streamservice.ReadRecordsResponse, *failurepb.Failure) {
+	resp, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
+		Namespace: env.Namespace().String(),
+		Endpoint:  commonnexus.SystemEndpoint,
+		Service:   stream.ServiceName,
+		Operation: "ReadRecords",
+		Input:     payloads.MustEncodeSingle(req),
+	})
+	s.NoError(err)
+	if failure := resp.GetOperationFailure().GetFailure(); failure != nil {
+		return nil, failure
+	}
+	var page streamservice.ReadRecordsResponse
+	s.NoError(sdkconverter.PreferProtoDataConverter.FromPayloads(
+		&commonpb.Payloads{Payloads: []*commonpb.Payload{resp.GetSyncSuccess().GetPayload()}}, &page))
+	return &page, nil
+}
+
+func (s *StreamTestSuite) historyLength(env *testcore.TestEnv, c *streamCaller) int {
+	resp, err := env.FrontendClient().GetWorkflowExecutionHistory(s.Context(), &workflowservice.GetWorkflowExecutionHistoryRequest{
+		Namespace: env.Namespace().String(),
+		Execution: &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: c.run.GetRunID()},
+	})
+	s.NoError(err)
+	return len(resp.GetHistory().GetEvents())
+}
+
+// A Workflow wakes with offsets only and reads its pages directly. The pages add no History
+// event, and a read bounded by to_offset answers the same page after more appends, as replay
+// needs.
+func (s *StreamTestSuite) TestWorkflowReadsDirectlyWithNoRecordsInHistory() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	ns := env.Namespace().String()
+	appendTopics := func(sequence int64, topics ...string) {
+		_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: owned, Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: sequence, Records: records(topics...),
+		})
+		s.NoError(err)
+	}
+
+	wake := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: owned, WakeOnly: true}})[0]
+	appendTopics(1, "a", "b")
+	var woke streamservice.ReadRecordsResponse
+	failure, started := c.outcome(wake, &woke)
+	s.Nil(failure)
+	s.True(started)
+	s.Empty(woke.GetRecords())
+	s.Equal(int64(0), woke.GetNextOffset())
+
+	before := s.historyLength(env, c)
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: woke.GetNextOffset()})
+	s.Nil(failure)
+	s.Equal([]string{"a", "b"}, kindsAndTopics(page))
+	s.Equal(before, s.historyLength(env, c))
+
+	appendTopics(2, "c")
+	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, ToOffset: page.GetNextOffset()})
+	s.Nil(failure)
+	s.Equal(page.GetRecords(), again.GetRecords())
+	s.Equal(page.GetNextOffset(), again.GetNextOffset())
+
+	// A direct read with wait long-polls, as the frontend read does.
+	waited, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: owned, Start: streamservice.READ_START_END, Wait: durationpb.New(500 * time.Millisecond),
+	})
+	s.Nil(failure)
+	s.Empty(waited.GetRecords())
+
+	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))})
+	s.Equal(stream.ReasonNotFound, causeType(failure))
+}
+
 // The first run of a chain keeps the chain's Streams after it closes, so the namespace retention
 // can't delete them while a later run still writes.
 func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
@@ -668,4 +745,58 @@ func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
 	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned})
 	s.NoError(err)
 	s.Equal([]string{"late"}, kindsAndTopics(page))
+}
+
+// An append that names a Workflow Stream by its bare id, or a Stream that doesn't exist, fails.
+// It never writes somewhere a reader of the Workflow Stream can't see.
+func (s *StreamTestSuite) TestAppendToAStreamThatIsNotThereFails() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	ns := env.Namespace().String()
+
+	for _, target := range []string{owned.GetId(), "missing-" + owned.GetId()} {
+		_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(target),
+			Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: 1, Records: records("lost"),
+		})
+		st := status.Convert(err)
+		s.Equal(codes.NotFound, st.Code(), target)
+		reason := st.Details()[0].(*streamservice.StreamErrorDetails).GetReason()
+		s.Equal(stream.ReasonNotFound, reason, target)
+	}
+
+	page, err := sc.ReadRecords(s.Context(),
+		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Empty(page.GetRecords())
+}
+
+// A read of a range that the size cap dropped fails with stream_expired, not with the framework's
+// missing execution.
+func (s *StreamTestSuite) TestReadOfADroppedRangeFailsAsExpired() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+
+	var first int64
+	for sequence := int64(1); sequence <= 3; sequence++ {
+		resp, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: sequence,
+			Records: []*streamservice.AppendRecord{{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 1536*1024)}}},
+		})
+		s.NoError(err)
+		if first == 0 {
+			first = resp.GetFirstOffset()
+		}
+	}
+
+	_, err = sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id), FromOffset: first})
+	st := status.Convert(err)
+	s.Equal(codes.NotFound, st.Code())
+	s.Equal(stream.ReasonExpired, st.Details()[0].(*streamservice.StreamErrorDetails).GetReason())
 }

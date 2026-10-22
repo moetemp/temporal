@@ -167,10 +167,14 @@ func (h *handler) CreateStream(
 
 func (h *handler) createStandalone(ctx context.Context, t target, in CreateInput) (CreateOutput, error) {
 	create := func(policy chasm.TransitionOption) (CreateOutput, error) {
-		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartStream, (*Stream).Create, in, policy)
+		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartStream,
+			func(s *Stream, mctx chasm.MutableContext, in CreateInput) (CreateOutput, error) {
+				out, err := s.Create(mctx, in)
+				return out, carry(err)
+			}, in, policy)
 		out := result.UpdateOutput
 		out.Created = out.Created || result.Created
-		return out, err
+		return out, uncarry(err)
 	}
 	out, err := create(useExisting)
 	if err != nil && ReasonOf(err) == "" {
@@ -277,11 +281,16 @@ func (h *handler) ReadOrPark(
 		return resp, streamError(ctx, t, err)
 	}
 	readStandalone := func(policy chasm.TransitionOption) (*streamservice.ReadRecordsResponse, error) {
-		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartForRead, (*Stream).ReadOrPark, in, policy)
-		return result.UpdateOutput, err
+		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartForRead,
+			func(s *Stream, mctx chasm.MutableContext, in ReadInput) (*streamservice.ReadRecordsResponse, error) {
+				resp, err := s.ReadOrPark(mctx, in)
+				return resp, carry(err)
+			}, in, policy)
+		return result.UpdateOutput, uncarry(err)
 	}
 	resp, err := readStandalone(useExisting)
-	if err != nil && ReasonOf(err) == "" {
+	// An abandoned Stream answers stream_not_found, and the read starts a new execution for the id.
+	if reason := ReasonOf(err); err != nil && (reason == "" || reason == ReasonNotFound) {
 		if p, _ := phase(ctx, t); p == streampb.STREAM_PHASE_ABANDONED {
 			resp, err = readStandalone(replaceAbandoned)
 		}
@@ -335,14 +344,18 @@ func (h *handler) ReadRecords(
 	if err := h.applyDue(ctx, t, limits); err != nil {
 		return nil, streamError(ctx, t, err)
 	}
-	cursor, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
+	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
 	if err != nil {
 		return nil, streamError(ctx, t, err)
 	}
+	cursor := start
 	for {
 		from := cursor
 		page, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (pagedRead, error) {
 			resp, found, err := s.Page(cctx, req, from)
+			if found && req.GetWakeOnly() {
+				resp = s.wakeAnswer(start)
+			}
 			return pagedRead{resp: resp, found: found}, err
 		})
 		if err != nil {
@@ -350,6 +363,9 @@ func (h *handler) ReadRecords(
 		}
 		// nolint:forbidigo // A long poll measures wall-clock time, not component time.
 		if page.found || !time.Now().Before(deadline) {
+			if !page.found && req.GetWakeOnly() {
+				return &streamservice.ReadRecordsResponse{NextOffset: start}, nil
+			}
 			return page.resp, nil
 		}
 		cursor = max(cursor, page.resp.GetNextOffset())

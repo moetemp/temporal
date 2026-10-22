@@ -26,4 +26,9 @@ var FrontendModule = fx.Module(
 	fx.Provide(ConfigProvider),
 	fx.Provide(streampb.NewStreamServiceLayeredClient),
 	fx.Provide(NewFrontendHandler),
+	// The frontend runs the operation processors of direct Nexus calls, and the Workflow
+	// component nests Streams, so the frontend registry has the library with no handlers.
+	fx.Invoke(func(config *Config, registry *chasm.Registry) error {
+		return registry.Register(newLibrary(config, nil, nil, nil, nil))
+	}),
 )

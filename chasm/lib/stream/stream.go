@@ -506,7 +506,11 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 	// A read whose wait ended answers an empty page, as the frontend long poll does.
 	s.resolveReads(ctx, func(read *ParkedRead) (readOutcome, bool) {
 		if deadline := read.GetWaitDeadline(); deadline != nil && !deadline.AsTime().After(now) {
-			return readOutcome{resp: &streamservice.ReadRecordsResponse{NextOffset: read.GetScanOffset()}}, true
+			next := read.GetScanOffset()
+			if read.GetRequest().GetWakeOnly() {
+				next = read.GetStartOffset()
+			}
+			return readOutcome{resp: &streamservice.ReadRecordsResponse{NextOffset: next}}, true
 		}
 		return readOutcome{}, false
 	})

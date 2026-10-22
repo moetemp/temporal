@@ -609,7 +609,9 @@ type ParkedReadState struct {
 	Failure          *v11.Failure            `protobuf:"bytes,8,opt,name=failure,proto3" json:"failure,omitempty"`
 	CallbackMetadata *v12.CallbackMetadata   `protobuf:"bytes,9,opt,name=callback_metadata,json=callbackMetadata,proto3" json:"callback_metadata,omitempty"`
 	// When the read answers an empty page, from its wait. Unset for a read with no wait.
-	WaitDeadline  *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=wait_deadline,json=waitDeadline,proto3" json:"wait_deadline,omitempty"`
+	WaitDeadline *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=wait_deadline,json=waitDeadline,proto3" json:"wait_deadline,omitempty"`
+	// Where the read started. A wake_only read answers it as its next offset.
+	StartOffset   int64 `protobuf:"varint,11,opt,name=start_offset,json=startOffset,proto3" json:"start_offset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -714,6 +716,13 @@ func (x *ParkedReadState) GetWaitDeadline() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *ParkedReadState) GetStartOffset() int64 {
+	if x != nil {
+		return x.StartOffset
+	}
+	return 0
+}
+
 var File_temporal_server_chasm_lib_stream_proto_v1_message_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" +
@@ -772,7 +781,7 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"lastFailed\x12\x14\n" +
 	"\x05wrote\x18\x06 \x01(\bR\x05wrote\"T\n" +
 	"\vRecordBatch\x12E\n" +
-	"\arecords\x18\x01 \x03(\v2+.temporal.api.streamservice.v1.StreamRecordR\arecords\"\xf4\x04\n" +
+	"\arecords\x18\x01 \x03(\v2+.temporal.api.streamservice.v1.StreamRecordR\arecords\"\x97\x05\n" +
 	"\x0fParkedReadState\x12K\n" +
 	"\arequest\x18\x01 \x01(\v21.temporal.api.streamservice.v1.ReadRecordsRequestR\arequest\x12\x1d\n" +
 	"\n" +
@@ -787,7 +796,8 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"\afailure\x18\b \x01(\v2 .temporal.api.failure.v1.FailureR\afailure\x12k\n" +
 	"\x11callback_metadata\x18\t \x01(\v2>.temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadataR\x10callbackMetadata\x12?\n" +
 	"\rwait_deadline\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\fwaitDeadline*\xab\x01\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\fwaitDeadline\x12!\n" +
+	"\fstart_offset\x18\v \x01(\x03R\vstartOffset*\xab\x01\n" +
 	"\vStreamPhase\x12\x1c\n" +
 	"\x18STREAM_PHASE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14STREAM_PHASE_PENDING\x10\x01\x12\x15\n" +
