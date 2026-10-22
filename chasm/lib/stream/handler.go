@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/server/chasm"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
 	"go.temporal.io/server/common/namespace"
+	"go.temporal.io/server/common/resource"
 )
 
 // handler runs the five Stream operations on the history shard that owns the Stream. The
@@ -19,10 +20,11 @@ import (
 type handler struct {
 	config            *Config
 	namespaceRegistry namespace.Registry
+	historyClient     resource.HistoryClient
 }
 
-func newHandler(config *Config, namespaceRegistry namespace.Registry) *handler {
-	return &handler{config: config, namespaceRegistry: namespaceRegistry}
+func newHandler(config *Config, namespaceRegistry namespace.Registry, historyClient resource.HistoryClient) *handler {
+	return &handler{config: config, namespaceRegistry: namespaceRegistry, historyClient: historyClient}
 }
 
 // Reader is a Workflow read through System Nexus.
@@ -31,6 +33,8 @@ type Reader struct {
 	RequestID string
 	// The completion callback of the read's operation. A read with none answers at once.
 	Callback *commonpb.Callback
+	// The calling Workflow run, from the link that the server's Nexus call adds.
+	Run *ReaderRun
 }
 
 // checkProducer refuses a write with no Producer, or with an id that lacks the prefix of its
@@ -266,7 +270,7 @@ func (h *handler) ReadOrPark(
 	if err != nil {
 		return nil, err
 	}
-	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Limits: limits}
+	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Reader: reader.Run, Limits: limits}
 	if t.nested {
 		resp, err := update(ctx, t, newNestedStream,
 			func(s *Stream, mctx chasm.MutableContext) (*streamservice.ReadRecordsResponse, error) {
@@ -340,26 +344,21 @@ func (h *handler) ReadRecords(
 	if err := h.applyDue(ctx, t, limits); err != nil {
 		return nil, streamError(ctx, t, err)
 	}
-	if err := h.keepFloor(ctx, t, limits, req, run); err != nil {
+	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
+	if err != nil {
 		return nil, streamError(ctx, t, err)
 	}
-	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
+	floorRun, err := h.floorRun(ctx, t, req, start, run)
 	if err != nil {
 		return nil, streamError(ctx, t, err)
 	}
 	cursor := start
 	for {
-		from := cursor
-		page, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (pagedRead, error) {
-			resp, found, err := s.Page(cctx, req, from)
-			if found && req.GetWakeOnly() {
-				resp = s.wakeAnswer(start)
-			}
-			return pagedRead{resp: resp, found: found}, err
-		})
+		page, err := h.page(ctx, t, limits, req, start, cursor, floorRun)
 		if err != nil {
 			return nil, streamError(ctx, t, err)
 		}
+		floorRun = nil
 		// nolint:forbidigo // A long poll measures wall-clock time, not component time.
 		if page.found || !time.Now().Before(deadline) {
 			if !page.found && req.GetWakeOnly() {
@@ -374,23 +373,60 @@ func (h *handler) ReadRecords(
 	}
 }
 
-// keepFloor writes the run's floor only when the read lowers it, which is mostly its first page.
-// A wake reads no Records, and only a Workflow Stream keeps floors.
-func (h *handler) keepFloor(ctx context.Context, t target, limits Limits, req *streamservice.ReadRecordsRequest, run *ReaderRun) error {
+// floorRun is the run whose floor the first page keeps, or nil. That is a run whose page would
+// lower its floor, mostly its first, and that is open. The link is the Worker's claim, so a run
+// that is closed or doesn't exist keeps no floor.
+func (h *handler) floorRun(
+	ctx context.Context,
+	t target,
+	req *streamservice.ReadRecordsRequest,
+	from int64,
+	run *ReaderRun,
+) (*ReaderRun, error) {
 	if run == nil || !t.nested || req.GetWakeOnly() {
-		return nil
+		return nil, nil
 	}
 	lowers, err := read(ctx, t, func(s *Stream, _ chasm.Context) (bool, error) {
-		_, ok := s.readerFloor(run.RunID, req)
+		_, ok := s.readerFloor(run.RunID, from)
 		return ok, nil
 	})
 	if err != nil || !lowers {
-		return err
+		return nil, err
 	}
-	_, err = update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
-		return struct{}{}, s.AddReader(mctx, *run, req, limits)
+	open, err := runOpen(ctx, h.historyClient, t.key.NamespaceID, *run)
+	if err != nil || !open {
+		return nil, err
+	}
+	return run, nil
+}
+
+// page reads one page from from. With run set, the transaction that answers the page keeps the
+// run's floor too, so no trim comes between the answer and the floor.
+func (h *handler) page(
+	ctx context.Context,
+	t target,
+	limits Limits,
+	req *streamservice.ReadRecordsRequest,
+	start int64,
+	from int64,
+	run *ReaderRun,
+) (pagedRead, error) {
+	view := func(s *Stream, cctx chasm.Context) (pagedRead, error) {
+		resp, found, err := s.Page(cctx, req, from)
+		if found && req.GetWakeOnly() {
+			resp = s.wakeAnswer(start)
+		}
+		return pagedRead{resp: resp, found: found}, err
+	}
+	if run == nil {
+		return read(ctx, t, view)
+	}
+	return update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (pagedRead, error) {
+		if err := s.AddReader(mctx, *run, from, limits); err != nil {
+			return pagedRead{}, err
+		}
+		return view(s, mctx)
 	})
-	return err
 }
 
 type pagedRead struct {

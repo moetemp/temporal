@@ -206,7 +206,9 @@ type ReadInput struct {
 	RequestID string
 	// The completion callback of the Nexus operation. A read with none answers at once.
 	Callback *commonpb.Callback
-	Limits   Limits
+	// The calling Workflow run. A wake keeps its floor, since its pages read from its start.
+	Reader *ReaderRun
+	Limits Limits
 }
 
 // StartForRead is the start of an execution for a read. The Stream waits for its create. The
@@ -254,6 +256,9 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 	} else {
 		from, err := s.StartOffset(in.Request)
 		if err != nil {
+			return nil, err
+		}
+		if err := s.keepWakeFloor(ctx, in, from); err != nil {
 			return nil, err
 		}
 		resp, found, err := s.Page(ctx, in.Request, from)
@@ -376,4 +381,13 @@ func (s *Stream) pruneReads(ctx chasm.MutableContext) {
 // ReadTimeout is how long a frontend read waits, bounded by the crate's limit.
 func ReadTimeout(req *streamservice.ReadRecordsRequest) (wait time.Duration, createWait time.Duration) {
 	return min(max(req.GetWait().AsDuration(), 0), MaxWait), min(max(req.GetCreateWait().AsDuration(), 0), MaxWait)
+}
+
+// keepWakeFloor keeps the floor of a wake's Workflow in the transaction that takes the wake,
+// since the wake's pages read from its start.
+func (s *Stream) keepWakeFloor(ctx chasm.MutableContext, in ReadInput, from int64) error {
+	if in.Reader == nil || !in.Request.GetWakeOnly() {
+		return nil
+	}
+	return s.AddReader(ctx, *in.Reader, from, in.Limits)
 }

@@ -5,13 +5,15 @@ import (
 	"errors"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/api/streamservice/v1"
+	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
+	"go.temporal.io/server/common/resource"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -33,11 +35,10 @@ func readerRunOf(links []nexus.Link) *ReaderRun {
 	return nil
 }
 
-// readerFloor is the floor that a read of req by the run sets. It is false when the run's floor
-// is already that low, or when the read fails anyway.
-func (s *Stream) readerFloor(runID string, req *streamservice.ReadRecordsRequest) (int64, bool) {
-	from, err := s.StartOffset(req)
-	if err != nil {
+// readerFloor is the floor that a read from from sets for the run. It is false when the Stream
+// keeps no floors, when the run's floor is already that low, or when the read fails anyway.
+func (s *Stream) readerFloor(runID string, from int64) (int64, bool) {
+	if !s.Nested {
 		return 0, false
 	}
 	if from == 0 {
@@ -52,15 +53,10 @@ func (s *Stream) readerFloor(runID string, req *streamservice.ReadRecordsRequest
 	return from, true
 }
 
-// AddReader keeps the floor of a Workflow run that reads from req's start. No trim passes it
-// while the run is open.
-func (s *Stream) AddReader(
-	ctx chasm.MutableContext,
-	run ReaderRun,
-	req *streamservice.ReadRecordsRequest,
-	limits Limits,
-) error {
-	floor, ok := s.readerFloor(run.RunID, req)
+// AddReader keeps the floor of a Workflow run that reads from from, in the transaction that
+// answers the read. No trim passes the floor while the run is open.
+func (s *Stream) AddReader(ctx chasm.MutableContext, run ReaderRun, from int64, limits Limits) error {
+	floor, ok := s.readerFloor(run.RunID, from)
 	if !ok {
 		return nil
 	}
@@ -73,7 +69,7 @@ func (s *Stream) AddReader(
 		s.Readers = make(map[string]*streampb.ReaderFloor)
 	}
 	s.Readers[run.RunID] = &streampb.ReaderFloor{WorkflowId: run.WorkflowID, Offset: floor}
-	s.finish(ctx, limits)
+	s.armReadersCheck(ctx, limits)
 	return nil
 }
 
@@ -98,10 +94,15 @@ type readersCheckTaskHandler struct {
 
 	config            *Config
 	namespaceRegistry namespace.Registry
+	historyClient     resource.HistoryClient
 }
 
-func newReadersCheckTaskHandler(config *Config, namespaceRegistry namespace.Registry) *readersCheckTaskHandler {
-	return &readersCheckTaskHandler{config: config, namespaceRegistry: namespaceRegistry}
+func newReadersCheckTaskHandler(
+	config *Config,
+	namespaceRegistry namespace.Registry,
+	historyClient resource.HistoryClient,
+) *readersCheckTaskHandler {
+	return &readersCheckTaskHandler{config: config, namespaceRegistry: namespaceRegistry, historyClient: historyClient}
 }
 
 func (h *readersCheckTaskHandler) Validate(
@@ -132,7 +133,7 @@ func (h *readersCheckTaskHandler) Execute(
 	}
 	var closed []string
 	for runID, workflowID := range readers {
-		open, err := runOpen(ctx, chasm.ExecutionKey{NamespaceID: ref.NamespaceID, BusinessID: workflowID, RunID: runID})
+		open, err := runOpen(ctx, h.historyClient, ref.NamespaceID, ReaderRun{WorkflowID: workflowID, RunID: runID})
 		if err != nil {
 			return err
 		}
@@ -158,14 +159,22 @@ func (h *readersCheckTaskHandler) Execute(
 	return err
 }
 
-// runOpen says whether a Workflow run is still open. A deleted run is closed.
-func runOpen(ctx context.Context, key chasm.ExecutionKey) (bool, error) {
-	open, err := chasm.ReadComponent(ctx, chasm.NewComponentRefByArchetypeID(key, chasm.WorkflowArchetypeID),
-		func(h Host, cctx chasm.Context, _ struct{}) (bool, error) {
-			return !h.LifecycleState(cctx).IsClosed(), nil
-		}, struct{}{})
+// runOpen says whether a Workflow run is still open. A deleted or unknown run is closed. The run may be on
+// another shard, so it goes through the history client.
+func runOpen(ctx context.Context, historyClient resource.HistoryClient, namespaceID string, run ReaderRun) (bool, error) {
+	resp, err := historyClient.GetMutableState(ctx, &historyservice.GetMutableStateRequest{
+		NamespaceId: namespaceID,
+		Execution:   &commonpb.WorkflowExecution{WorkflowId: run.WorkflowID, RunId: run.RunID},
+	})
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return false, nil
 	}
-	return open, err
+	// A link can name a run id that is no run id at all.
+	if _, ok := errors.AsType[*serviceerror.InvalidArgument](err); ok {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return resp.GetWorkflowStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
 }

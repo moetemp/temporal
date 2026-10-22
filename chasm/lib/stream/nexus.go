@@ -20,7 +20,7 @@ const ServiceName = "temporal.api.streamservice.v1.StreamService"
 
 // readerOf gives the Nexus request id and the completion callback of a read.
 func readerOf(options nexus.StartOperationOptions) Reader {
-	reader := Reader{RequestID: options.RequestID}
+	reader := Reader{RequestID: options.RequestID, Run: readerRunOf(options.Links)}
 	if options.CallbackURL != "" {
 		reader.Callback = &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
 			Url:    options.CallbackURL,

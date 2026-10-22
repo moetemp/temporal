@@ -538,7 +538,7 @@ func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	setReaders(func(s *Stream, mctx chasm.MutableContext) error {
 		s.Nested = true
 		return s.AddReader(mctx, ReaderRun{WorkflowID: "wf", RunID: "run-1"},
-			&streamservice.ReadRecordsRequest{FromOffset: b.GetFirstOffset()}, h.limits)
+			b.GetFirstOffset(), h.limits)
 	})
 
 	big := &streamservice.AppendRecordsRequest{Producer: activityProducer(1), Sequence: 3, Records: []*streamservice.AppendRecord{

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	commandpb "go.temporal.io/api/command/v1"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -872,4 +873,62 @@ func (s *StreamTestSuite) TestReadOfADroppedRangeFailsAsExpired() {
 	st := status.Convert(err)
 	s.Equal(codes.NotFound, st.Code())
 	s.Equal(stream.ReasonExpired, st.Details()[0].(*streamservice.StreamErrorDetails).GetReason())
+}
+
+// createWithRetention creates a Workflow Stream with a client owner and a 1 s Retention, and
+// appends one Record.
+func (s *StreamTestSuite) createWithRetention(
+	sc streamservice.StreamServiceClient,
+	env *testcore.TestEnv,
+	c *streamCaller,
+) (*streamservice.StreamRef, *streamservice.AppendRecordsResponse) {
+	id := testcore.RandomizeStr("chat")
+	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
+		Namespace: env.Namespace().String(), StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+	})
+	s.NoError(err)
+	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned, Producer: clientProducer(), Sequence: 1, Records: records("a"),
+	})
+	s.NoError(err)
+	return owned, appended
+}
+
+// A wake keeps the floor of the Workflow that the server's Nexus call names, in the transaction
+// that answers it, so the wake's pages read past the Retention.
+func (s *StreamTestSuite) TestWorkflowWakeKeepsItsFloor() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	owned, _ := s.createWithRetention(sc, env, s.newCaller(env))
+
+	reader := s.newCaller(env)
+	var woke streamservice.ReadRecordsResponse
+	failure, _ := reader.outcome(reader.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true,
+	}})[0], &woke)
+	s.Nil(failure)
+
+	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention runs on real time.
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: woke.GetNextOffset()})
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(page))
+}
+
+// A link to a run that doesn't exist keeps no floor, so a forged link can't stop the trim.
+func (s *StreamTestSuite) TestReadLinkToNoRunKeepsNoFloor() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	owned, appended := s.createWithRetention(sc, env, s.newCaller(env))
+
+	forged := &commonpb.Link{Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
+		Namespace: env.Namespace().String(), WorkflowId: "nobody", RunId: uuid.NewString(),
+	}}}
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned}, forged)
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(page))
+
+	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention runs on real time.
+	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()})
+	s.Equal(stream.ReasonExpired, causeType(failure))
 }
