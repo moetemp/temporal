@@ -108,6 +108,7 @@ func (s *Stream) scan(
 	}
 	return resp, nil
 }
+
 // take adds one entry to a page. A Superseded item passes every Topic filter, and the close
 // Record ends the page after the Superseded items written after it.
 func (s *Stream) take(
