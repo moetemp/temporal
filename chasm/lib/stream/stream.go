@@ -596,9 +596,9 @@ func producerKey(producer *streamservice.Producer) string {
 	return strings.Join([]string{producer.GetKind().String(), producer.GetId(), producer.GetRunId()}, "|")
 }
 
-// CompareEpochs compares two epochs field by field, in the order of the crate: the Workflow
-// Task's started event id, its attempt and its start time, then the attempt's scheduled time
-// and the attempt. An unset field compares as zero.
+// CompareEpochs compares two epochs field by field, in the order of the crate. The order is the
+// Workflow Task's started event id, its attempt and its start time, then the attempt's
+// scheduled time and the attempt. An unset field compares as zero.
 func CompareEpochs(a, b *streamservice.ProducerEpoch) int {
 	if c := compareInts(a.GetTaskStartedEventId(), b.GetTaskStartedEventId()); c != 0 {
 		return c
