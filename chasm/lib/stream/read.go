@@ -227,6 +227,9 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 			StartTime: timestamppb.New(now),
 		},
 	}
+	if wait, _ := ReadTimeout(in.Request); wait > 0 {
+		read.WaitDeadline = timestamppb.New(now.Add(wait))
+	}
 	if s.Phase == streampb.STREAM_PHASE_PENDING {
 		createWait := min(in.Request.GetCreateWait().AsDuration(), MaxWait)
 		if createWait <= 0 || in.Callback == nil {
