@@ -115,6 +115,9 @@ message RunTasks {
   repeated int64 last_failed = 5;
   // The run wrote a Record, so a retry run's withdrawal of it gets a Superseded Record.
   bool wrote = 6;
+  // The Local Activity tasks of the run that wrote Records and may still never complete. A
+  // Local Activity write with the run's last completed task withdraws those that didn't.
+  repeated temporal.api.streamservice.v1.WorkflowTaskEpoch open_local = 7;
 }
 
 // The Records of one append, with their offsets.

@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/server/common/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type harness struct {
@@ -559,4 +560,80 @@ func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	})
 	_, err = h.read(&streamservice.ReadRecordsRequest{FromOffset: b.GetFirstOffset()})
 	require.ErrorContains(t, err, ReasonExpired)
+}
+
+// localActivityWrite is a write of the Local Activity call of the run, dispatched by task
+// started, with the run's last completed task (0 before the first), as the crate's S110 test has.
+func localActivityWrite(call string, started, completed int64, topic string) *streamservice.AppendRecordsRequest {
+	return &streamservice.AppendRecordsRequest{
+		Producer: &streamservice.Producer{
+			Kind: streamservice.PRODUCER_KIND_LOCAL_ACTIVITY,
+			Id:   "la:run:" + call,
+			Epoch: &streamservice.ProducerEpoch{
+				TaskStartedEventId: started, TaskAttempt: 1,
+				TaskStartedTime: timestamppb.New(time.Unix(100+started, 0)), Attempt: 1,
+			},
+			RunId: "run",
+		},
+		Sequence:              1,
+		Records:               records(topic),
+		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: completed},
+	}
+}
+
+func TestLocalActivityOfATaskThatNeverCompletedIsWithdrawnByTheNextWrite(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	// Task 2 completed. Task 3 runs a Local Activity that writes, then task 3 fails.
+	_, err = h.appendRequest(localActivityWrite("call-1", 2, 0, "done"))
+	require.NoError(t, err)
+	_, err = h.appendRequest(localActivityWrite("call-2", 3, 2, "orphan"))
+	require.NoError(t, err)
+	// Task 4 takes another path and writes once.
+	other, err := h.appendRequest(localActivityWrite("call-3", 4, 2, "other"))
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"done", "orphan", "superseded", "other"}, topics(read))
+	require.Equal(t, read.GetRecords()[3].GetOffset(), other.GetFirstOffset())
+	require.Equal(t, &streamservice.Supersession{
+		ProducerKind:          streamservice.PRODUCER_KIND_WORKFLOW,
+		ProducerId:            "wf:run",
+		Epoch:                 &streamservice.ProducerEpoch{TaskStartedEventId: 4, TaskAttempt: 1, TaskStartedTime: timestamppb.New(time.Unix(104, 0))},
+		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: 2},
+		RunId:                 "run",
+	}, read.GetRecords()[2].GetSupersession())
+
+	// A late write of the orphaned call is fenced.
+	late := localActivityWrite("call-2", 3, 2, "late")
+	late.Sequence = 2
+	_, err = h.appendRequest(late)
+	require.ErrorContains(t, err, ReasonFenced)
+
+	// A later write that knows task 4 completed withdraws nothing more.
+	_, err = h.appendRequest(localActivityWrite("call-4", 7, 4, "later"))
+	require.NoError(t, err)
+	read, err = h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"done", "orphan", "superseded", "other", "later"}, topics(read))
+}
+
+func TestFailedTaskBeforeTheLastCompletedOneIsWithdrawnByItsID(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.appendRequest(localActivityWrite("call-1", 3, 2, "orphan"))
+	require.NoError(t, err)
+	// Task 3 failed and task 4 completed with no write here. Task 5 knows both.
+	next := localActivityWrite("call-2", 5, 4, "next")
+	next.FailedTasks = []int64{3}
+	_, err = h.appendRequest(next)
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"orphan", "superseded", "next"}, topics(read))
+	require.Equal(t, []int64{3}, read.GetRecords()[1].GetSupersession().GetFailedTasks())
 }

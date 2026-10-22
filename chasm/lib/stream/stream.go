@@ -214,36 +214,30 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && !settles {
 		return nil, NewError(ReasonClosed, "The Stream is closed")
 	}
-	w := Withdrawal{
-		PreviousCompleted: req.GetPreviousCompletedTask(),
-		FailedTasks:       req.GetFailedTasks(),
-		WithdrawRun:       req.GetWithdrawRun(),
-		Defer:             deferred,
+	w := Withdrawal{WithdrawRun: req.GetWithdrawRun(), Defer: deferred}
+	if producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
+		w.PreviousCompleted, w.FailedTasks = req.GetPreviousCompletedTask(), req.GetFailedTasks()
 	}
 	flagged, err := s.admit(producer, w)
 	if err != nil {
 		return nil, err
 	}
+	orphans, orphaned := s.orphans(req)
 
-	var entries []*streamservice.StreamRecord
-	if flagged {
-		entries = append(entries, supersededRecord(producer, w))
-	}
-	for _, record := range req.GetRecords() {
-		entries = append(entries, &streamservice.StreamRecord{
-			Kind:     streamservice.STREAM_RECORD_KIND_DATA,
-			Topic:    record.GetTopic(),
-			Producer: producer,
-			Body:     record.GetBody(),
-		})
-	}
+	entries := batchEntries(req, w, flagged, len(orphaned.withdrawn) > 0)
 	if err := s.checkSize(ctx, batchSize(entries), in.Limits); err != nil {
 		return nil, err
 	}
 
 	first, last := s.write(ctx, entries)
+	if len(orphaned.withdrawn) > 0 && len(entries) > 1 {
+		first = entries[1].GetOffset()
+	}
 	wrote := len(req.GetRecords()) > 0
 	s.settle(producer, w, wrote)
+	if orphans {
+		s.settleOrphans(producer, orphaned, wrote)
+	}
 	if s.Producers == nil {
 		s.Producers = make(map[string]*streampb.ProducerState)
 	}
@@ -268,6 +262,30 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	s.limitProducers(in.Limits.MaxProducers)
 	s.finish(ctx, in.Limits)
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
+}
+
+// batchEntries are the entries of one write: the orphans' Superseded Record, the batch's own
+// Superseded Record, then the Records.
+func batchEntries(req *streamservice.AppendRecordsRequest, w Withdrawal, flagged, orphans bool) []*streamservice.StreamRecord {
+	producer := req.GetProducer()
+	var entries []*streamservice.StreamRecord
+	// The orphans go in an entry of their own, since the batch's first entry may carry its own
+	// Superseded Record.
+	if orphans {
+		entries = append(entries, orphanRecord(req))
+	}
+	if flagged {
+		entries = append(entries, supersededRecord(producer, w))
+	}
+	for _, record := range req.GetRecords() {
+		entries = append(entries, &streamservice.StreamRecord{
+			Kind:     streamservice.STREAM_RECORD_KIND_DATA,
+			Topic:    record.GetTopic(),
+			Producer: producer,
+			Body:     record.GetBody(),
+		})
+	}
+	return entries
 }
 
 // checkSize refuses a batch over the batch limit, or one that the Stream can't take while its
