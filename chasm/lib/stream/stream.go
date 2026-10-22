@@ -207,11 +207,17 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	}
 	// A Workflow batch with no Records only settles its task facts, which a closed Stream
 	// still takes, as the Superseded Records after the close.
-	settles := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW && len(req.GetRecords()) == 0
+	deferred := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW && req.GetDeferWithdrawal()
+	settles := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW && len(req.GetRecords()) == 0 && !deferred
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && !settles {
 		return nil, NewError(ReasonClosed, "The Stream is closed")
 	}
-	w := Withdrawal{PreviousCompleted: req.GetPreviousCompletedTask(), FailedTasks: req.GetFailedTasks(), WithdrawRun: req.GetWithdrawRun()}
+	w := Withdrawal{
+		PreviousCompleted: req.GetPreviousCompletedTask(),
+		FailedTasks:       req.GetFailedTasks(),
+		WithdrawRun:       req.GetWithdrawRun(),
+		Defer:             deferred,
+	}
 	flagged, err := s.admit(producer, w)
 	if err != nil {
 		return nil, err

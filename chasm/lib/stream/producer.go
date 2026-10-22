@@ -13,6 +13,9 @@ type Withdrawal struct {
 	PreviousCompleted *streamservice.WorkflowTaskEpoch
 	FailedTasks       []int64
 	WithdrawRun       string
+	// A Workflow batch before a Local Activity, whose task facts come later. It withdraws no
+	// task and keeps no facts.
+	Defer bool
 }
 
 // admit runs the Producer checks of a write in the order of the crate's append script, and
@@ -38,7 +41,7 @@ func (s *Stream) admit(producer *streamservice.Producer, w Withdrawal) (bool, er
 		}
 		return s.withdrawsRun(w.WithdrawRun), nil
 	case streamservice.PRODUCER_KIND_WORKFLOW:
-		flagged := len(withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks).withdrawn) > 0
+		flagged := !w.Defer && len(withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks).withdrawn) > 0
 		return flagged || s.withdrawsRun(w.WithdrawRun), nil
 	default:
 		flagged := known != nil && known.GetHolds() != nil &&
@@ -65,7 +68,7 @@ func (s *Stream) settle(producer *streamservice.Producer, w Withdrawal, wroteRec
 		s.Runs[producer.GetRunId()] = run
 	}
 	task := taskOf(producer.GetEpoch())
-	if kind == streamservice.PRODUCER_KIND_WORKFLOW {
+	if kind == streamservice.PRODUCER_KIND_WORKFLOW && !w.Defer {
 		split := withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks)
 		run.Index = split.kept
 		run.Withdrawn = append(run.Withdrawn, split.withdrawn...)
@@ -90,12 +93,17 @@ func (s *Stream) withdrawsRun(run string) bool {
 }
 
 func supersededRecord(producer *streamservice.Producer, w Withdrawal) *streamservice.StreamRecord {
+	epoch := producer.GetEpoch()
+	if w.Defer {
+		// A deferred batch withdraws only the retry run's previous run, so no epoch goes with it.
+		epoch = nil
+	}
 	return &streamservice.StreamRecord{
 		Kind: streamservice.STREAM_RECORD_KIND_SUPERSEDED,
 		Supersession: &streamservice.Supersession{
 			ProducerKind:          producer.GetKind(),
 			ProducerId:            producer.GetId(),
-			Epoch:                 producer.GetEpoch(),
+			Epoch:                 epoch,
 			PreviousCompletedTask: w.PreviousCompleted,
 			FailedTasks:           w.FailedTasks,
 			WithdrawRun:           w.WithdrawRun,
