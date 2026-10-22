@@ -12,3 +12,9 @@ option go_package = "go.temporal.io/server/chasm/lib/stream/gen/streampb;streamp
 message StreamTimerTask {
   google.protobuf.Timestamp deadline = 1;
 }
+
+// Describes the owner's run chain of a Stream that closes with it. Nothing tells a Stream when a
+// Workflow closes, so the check runs on an interval while the Stream is open.
+message StreamOwnerCheckTask {
+  google.protobuf.Timestamp scheduled_time = 1;
+}
