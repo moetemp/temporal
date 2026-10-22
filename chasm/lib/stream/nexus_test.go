@@ -30,21 +30,6 @@ func TestNexusErrorFailsTheOperationWithTheReason(t *testing.T) {
 	require.Equal(t, unavailable, nexusError(unavailable))
 }
 
-func TestWorkflowProducerIsTheRun(t *testing.T) {
-	producer, err := Caller{WorkflowID: "wf", RunID: "run:1"}.producer(&streamservice.Producer{Id: "other"})
-	require.NoError(t, err)
-	require.Equal(t, &streamservice.Producer{
-		Kind:  streamservice.PRODUCER_KIND_WORKFLOW,
-		Id:    "wf:run%3A1",
-		RunId: "run:1",
-	}, producer)
-
-	_, err = Caller{}.producer(&streamservice.Producer{Kind: streamservice.PRODUCER_KIND_ACTIVITY, Id: "client:x"})
-	require.ErrorContains(t, err, ReasonInvalid)
-	_, err = Caller{}.producer(&streamservice.Producer{Kind: streamservice.PRODUCER_KIND_WORKFLOW, Id: "wf:x"})
-	require.ErrorContains(t, err, ReasonInvalid)
-}
-
 func TestProcessorRoutesByStreamID(t *testing.T) {
 	ns := namespace.NewLocalNamespaceForTest(
 		&persistencespb.NamespaceInfo{Id: "ns-id", Name: "ns"}, &persistencespb.NamespaceConfig{}, "active")
@@ -53,17 +38,17 @@ func TestProcessorRoutesByStreamID(t *testing.T) {
 	sp := newNexusServiceProcessor(ConfigProvider(dynamicconfig.NewCollection(collection, log.NewNoopLogger())))
 	ctx := chasm.NexusOperationProcessorContext{Namespace: ns, ReserializeInputPayload: true}
 
-	input := payloads.MustEncodeSingle(&streamservice.AppendRecordsRequest{Stream: &streamservice.StreamRef{Id: "chat-1"}})
-	result, err := sp.ProcessInput(ctx, "AppendRecords", input)
+	input := payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{Stream: &streamservice.StreamRef{Id: "chat-1"}})
+	result, err := sp.ProcessInput(ctx, "ReadRecords", input)
 	require.NoError(t, err)
 	require.Equal(t, chasm.NexusOperationRoutingKeyExecution{NamespaceID: "ns-id", BusinessID: "chat-1"}, result.RoutingKey)
-	var routed streamservice.AppendRecordsRequest
+	var routed streamservice.ReadRecordsRequest
 	require.NoError(t, payloads.Decode(&commonpb.Payloads{Payloads: []*commonpb.Payload{result.ReserializedInputPayload}}, &routed))
 	require.Equal(t, "ns", routed.GetNamespace())
 
-	_, err = sp.ProcessInput(ctx, "AppendRecords", payloads.MustEncodeSingle(&streamservice.AppendRecordsRequest{}))
+	_, err = sp.ProcessInput(ctx, "ReadRecords", payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{}))
 	require.ErrorContains(t, err, ReasonInvalid)
-	_, err = sp.ProcessInput(ctx, "AppendRecords", payloads.MustEncodeSingle(&streamservice.AppendRecordsRequest{
+	_, err = sp.ProcessInput(ctx, "ReadRecords", payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{
 		Namespace: "other",
 		Stream:    &streamservice.StreamRef{Id: "chat-1"},
 	}))
