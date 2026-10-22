@@ -251,6 +251,9 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 
 	first, last := s.write(ctx, entries)
 	s.LastWriteTime = timestamppb.New(ctx.Now(s))
+	if s.Producers == nil {
+		s.Producers = make(map[string]*streampb.ProducerState)
+	}
 	s.Producers[key] = &streampb.ProducerState{
 		Epoch:       producer.GetEpoch(),
 		Sequence:    in.Request.GetSequence(),
