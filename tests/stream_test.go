@@ -447,3 +447,32 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 	s.True(started)
 	s.Equal([]string{"turns"}, kindsAndTopics(&page))
 }
+
+func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	ctx := s.Context()
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+
+	// Task 3 writes before a Local Activity, with no task facts yet, then fails.
+	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: workflowWriter("run-1", 3), Sequence: 1,
+		Records: records("a"), DeferWithdrawal: true,
+	})
+	s.NoError(err)
+	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: workflowWriter("run-1", 7), Sequence: 1, Records: records("b"),
+		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: 2, Attempt: 1},
+		FailedTasks:           []int64{3},
+	})
+	s.NoError(err)
+
+	page, err := sc.ReadRecords(ctx, &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id)})
+	s.NoError(err)
+	s.Equal([]string{"a", "", "b"}, kindsAndTopics(page))
+	s.Equal(streamservice.STREAM_RECORD_KIND_SUPERSEDED, page.GetRecords()[1].GetKind())
+	s.Equal([]int64{3}, page.GetRecords()[1].GetSupersession().GetFailedTasks())
+}
