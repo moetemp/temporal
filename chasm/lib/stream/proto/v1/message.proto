@@ -29,7 +29,8 @@ enum StreamPhase {
 // The state of one Stream. It grows with the batches and the Producers, not with the Records.
 // The Records are in the batch data nodes.
 message StreamState {
-  reserved 18, 19, 20;
+  reserved 18, 19, 20, 22;
+  reserved "hold_records";
 
   StreamPhase phase = 1;
   // The Retention in effect, the Store default when the create had none.
@@ -62,11 +63,22 @@ message StreamState {
   temporal.api.streamservice.v1.Producer owner = 17;
   // The Stream closes with the result or the failure of its owner's run chain.
   bool close_with_run = 21;
-  // A Workflow Stream of a chain that is still open. Retention and the size cap drop none of its
-  // Records, since a reader's replay may need them, and an append past the cap is refused.
-  bool hold_records = 22;
+  // A Workflow Stream, nested in its chain's first run. Its reads see every Record that is still
+  // stored, so a replay of a read from the start begins where the read did.
+  bool nested = 23;
+  // The open Workflow runs that read the Stream, keyed by run id. The Retention, the size cap and
+  // the expiry drop no Record at or past the lowest floor, since the run's replay reads it again.
+  map<string, ReaderFloor> readers = 24;
+  // The deadline of the armed reader check, so an older task is a no-op.
+  google.protobuf.Timestamp readers_check_time = 25;
   // The deadline of the armed timer task, so an older task is a no-op.
   google.protobuf.Timestamp timer_deadline = 15;
+}
+
+// The lowest offset that one open Workflow run read.
+message ReaderFloor {
+  string workflow_id = 1;
+  int64 offset = 2;
 }
 
 message BatchInfo {

@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/nexus-rpc/sdk-go/nexus"
+	commonpb "go.temporal.io/api/common/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
@@ -50,6 +52,7 @@ func (wh *WorkflowHandler) StartNexusOperation(
 			Operation: req.GetOperation(),
 			Payload:   processed.ReserializedInputPayload,
 			RequestId: requestID,
+			Links:     workflowEventLinks(req.GetLinks()),
 		},
 	})
 	if err != nil {
@@ -81,4 +84,15 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	default:
 		return nil, serviceerror.NewInternal("unexpected Nexus start response")
 	}
+}
+
+// workflowEventLinks passes on the caller's Workflow links, so an operation knows the reading run.
+func workflowEventLinks(links []*commonpb.Link) []*nexuspb.Link {
+	var out []nexus.Link
+	for _, link := range links {
+		if event := link.GetWorkflowEvent(); event != nil {
+			out = append(out, commonnexus.ConvertLinkWorkflowEventToNexusLink(event))
+		}
+	}
+	return commonnexus.ConvertLinksToProto(out)
 }

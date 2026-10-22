@@ -38,12 +38,12 @@ func TestStreamTestSuite(t *testing.T) {
 	parallelsuite.Run(t, &StreamTestSuite{})
 }
 
-func (s *StreamTestSuite) newEnv() *testcore.TestEnv {
-	return testcore.NewEnv(s.T(),
+func (s *StreamTestSuite) newEnv(opts ...testcore.TestOption) *testcore.TestEnv {
+	return testcore.NewEnv(s.T(), append([]testcore.TestOption{
 		testcore.WithDynamicConfig(dynamicconfig.EnableChasm, true),
 		testcore.WithDynamicConfig(stream.Enabled, true),
 		testcore.WithDynamicConfig(dynamicconfig.EnableDirectNexusCalls, true),
-	)
+	}, opts...)...)
 }
 
 // streamCaller drives a Workflow by hand, since the SDK refuses the __temporal_system endpoint.
@@ -629,13 +629,19 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 }
 
 // directRead reads through the direct System Nexus call, which adds no History event.
-func (s *StreamTestSuite) directRead(env *testcore.TestEnv, req *streamservice.ReadRecordsRequest) (*streamservice.ReadRecordsResponse, *failurepb.Failure) {
+// A link names the reading Workflow run.
+func (s *StreamTestSuite) directRead(
+	env *testcore.TestEnv,
+	req *streamservice.ReadRecordsRequest,
+	links ...*commonpb.Link,
+) (*streamservice.ReadRecordsResponse, *failurepb.Failure) {
 	resp, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
 		Namespace: env.Namespace().String(),
 		Endpoint:  commonnexus.SystemEndpoint,
 		Service:   stream.ServiceName,
 		Operation: "ReadRecords",
 		Input:     payloads.MustEncodeSingle(req),
+		Links:     links,
 	})
 	s.NoError(err)
 	if failure := resp.GetOperationFailure().GetFailure(); failure != nil {
@@ -771,4 +777,71 @@ func (s *StreamTestSuite) TestAppendToAStreamThatIsNotThereFails() {
 		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: owned})
 	s.NoError(err)
 	s.Empty(page.GetRecords())
+}
+
+// A Workflow Stream that no Workflow reads trims past the size cap, so its writes go on.
+func (s *StreamTestSuite) TestWorkflowStreamWithNoReaderTrimsPastTheCap() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	var first int64
+	for sequence := int64(1); sequence <= 5; sequence++ {
+		resp, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: env.Namespace().String(), Stream: owned, Producer: workflowWriter(c.run.GetRunID(), 3),
+			Sequence: sequence, Records: []*streamservice.AppendRecord{
+				{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 1024*1024)}},
+			},
+		})
+		s.NoError(err)
+		if first == 0 {
+			first = resp.GetFirstOffset()
+		}
+	}
+
+	_, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned, FromOffset: first,
+	})
+	s.Equal(stream.ReasonExpired, status.Convert(err).Details()[0].(*streamservice.StreamErrorDetails).GetReason())
+}
+
+// The range that an open Workflow run read stays past the Retention, so its replay reads the same
+// page. When the run closes, the Retention trims it.
+func (s *StreamTestSuite) TestWorkflowReaderKeepsItsRangePastTheRetention() {
+	env := s.newEnv(testcore.WithDynamicConfig(stream.ReaderCheckInterval, time.Second))
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+	})
+	s.NoError(err)
+	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: clientProducer(), Sequence: 1, Records: records("a"),
+	})
+	s.NoError(err)
+
+	readerRun := s.newCaller(env).run
+	reader := &commonpb.Link{Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
+		Namespace: ns, WorkflowId: readerRun.GetID(), RunId: readerRun.GetRunID(),
+	}}}
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned}, reader)
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(page))
+
+	// Past the Retention, and past a reader check, the replay reads the same page.
+	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention and the check run on real time.
+	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, ToOffset: page.GetNextOffset()})
+	s.Nil(failure)
+	s.Equal(page.GetRecords(), again.GetRecords())
+	s.Equal(page.GetNextOffset(), again.GetNextOffset())
+
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), readerRun.GetID(), readerRun.GetRunID(), "reader done"))
+	s.Eventually(func() bool {
+		_, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()})
+		return failure != nil && causeType(failure) == stream.ReasonExpired
+	}, 10*time.Second, 200*time.Millisecond)
 }

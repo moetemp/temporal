@@ -36,7 +36,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
 	config := ConfigProvider(dynamicconfig.NewNoopCollection())
-	require.NoError(t, registry.Register(newLibrary(config, nil, nil, newTimerTaskHandler(config), nil)))
+	require.NoError(t, registry.Register(newLibrary(config, nil, nil, newTimerTaskHandler(config), nil, nil)))
 	ts := clock.NewEventTimeSource()
 	ts.Update(time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC))
 	engine := chasmtest.NewEngine(t, registry, chasmtest.WithTimeSource(ts))
@@ -516,23 +516,33 @@ func TestErrorsCarryTheReason(t *testing.T) {
 	require.Equal(t, ReasonFenced, details[0].(*streamservice.StreamErrorDetails).GetReason())
 }
 
-func TestHeldStreamRefusesPastTheCapAndKeepsItsRecords(t *testing.T) {
+// A reader's floor keeps its Records past the Retention and the cap, and the Records below it
+// trim. When the reader goes, the Retention trims the rest.
+func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	h := newHarness(t)
 	h.limits.MaxStoredBytes = 200
 	_, err := h.create(&streamservice.CreateStreamRequest{
 		StreamId: "chat-1", Retention: durationpb.New(time.Minute), Owner: workflowProducer(1),
 	})
 	require.NoError(t, err)
-	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), func(s *Stream, _ chasm.MutableContext, _ struct{}) (struct{}, error) {
-		s.HoldRecords = true
-		return struct{}{}, nil
-	}, struct{}{})
-	require.NoError(t, err)
-
 	_, err = h.append(activityProducer(1), 1, "a")
 	require.NoError(t, err)
-	big := &streamservice.AppendRecordsRequest{Producer: activityProducer(1), Sequence: 2, Records: []*streamservice.AppendRecord{
-		{Topic: "b", Body: &commonpb.Payload{Data: make([]byte, 300)}},
+	b, err := h.append(activityProducer(1), 2, "b")
+	require.NoError(t, err)
+	setReaders := func(fn func(*Stream, chasm.MutableContext) error) {
+		_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			return struct{}{}, fn(s, mctx)
+		}, struct{}{})
+		require.NoError(t, err)
+	}
+	setReaders(func(s *Stream, mctx chasm.MutableContext) error {
+		s.Nested = true
+		return s.AddReader(mctx, ReaderRun{WorkflowID: "wf", RunID: "run-1"},
+			&streamservice.ReadRecordsRequest{FromOffset: b.GetFirstOffset()}, h.limits)
+	})
+
+	big := &streamservice.AppendRecordsRequest{Producer: activityProducer(1), Sequence: 3, Records: []*streamservice.AppendRecord{
+		{Topic: "c", Body: &commonpb.Payload{Data: make([]byte, 300)}},
 	}}
 	_, err = h.appendRequest(big)
 	require.ErrorContains(t, err, ReasonTooLarge)
@@ -540,5 +550,13 @@ func TestHeldStreamRefusesPastTheCapAndKeepsItsRecords(t *testing.T) {
 	h.advance(2 * time.Minute)
 	all, err := h.read(&streamservice.ReadRecordsRequest{})
 	require.NoError(t, err)
-	require.Equal(t, []string{"a"}, topics(all))
+	require.Equal(t, []string{"b"}, topics(all))
+
+	setReaders(func(s *Stream, mctx chasm.MutableContext) error {
+		delete(s.Readers, "run-1")
+		s.ApplyDue(mctx, h.limits)
+		return nil
+	})
+	_, err = h.read(&streamservice.ReadRecordsRequest{FromOffset: b.GetFirstOffset()})
+	require.ErrorContains(t, err, ReasonExpired)
 }

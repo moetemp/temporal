@@ -14,6 +14,7 @@ var HistoryModule = fx.Module(
 		newGRPCHandler,
 		newTimerTaskHandler,
 		newCloseChainTaskHandler,
+		newReadersCheckTaskHandler,
 		newLibrary,
 	),
 	fx.Invoke(func(l *library, registry *chasm.Registry) error {
@@ -29,6 +30,6 @@ var FrontendModule = fx.Module(
 	// The frontend runs the operation processors of direct Nexus calls, and the Workflow
 	// component nests Streams, so the frontend registry has the library with no handlers.
 	fx.Invoke(func(config *Config, registry *chasm.Registry) error {
-		return registry.Register(newLibrary(config, nil, nil, nil, nil))
+		return registry.Register(newLibrary(config, nil, nil, nil, nil, nil))
 	}),
 )

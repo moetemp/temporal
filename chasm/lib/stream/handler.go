@@ -147,10 +147,7 @@ func (h *handler) CreateStream(
 	in := CreateInput{Request: req, Limits: limits}
 	var out CreateOutput
 	if t.nested {
-		out, err = update(ctx, t,
-			func(mctx chasm.MutableContext) (*Stream, error) {
-				return NewStream(mctx, streampb.STREAM_PHASE_PENDING), nil
-			},
+		out, err = update(ctx, t, newNestedStream,
 			func(s *Stream, mctx chasm.MutableContext) (CreateOutput, error) { return s.Create(mctx, in) })
 	} else {
 		out, err = h.createStandalone(ctx, t, in)
@@ -267,10 +264,7 @@ func (h *handler) ReadOrPark(
 	}
 	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Limits: limits}
 	if t.nested {
-		resp, err := update(ctx, t,
-			func(mctx chasm.MutableContext) (*Stream, error) {
-				return NewStream(mctx, streampb.STREAM_PHASE_PENDING), nil
-			},
+		resp, err := update(ctx, t, newNestedStream,
 			func(s *Stream, mctx chasm.MutableContext) (*streamservice.ReadRecordsResponse, error) {
 				return s.ReadOrPark(mctx, in)
 			})
@@ -312,10 +306,12 @@ const pollTick = 100 * time.Millisecond
 const longPollBuffer = time.Second
 
 // ReadRecords is a frontend read. It waits up to create_wait for the create and up to wait for
-// a Record, and answers an empty page after the wait.
+// a Record, and answers an empty page after the wait. A page of an open Workflow run, run, keeps
+// the run's floor on a Workflow Stream first, so no trim drops what it reads.
 func (h *handler) ReadRecords(
 	ctx context.Context,
 	req *streamservice.ReadRecordsRequest,
+	run *ReaderRun,
 ) (*streamservice.ReadRecordsResponse, error) {
 	t, limits, err := h.target(req.GetNamespace(), req.GetStream().GetId(), req.GetStream())
 	if err != nil {
@@ -334,6 +330,11 @@ func (h *handler) ReadRecords(
 	}
 	if err := h.applyDue(ctx, t, limits); err != nil {
 		return nil, streamError(ctx, t, err)
+	}
+	if run != nil && t.nested && !req.GetWakeOnly() {
+		if err := h.keepFloor(ctx, t, limits, req, *run); err != nil {
+			return nil, streamError(ctx, t, err)
+		}
 	}
 	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
 	if err != nil {
@@ -364,6 +365,21 @@ func (h *handler) ReadRecords(
 			return nil, streamError(ctx, t, err)
 		}
 	}
+}
+
+// keepFloor writes the run's floor only when the read lowers it, which is mostly its first page.
+func (h *handler) keepFloor(ctx context.Context, t target, limits Limits, req *streamservice.ReadRecordsRequest, run ReaderRun) error {
+	lowers, err := read(ctx, t, func(s *Stream, _ chasm.Context) (bool, error) {
+		_, ok := s.readerFloor(run.RunID, req)
+		return ok, nil
+	})
+	if err != nil || !lowers {
+		return err
+	}
+	_, err = update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
+		return struct{}{}, s.AddReader(mctx, run, req, limits)
+	})
+	return err
 }
 
 type pagedRead struct {
