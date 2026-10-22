@@ -53,6 +53,13 @@ func targetOf(namespaceID, streamID string, ref *streamservice.StreamRef) (targe
 	}, nil
 }
 
+// newHeldStream makes a Workflow Stream, which holds its Records while its chain is open.
+func newHeldStream(ctx chasm.MutableContext) (*Stream, error) {
+	s := NewStream(ctx, streampb.STREAM_PHASE_PENDING)
+	s.HoldRecords = true
+	return s, nil
+}
+
 func (t target) hostRef() chasm.ComponentRef {
 	return chasm.NewComponentRefByArchetypeID(t.key, chasm.WorkflowArchetypeID)
 }
@@ -174,10 +181,12 @@ func (h *closeChainTaskHandler) Execute(
 		func(h Host, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
 			for _, field := range h.NestedStreams() {
 				s := field.Get(mctx)
+				// The chain ended, so the Retention and the size cap apply from now on.
+				s.HoldRecords = false
 				if s.GetCloseWithRun() && s.Phase == streampb.STREAM_PHASE_OPEN {
 					s.close(mctx, s.GetOwner(), result, failure)
-					s.finish(mctx, limits)
 				}
+				s.finish(mctx, limits)
 			}
 			return struct{}{}, nil
 		}, struct{}{})

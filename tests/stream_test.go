@@ -9,6 +9,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	namespacepb "go.temporal.io/api/namespace/v1"
 	"go.temporal.io/api/streamservice/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -694,4 +695,47 @@ func (s *StreamTestSuite) TestWorkflowReadsDirectlyWithNoRecordsInHistory() {
 
 	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))})
 	s.Equal(stream.ReasonNotFound, causeType(failure))
+}
+
+// The first run of a chain keeps the chain's Streams after it closes, so the namespace retention
+// can't delete them while a later run still writes.
+func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
+	env := testcore.NewEnv(s.T(),
+		testcore.WithDedicatedCluster(),
+		testcore.WithDynamicConfig(stream.Enabled, true),
+		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionGlobal, time.Duration(0)),
+		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionLocal, time.Duration(0)),
+		testcore.WithDynamicConfig(dynamicconfig.RetentionTimerJitterDuration, time.Duration(0)),
+	)
+	_, err := env.FrontendClient().UpdateNamespace(s.Context(), &workflowservice.UpdateNamespaceRequest{
+		Namespace: env.Namespace().String(),
+		Config:    &namespacepb.NamespaceConfig{WorkflowExecutionRetentionTtl: durationpb.New(time.Second)},
+	})
+	s.NoError(err)
+	// Wait for the namespace cache to see the new retention.
+	<-time.After(2 * testcore.NamespaceCacheRefreshInterval)
+
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	c.respond(&commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
+			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.ContinueAsNewWorkflowExecutionCommandAttributes{
+				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
+				TaskQueue:    &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
+			},
+		},
+	})
+	// Several retentions of the first run pass while run 2 is open.
+	<-time.After(4 * time.Second)
+
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+		Producer: workflowWriter("run-2", 3), Sequence: 1, Records: records("late"),
+	})
+	s.NoError(err)
+	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned})
+	s.NoError(err)
+	s.Equal([]string{"late"}, kindsAndTopics(page))
 }

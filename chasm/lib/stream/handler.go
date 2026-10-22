@@ -81,7 +81,11 @@ func (h *handler) target(namespaceName, streamID string, ref *streamservice.Stre
 		return target{}, Limits{}, err
 	}
 	t, err := targetOf(namespaceID.String(), streamID, ref)
-	return t, h.config.LimitsFor(namespaceName), err
+	limits := h.config.LimitsFor(namespaceName)
+	if t.nested {
+		limits.MaxWorkflowStateBytes = int64(h.config.MaxWorkflowStateBytes(namespaceName))
+	}
+	return t, limits, err
 }
 
 var (

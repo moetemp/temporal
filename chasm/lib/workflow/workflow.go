@@ -117,6 +117,19 @@ func (w *Workflow) HasChainStreams(ctx chasm.Context, firstRunID string) bool {
 		wc.streamsEnabled(ctx.NamespaceEntry().Name().String())
 }
 
+// HoldsStreams says whether a Stream nested here is still readable, so the run must outlive the
+// namespace retention that would delete it. A chain that continues as new keeps writing to the
+// Streams of its first run.
+func (w *Workflow) HoldsStreams(ctx chasm.Context) bool {
+	for _, field := range w.Streams {
+		if s, ok := field.TryGet(ctx); ok && s.Phase != streampb.STREAM_PHASE_EXPIRED &&
+			s.Phase != streampb.STREAM_PHASE_ABANDONED {
+			return true
+		}
+	}
+	return false
+}
+
 // CloseChainStreams closes the chain's close-with-run Streams through a task on this run, which
 // reads this run's outcome and writes the first run on the same shard.
 func (w *Workflow) CloseChainStreams(ctx chasm.MutableContext, firstRunID string) {
