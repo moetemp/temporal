@@ -56,6 +56,13 @@ message StreamState {
   repeated string fenced_runs = 14;
   // The Workflow Task facts of each run that wrote, keyed by run id.
   map<string, RunTasks> runs = 16;
+  // The owner run of a Stream that closes with its run chain.
+  temporal.api.streamservice.v1.Producer owner = 17;
+  string owner_workflow_id = 18;
+  // The first run of the owner's chain.
+  string owner_first_run_id = 19;
+  // When the armed owner check runs, so an older check does nothing.
+  google.protobuf.Timestamp owner_check_time = 20;
   // The deadline of the armed timer task, so an older task is a no-op.
   google.protobuf.Timestamp timer_deadline = 15;
 }

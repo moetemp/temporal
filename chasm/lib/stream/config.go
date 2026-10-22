@@ -47,6 +47,13 @@ append past the cap drops the oldest batches, as the Retention does.`,
 retryable error, so the caller backs off.`,
 	)
 
+	OwnerCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
+		"stream.ownerCheckInterval",
+		10*time.Second,
+		`How often a Stream that closes with its run chain describes the owner Workflow. A closed,
+terminated or timed out owner closes the Stream within one interval.`,
+	)
+
 	MaxProducers = dynamicconfig.NewNamespaceIntSetting(
 		"stream.maxProducers",
 		1000,
@@ -63,6 +70,8 @@ type Config struct {
 	MaxBatchBytes    dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxParkedReads   dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxProducers     dynamicconfig.IntPropertyFnWithNamespaceFilter
+
+	OwnerCheckInterval dynamicconfig.DurationPropertyFnWithNamespaceFilter
 }
 
 func ConfigProvider(dc *dynamicconfig.Collection) *Config {
@@ -74,6 +83,8 @@ func ConfigProvider(dc *dynamicconfig.Collection) *Config {
 		MaxBatchBytes:    MaxBatchBytes.Get(dc),
 		MaxParkedReads:   MaxParkedReads.Get(dc),
 		MaxProducers:     MaxProducers.Get(dc),
+
+		OwnerCheckInterval: OwnerCheckInterval.Get(dc),
 	}
 }
 

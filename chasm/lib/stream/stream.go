@@ -111,6 +111,8 @@ func (s *Stream) Exists() bool {
 type CreateInput struct {
 	Request *streamservice.CreateStreamRequest
 	Limits  Limits
+	// How often a Stream that closes with its run chain checks the owner.
+	OwnerCheckInterval time.Duration
 }
 
 // CreateOutput is the answer of a create.
@@ -149,6 +151,12 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 		s.WorkflowOwned = in.Request.GetOwner().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW
 		s.CreateTime = now
 		s.LastWriteTime = now
+		if in.Request.GetCloseWithRun() {
+			s.Owner = in.Request.GetOwner()
+			s.OwnerWorkflowId = in.Request.GetRef().GetWorkflowId()
+			s.OwnerFirstRunId = in.Request.GetRef().GetFirstExecutionRunId()
+			s.armOwnerCheck(ctx, in.OwnerCheckInterval)
+		}
 		s.withdrawOnCreate(ctx, in.Request)
 		s.finish(ctx, in.Limits)
 		return CreateOutput{Created: true, Status: s.Status()}, nil
