@@ -1,8 +1,6 @@
 package tests
 
 import (
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -174,66 +172,78 @@ func kindsAndTopics(resp *streamservice.ReadRecordsResponse) []string {
 	return out
 }
 
-// causeType is the reason token of the Stream error under the Nexus operation failure.
+// causeType is the reason in the StreamErrorDetails under the Nexus operation failure.
 func causeType(failure *failurepb.Failure) string {
 	for f := failure; f != nil; f = f.GetCause() {
-		if t := f.GetApplicationFailureInfo().GetType(); strings.HasPrefix(t, "stream_") {
-			return t
+		if details := f.GetApplicationFailureInfo().GetDetails(); details != nil {
+			var d streamservice.StreamErrorDetails
+			if sdkconverter.PreferProtoDataConverter.FromPayloads(details, &d) == nil {
+				return d.GetReason()
+			}
 		}
 	}
 	return ""
 }
 
-func (s *StreamTestSuite) TestWorkflowCreateAppendReadClose() {
+// workflowWriter is the Producer of a Workflow run that writes through the Core extension.
+func workflowWriter(runID string, started int64) *streamservice.Producer {
+	return &streamservice.Producer{
+		Kind:  streamservice.PRODUCER_KIND_WORKFLOW,
+		Id:    "wf:" + runID,
+		Epoch: &streamservice.ProducerEpoch{TaskStartedEventId: started, TaskAttempt: 1},
+		RunId: runID,
+	}
+}
+
+func (s *StreamTestSuite) TestWorkflowReadAndDescribe() {
 	env := s.newEnv()
+	sc := s.streamClient(env)
 	c := s.newCaller(env)
+	ctx := s.Context()
+	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
+	writer := workflowWriter("run-1", 3)
 
-	var created streamservice.CreateStreamResponse
-	s.Nil(c.call(streamOp{"CreateStream", &streamservice.CreateStreamRequest{StreamId: id}}, &created))
-	s.True(created.GetCreated())
-	s.Equal(streamservice.STREAM_STATUS_OPEN, created.GetStatus())
-
-	var appended streamservice.AppendRecordsResponse
-	s.Nil(c.call(streamOp{"AppendRecords", &streamservice.AppendRecordsRequest{Stream: ref(id), Records: records("turns", "tools")}}, &appended))
-	s.Equal(appended.GetFirstOffset()+1, appended.GetLastOffset())
+	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id, Owner: writer})
+	s.NoError(err)
+	appended, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: writer, Sequence: 1, Records: records("turns", "tools"),
+	})
+	s.NoError(err)
 
 	var page streamservice.ReadRecordsResponse
 	failure, started := c.outcome(c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0], &page)
 	s.Nil(failure)
 	s.False(started)
 	s.Equal([]string{"turns", "tools"}, kindsAndTopics(&page))
-	s.Equal(streamservice.PRODUCER_KIND_WORKFLOW, page.GetRecords()[0].GetProducer().GetKind())
 
 	var described streamservice.DescribeStreamResponse
 	s.Nil(c.call(streamOp{"DescribeStream", &streamservice.DescribeStreamRequest{Stream: ref(id)}}, &described))
 	s.Equal(appended.GetLastOffset(), described.GetLastOffset())
 
-	s.Nil(c.call(streamOp{"CloseStream", &streamservice.CloseStreamRequest{Stream: ref(id), Result: payload.EncodeString("done")}}, &streamservice.CloseStreamResponse{}))
-
+	_, err = sc.CloseStream(ctx, &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: writer, Result: payload.EncodeString("done")})
+	s.NoError(err)
 	var last streamservice.ReadRecordsResponse
 	s.Nil(c.call(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id), FromOffset: page.GetNextOffset()}}, &last))
 	s.Equal([]string{"close"}, kindsAndTopics(&last))
 	s.True(last.GetDone())
-
-	failure = c.call(streamOp{"AppendRecords", &streamservice.AppendRecordsRequest{Stream: ref(id), Records: records("late")}}, &appended)
-	s.Equal(stream.ReasonClosed, causeType(failure))
 }
 
 func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
 	env := s.newEnv()
+	sc := s.streamClient(env)
 	c := s.newCaller(env)
+	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
-	s.Nil(c.call(streamOp{"CreateStream", &streamservice.CreateStreamRequest{StreamId: id}}, &streamservice.CreateStreamResponse{}))
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
 
 	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id), Topics: []string{"turns"}}})[0]
-	appends := c.schedule(
-		streamOp{"AppendRecords", &streamservice.AppendRecordsRequest{Stream: ref(id), Records: records("other")}},
-		streamOp{"AppendRecords", &streamservice.AppendRecordsRequest{Stream: ref(id), Records: records("turns")}},
-	)
-	for _, id := range appends {
-		failure, _ := c.outcome(id, &streamservice.AppendRecordsResponse{})
-		s.Nil(failure)
+	for i, topic := range []string{"other", "turns"} {
+		_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: int64(i + 1), Records: records(topic),
+		})
+		s.NoError(err)
 	}
 
 	var page streamservice.ReadRecordsResponse
@@ -245,12 +255,13 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
 
 func (s *StreamTestSuite) TestWorkflowReadEndsOnAutoClose() {
 	env := s.newEnv()
+	sc := s.streamClient(env)
 	c := s.newCaller(env)
 	id := testcore.RandomizeStr("chat")
-	s.Nil(c.call(streamOp{"CreateStream", &streamservice.CreateStreamRequest{
-		StreamId:  id,
-		AutoClose: durationpb.New(2 * time.Second),
-	}}, &streamservice.CreateStreamResponse{}))
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
+		Namespace: env.Namespace().String(), StreamId: id, AutoClose: durationpb.New(2 * time.Second),
+	})
+	s.NoError(err)
 
 	var page streamservice.ReadRecordsResponse
 	failure, started := c.outcome(c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0], &page)
@@ -260,13 +271,11 @@ func (s *StreamTestSuite) TestWorkflowReadEndsOnAutoClose() {
 	s.True(page.GetDone())
 }
 
-func (s *StreamTestSuite) TestWorkflowAppendToAMissingStreamFails() {
+func (s *StreamTestSuite) TestWorkflowReadOfAMissingStreamFails() {
 	env := s.newEnv()
 	c := s.newCaller(env)
-	failure := c.call(streamOp{"AppendRecords", &streamservice.AppendRecordsRequest{
-		Stream:  ref(testcore.RandomizeStr("missing")),
-		Records: records("a"),
-	}}, &streamservice.AppendRecordsResponse{})
+	failure := c.call(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))}},
+		&streamservice.ReadRecordsResponse{})
 	s.Equal(stream.ReasonNotFound, causeType(failure))
 }
 
@@ -329,8 +338,10 @@ func (s *StreamTestSuite) TestClientCreateAppendReadClose() {
 	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
 		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 2, Records: records("late"),
 	})
-	s.Equal(stream.ReasonClosed, stream.ReasonOf(errors.New(status.Convert(err).Message())))
-	s.Equal(codes.FailedPrecondition, status.Code(err))
+	st := status.Convert(err)
+	s.Equal(codes.FailedPrecondition, st.Code())
+	s.Len(st.Details(), 1)
+	s.Equal(stream.ReasonClosed, st.Details()[0].(*streamservice.StreamErrorDetails).GetReason())
 }
 
 func (s *StreamTestSuite) TestClientReadWaitsForAnAppend() {
@@ -410,29 +421,6 @@ func (s *StreamTestSuite) TestClientReadEndsOnAutoClose() {
 	described, err := sc.DescribeStream(ctx, &streamservice.DescribeStreamRequest{Namespace: ns, Stream: ref(id)})
 	s.NoError(err)
 	s.Equal(streamservice.STREAM_STATUS_CLOSED, described.GetStatus())
-}
-
-func (s *StreamTestSuite) TestWorkflowReadWokenByAClientAppend() {
-	env := s.newEnv()
-	sc := s.streamClient(env)
-	c := s.newCaller(env)
-	ns := env.Namespace().String()
-	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
-	s.NoError(err)
-
-	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0]
-	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("turns"),
-	})
-	s.NoError(err)
-
-	var page streamservice.ReadRecordsResponse
-	failure, started := c.outcome(read, &page)
-	s.Nil(failure)
-	s.True(started)
-	s.Equal([]string{"turns"}, kindsAndTopics(&page))
-	s.Equal(streamservice.PRODUCER_KIND_CLIENT, page.GetRecords()[0].GetProducer().GetKind())
 }
 
 func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
