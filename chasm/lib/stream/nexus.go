@@ -86,6 +86,11 @@ func (o *readRecordsOperation) Start(
 	// A direct call has no callback, so it reads as the frontend does, a long poll up to wait.
 	if options.CallbackURL == "" {
 		resp, err := o.handler.ReadRecords(ctx, req, readerRunOf(options.Links))
+		// The direct call answers a gRPC error, and the frontend masks a Nexus handler error as
+		// Unknown. So the reader cap stays ResourceExhausted, which the caller backs off on.
+		if _, ok := errors.AsType[*serviceerror.ResourceExhausted](err); ok {
+			return nil, err
+		}
 		if err != nil {
 			return nil, nexusError(err)
 		}

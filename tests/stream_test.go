@@ -11,6 +11,7 @@ import (
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
 	namespacepb "go.temporal.io/api/namespace/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/streamservice/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -931,4 +932,26 @@ func (s *StreamTestSuite) TestReadLinkToNoRunKeepsNoFloor() {
 	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention runs on real time.
 	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()})
 	s.Equal(stream.ReasonExpired, causeType(failure))
+}
+
+// A direct page past the reader cap fails with ResourceExhausted, which the caller backs off on.
+func (s *StreamTestSuite) TestDirectReadPastTheReaderCapIsResourceExhausted() {
+	env := s.newEnv(testcore.WithDynamicConfig(stream.MaxWorkflowReaders, 0))
+	sc := s.streamClient(env)
+	owned, _ := s.createWithRetention(sc, env, s.newCaller(env))
+	reader := s.newCaller(env).run
+
+	_, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
+		Namespace: env.Namespace().String(),
+		Endpoint:  commonnexus.SystemEndpoint,
+		Service:   stream.ServiceName,
+		Operation: "ReadRecords",
+		Input:     payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{Stream: owned}),
+		Links: []*commonpb.Link{{Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
+			Namespace: env.Namespace().String(), WorkflowId: reader.GetID(), RunId: reader.GetRunID(),
+		}}}},
+	})
+	var exhausted *serviceerror.ResourceExhausted
+	s.ErrorAs(err, &exhausted)
+	s.Contains(exhausted.Error(), "most Workflow readers")
 }
