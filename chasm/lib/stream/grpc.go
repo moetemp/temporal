@@ -18,7 +18,7 @@ func newGRPCHandler(h *handler) *grpcHandler {
 }
 
 func (g *grpcHandler) CreateStream(ctx context.Context, req *streampb.CreateStreamRequest) (*streampb.CreateStreamResponse, error) {
-	resp, err := g.handler.CreateStream(ctx, req.GetFrontendRequest(), Caller{})
+	resp, err := g.handler.CreateStream(ctx, req.GetFrontendRequest())
 	if err != nil {
 		return nil, err
 	}
@@ -26,7 +26,7 @@ func (g *grpcHandler) CreateStream(ctx context.Context, req *streampb.CreateStre
 }
 
 func (g *grpcHandler) AppendRecords(ctx context.Context, req *streampb.AppendRecordsRequest) (*streampb.AppendRecordsResponse, error) {
-	resp, err := g.handler.AppendRecords(ctx, req.GetFrontendRequest(), Caller{})
+	resp, err := g.handler.AppendRecords(ctx, req.GetFrontendRequest())
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ func (g *grpcHandler) AppendRecords(ctx context.Context, req *streampb.AppendRec
 }
 
 func (g *grpcHandler) CloseStream(ctx context.Context, req *streampb.CloseStreamRequest) (*streampb.CloseStreamResponse, error) {
-	resp, err := g.handler.CloseStream(ctx, req.GetFrontendRequest(), Caller{})
+	resp, err := g.handler.CloseStream(ctx, req.GetFrontendRequest())
 	if err != nil {
 		return nil, err
 	}
