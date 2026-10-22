@@ -3,7 +3,6 @@ package stream
 import (
 	"errors"
 
-	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/streamservice/v1"
@@ -63,20 +62,8 @@ func (r *ParkedRead) GetNexusCompletion(ctx chasm.Context, _ string) (nexusrpc.C
 		opts.Result = result
 		return opts, nil
 	}
-	state := nexus.OperationStateFailed
-	if r.GetFailure().GetCanceledFailureInfo() != nil {
-		state = nexus.OperationStateCanceled
-	}
-	nf, err := commonnexus.TemporalFailureToNexusFailure(r.GetFailure())
+	opErr, err := operationError(r.GetFailure())
 	if err != nil {
-		return nexusrpc.CompleteOperationOptions{}, err
-	}
-	opErr := &nexus.OperationError{
-		State:   state,
-		Message: r.GetFailure().GetMessage(),
-		Cause:   &nexus.FailureError{Failure: nf},
-	}
-	if err := nexusrpc.MarkAsWrapperError(nexusrpc.DefaultFailureConverter(), opErr); err != nil {
 		return nexusrpc.CompleteOperationOptions{}, err
 	}
 	opts.Error = opErr

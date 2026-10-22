@@ -34,7 +34,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
 	config := ConfigProvider(dynamicconfig.NewNoopCollection())
-	require.NoError(t, registry.Register(newLibrary(newTimerTaskHandler(config))))
+	require.NoError(t, registry.Register(newLibrary(config, nil, newTimerTaskHandler(config))))
 	ts := clock.NewEventTimeSource()
 	ts.Update(time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC))
 	engine := chasmtest.NewEngine(t, registry, chasmtest.WithTimeSource(ts))

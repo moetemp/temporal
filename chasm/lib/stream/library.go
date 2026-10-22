@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"github.com/nexus-rpc/sdk-go/nexus"
 	"go.temporal.io/server/chasm"
 )
 
@@ -17,11 +18,13 @@ var (
 type library struct {
 	chasm.UnimplementedLibrary
 
-	timer *timerTaskHandler
+	config  *Config
+	handler *handler
+	timer   *timerTaskHandler
 }
 
-func newLibrary(timer *timerTaskHandler) *library {
-	return &library{timer: timer}
+func newLibrary(config *Config, handler *handler, timer *timerTaskHandler) *library {
+	return &library{config: config, handler: handler, timer: timer}
 }
 
 // NewNilLibrary creates a Library with nil handlers, for readers that only decode a Stream.
@@ -47,4 +50,18 @@ func (l *library) Tasks() []*chasm.RegistrableTask {
 	return []*chasm.RegistrableTask{
 		chasm.NewRegistrablePureTask("timer", l.timer),
 	}
+}
+
+func (l *library) NexusServices() []*nexus.Service {
+	if l.handler == nil {
+		return nil
+	}
+	return []*nexus.Service{newNexusService(l.handler)}
+}
+
+func (l *library) NexusServiceProcessors() []*chasm.NexusServiceProcessor {
+	if l.config == nil {
+		return nil
+	}
+	return []*chasm.NexusServiceProcessor{newNexusServiceProcessor(l.config)}
 }
