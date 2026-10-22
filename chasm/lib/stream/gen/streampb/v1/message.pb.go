@@ -144,6 +144,9 @@ type StreamState struct {
 	Owner *v1.Producer `protobuf:"bytes,17,opt,name=owner,proto3" json:"owner,omitempty"`
 	// The Stream closes with the result or the failure of its owner's run chain.
 	CloseWithRun bool `protobuf:"varint,21,opt,name=close_with_run,json=closeWithRun,proto3" json:"close_with_run,omitempty"`
+	// A Workflow Stream of a chain that is still open. Retention and the size cap drop none of its
+	// Records, since a reader's replay may need them, and an append past the cap is refused.
+	HoldRecords bool `protobuf:"varint,22,opt,name=hold_records,json=holdRecords,proto3" json:"hold_records,omitempty"`
 	// The deadline of the armed timer task, so an older task is a no-op.
 	TimerDeadline *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=timer_deadline,json=timerDeadline,proto3" json:"timer_deadline,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -295,6 +298,13 @@ func (x *StreamState) GetOwner() *v1.Producer {
 func (x *StreamState) GetCloseWithRun() bool {
 	if x != nil {
 		return x.CloseWithRun
+	}
+	return false
+}
+
+func (x *StreamState) GetHoldRecords() bool {
+	if x != nil {
+		return x.HoldRecords
 	}
 	return false
 }
@@ -708,7 +718,7 @@ var File_temporal_server_chasm_lib_stream_proto_v1_message_proto protoreflect.Fi
 
 const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"7temporal/server/chasm/lib/stream/proto/v1/message.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a9temporal/server/chasm/lib/callback/proto/v1/message.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%temporal/api/failure/v1/message.proto\x1a2temporal/api/streamservice/v1/stream_service.proto\"\x8b\n" +
+	"7temporal/server/chasm/lib/stream/proto/v1/message.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a9temporal/server/chasm/lib/callback/proto/v1/message.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%temporal/api/failure/v1/message.proto\x1a2temporal/api/streamservice/v1/stream_service.proto\"\xae\n" +
 	"\n" +
 	"\vStreamState\x12L\n" +
 	"\x05phase\x18\x01 \x01(\x0e26.temporal.server.chasm.lib.stream.proto.v1.StreamPhaseR\x05phase\x127\n" +
@@ -732,7 +742,8 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"fencedRuns\x12T\n" +
 	"\x04runs\x18\x10 \x03(\v2@.temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntryR\x04runs\x12=\n" +
 	"\x05owner\x18\x11 \x01(\v2'.temporal.api.streamservice.v1.ProducerR\x05owner\x12$\n" +
-	"\x0eclose_with_run\x18\x15 \x01(\bR\fcloseWithRun\x12A\n" +
+	"\x0eclose_with_run\x18\x15 \x01(\bR\fcloseWithRun\x12!\n" +
+	"\fhold_records\x18\x16 \x01(\bR\vholdRecords\x12A\n" +
 	"\x0etimer_deadline\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\rtimerDeadline\x1av\n" +
 	"\x0eProducersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12N\n" +

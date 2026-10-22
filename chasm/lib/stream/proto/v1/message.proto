@@ -62,6 +62,9 @@ message StreamState {
   temporal.api.streamservice.v1.Producer owner = 17;
   // The Stream closes with the result or the failure of its owner's run chain.
   bool close_with_run = 21;
+  // A Workflow Stream of a chain that is still open. Retention and the size cap drop none of its
+  // Records, since a reader's replay may need them, and an append past the cap is refused.
+  bool hold_records = 22;
   // The deadline of the armed timer task, so an older task is a no-op.
   google.protobuf.Timestamp timer_deadline = 15;
 }

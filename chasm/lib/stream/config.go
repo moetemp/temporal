@@ -34,6 +34,13 @@ Stream that a client or an Activity created lives one Retention after its last w
 append past the cap drops the oldest batches, as the Retention does.`,
 	)
 
+	MaxWorkflowStateBytes = dynamicconfig.NewNamespaceIntSetting(
+		"stream.maxWorkflowStateBytes",
+		6*1024*1024,
+		`The most mutable state bytes a Workflow may reach through appends to its Streams. It stays
+under limit.mutableStateSize.error, which terminates a run.`,
+	)
+
 	MaxBatchBytes = dynamicconfig.NewNamespaceIntSetting(
 		"stream.maxBatchBytes",
 		2*1024*1024,
@@ -61,8 +68,10 @@ type Config struct {
 	SafetyTTL        dynamicconfig.DurationPropertyFnWithNamespaceFilter
 	MaxStoredBytes   dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxBatchBytes    dynamicconfig.IntPropertyFnWithNamespaceFilter
-	MaxParkedReads   dynamicconfig.IntPropertyFnWithNamespaceFilter
-	MaxProducers     dynamicconfig.IntPropertyFnWithNamespaceFilter
+
+	MaxWorkflowStateBytes dynamicconfig.IntPropertyFnWithNamespaceFilter
+	MaxParkedReads        dynamicconfig.IntPropertyFnWithNamespaceFilter
+	MaxProducers          dynamicconfig.IntPropertyFnWithNamespaceFilter
 }
 
 func ConfigProvider(dc *dynamicconfig.Collection) *Config {
@@ -72,8 +81,10 @@ func ConfigProvider(dc *dynamicconfig.Collection) *Config {
 		SafetyTTL:        SafetyTTL.Get(dc),
 		MaxStoredBytes:   MaxStoredBytes.Get(dc),
 		MaxBatchBytes:    MaxBatchBytes.Get(dc),
-		MaxParkedReads:   MaxParkedReads.Get(dc),
-		MaxProducers:     MaxProducers.Get(dc),
+
+		MaxWorkflowStateBytes: MaxWorkflowStateBytes.Get(dc),
+		MaxParkedReads:        MaxParkedReads.Get(dc),
+		MaxProducers:          MaxProducers.Get(dc),
 	}
 }
 
@@ -85,6 +96,8 @@ type Limits struct {
 	MaxBatchBytes    int64
 	MaxParkedReads   int
 	MaxProducers     int
+	// Set for a Workflow Stream only.
+	MaxWorkflowStateBytes int64
 }
 
 // LimitsFor resolves the limits of a namespace.
