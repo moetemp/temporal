@@ -124,9 +124,14 @@ type CreateOutput struct {
 	Status  streamservice.StreamStatus
 }
 
-// StartStream is the start of an execution for a create.
+// StartStream is the start of an execution for a create. The start opens the Stream itself,
+// since a child node that the update of a new execution adds is not persisted.
 func StartStream(ctx chasm.MutableContext, in CreateInput) (*Stream, error) {
-	return NewStream(ctx, streampb.STREAM_PHASE_PENDING), nil
+	s := NewStream(ctx, streampb.STREAM_PHASE_PENDING)
+	if _, err := s.Create(ctx, in); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // Create opens the Stream, idempotently for one Retention and one auto close.

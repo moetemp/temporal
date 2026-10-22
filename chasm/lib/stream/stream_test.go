@@ -53,14 +53,13 @@ func (h *harness) ref() chasm.ComponentRef {
 }
 
 func (h *harness) create(req *streamservice.CreateStreamRequest) (CreateOutput, error) {
-	result, err := chasm.UpdateWithStartExecution(h.ctx, h.key, StartStream,
-		func(s *Stream, ctx chasm.MutableContext, in CreateInput) (CreateOutput, error) {
-			return s.Create(ctx, in)
-		},
+	result, err := chasm.UpdateWithStartExecution(h.ctx, h.key, StartStream, (*Stream).Create,
 		CreateInput{Request: req, Limits: h.limits},
 		chasm.WithBusinessIDPolicy(chasm.BusinessIDReusePolicyRejectDuplicate, chasm.BusinessIDConflictPolicyUseExisting),
 	)
-	return result.UpdateOutput, err
+	out := result.UpdateOutput
+	out.Created = out.Created || result.Created
+	return out, err
 }
 
 func (h *harness) append(producer *streamservice.Producer, sequence int64, topics ...string) (*streamservice.AppendRecordsResponse, error) {
