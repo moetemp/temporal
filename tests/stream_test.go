@@ -295,6 +295,9 @@ func (s *StreamTestSuite) TestClientCreateAppendReadClose() {
 	created, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
 	s.NoError(err)
 	s.True(created.GetCreated())
+	generated, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns})
+	s.NoError(err)
+	s.NotEmpty(generated.GetStream().GetId())
 
 	appended, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
 		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("turns", "tool/search"),
@@ -430,4 +433,29 @@ func (s *StreamTestSuite) TestWorkflowReadWokenByAClientAppend() {
 	s.True(started)
 	s.Equal([]string{"turns"}, kindsAndTopics(&page))
 	s.Equal(streamservice.PRODUCER_KIND_CLIENT, page.GetRecords()[0].GetProducer().GetKind())
+}
+
+func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream:     ref(id),
+		CreateWait: durationpb.New(30 * time.Second),
+	}})[0]
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("turns"),
+	})
+	s.NoError(err)
+
+	var page streamservice.ReadRecordsResponse
+	failure, started := c.outcome(read, &page)
+	s.Nil(failure)
+	s.True(started)
+	s.Equal([]string{"turns"}, kindsAndTopics(&page))
 }
