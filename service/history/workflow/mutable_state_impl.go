@@ -7503,13 +7503,16 @@ func (ms *MutableStateImpl) processCloseCallbacksHsm() error {
 
 // processCloseCallbacksChasm triggers "WorkflowClosed" callbacks using the CHASM implementation.
 func (ms *MutableStateImpl) processCloseCallbacksChasm() error {
-	wf, _, err := ms.ChasmWorkflowComponentReadOnly(context.Background())
+	wf, readCtx, err := ms.ChasmWorkflowComponentReadOnly(context.Background())
 	if err != nil {
 		return err
 	}
 
+	firstRunID := ms.GetExecutionInfo().GetFirstExecutionRunId()
+	hasStreams := wf.HasChainStreams(readCtx, firstRunID)
+
 	// Return early if there are no chasm callbacks to process.
-	if len(wf.Callbacks) == 0 && len(wf.Updates) == 0 {
+	if len(wf.Callbacks) == 0 && len(wf.Updates) == 0 && !hasStreams {
 		return nil
 	}
 
@@ -7519,6 +7522,9 @@ func (ms *MutableStateImpl) processCloseCallbacksChasm() error {
 		return err
 	}
 
+	if hasStreams {
+		wf.CloseChainStreams(ctx, firstRunID)
+	}
 	return wf.ProcessCloseCallbacks(ctx)
 }
 

@@ -87,7 +87,11 @@ func (c *StreamServiceLayeredClient) callCreateStreamNoRetry(
 		}
 		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
 	}()
-	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), request.GetFrontendRequest().GetStreamId(), c.numShards)
+	businessID := request.GetFrontendRequest().GetRef().GetWorkflowId()
+	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStreamId()
+	}
+	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
 	op := func(ctx context.Context, client StreamServiceClient) error {
 		var err error
 		ctx, cancel := context.WithTimeout(ctx, history.DefaultTimeout)
@@ -130,7 +134,11 @@ func (c *StreamServiceLayeredClient) callAppendRecordsNoRetry(
 		}
 		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
 	}()
-	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), request.GetFrontendRequest().GetStream().GetId(), c.numShards)
+	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
+	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetId()
+	}
+	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
 	op := func(ctx context.Context, client StreamServiceClient) error {
 		var err error
 		ctx, cancel := context.WithTimeout(ctx, history.DefaultTimeout)
@@ -173,7 +181,11 @@ func (c *StreamServiceLayeredClient) callCloseStreamNoRetry(
 		}
 		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
 	}()
-	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), request.GetFrontendRequest().GetStream().GetId(), c.numShards)
+	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
+	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetId()
+	}
+	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
 	op := func(ctx context.Context, client StreamServiceClient) error {
 		var err error
 		ctx, cancel := context.WithTimeout(ctx, history.DefaultTimeout)
@@ -216,7 +228,11 @@ func (c *StreamServiceLayeredClient) callReadRecordsNoRetry(
 		}
 		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
 	}()
-	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), request.GetFrontendRequest().GetStream().GetId(), c.numShards)
+	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
+	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetId()
+	}
+	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
 	op := func(ctx context.Context, client StreamServiceClient) error {
 		var err error
 		ctx, cancel := context.WithTimeout(ctx, history.DefaultTimeout)
@@ -259,7 +275,11 @@ func (c *StreamServiceLayeredClient) callDescribeStreamNoRetry(
 		}
 		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
 	}()
-	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), request.GetFrontendRequest().GetStream().GetId(), c.numShards)
+	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
+	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetId()
+	}
+	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
 	op := func(ctx context.Context, client StreamServiceClient) error {
 		var err error
 		ctx, cancel := context.WithTimeout(ctx, history.DefaultTimeout)

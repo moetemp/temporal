@@ -8,6 +8,8 @@ import (
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/callback"
 	"go.temporal.io/server/chasm/lib/nexusoperation"
+	"go.temporal.io/server/chasm/lib/stream"
+	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
 	chasmworkflowpb "go.temporal.io/server/chasm/lib/workflow/gen/workflowpb/v1"
 	"go.temporal.io/server/common/callbacks"
 	"go.temporal.io/server/service/history/historybuilder"
@@ -47,6 +49,10 @@ type Workflow struct {
 
 	// Updates indexed by update ID, used to store the update components.
 	Updates chasm.Map[string, *WorkflowUpdate]
+
+	// Streams are the native Streams of the run chain, keyed by Stream id. They nest in the
+	// chain's first run, since a run's tree doesn't move to the next run.
+	Streams chasm.Map[string, *stream.Stream]
 }
 
 func NewWorkflow(
@@ -90,6 +96,31 @@ func (w *Workflow) ProcessCloseCallbacks(ctx chasm.MutableContext) error {
 		return err
 	}
 	return w.ProcessAllUpdateCloseCallbacks(ctx)
+}
+
+// NestedStreams returns the Streams of the run chain. It implements [stream.Host].
+func (w *Workflow) NestedStreams() chasm.Map[string, *stream.Stream] {
+	if w.Streams == nil {
+		w.Streams = make(chasm.Map[string, *stream.Stream])
+	}
+	return w.Streams
+}
+
+// HasChainStreams says whether the final close of this run may have Streams to close: its own,
+// or, for a later run of a chain, the ones nested in the chain's first run.
+func (w *Workflow) HasChainStreams(ctx chasm.Context, firstRunID string) bool {
+	if len(w.Streams) > 0 {
+		return true
+	}
+	wc := workflowContextFromChasm(ctx)
+	return firstRunID != ctx.ExecutionKey().RunID && wc != nil && wc.streamsEnabled != nil &&
+		wc.streamsEnabled(ctx.NamespaceEntry().Name().String())
+}
+
+// CloseChainStreams closes the chain's close-with-run Streams through a task on this run, which
+// reads this run's outcome and writes the first run on the same shard.
+func (w *Workflow) CloseChainStreams(ctx chasm.MutableContext, firstRunID string) {
+	ctx.AddTask(w, chasm.TaskAttributes{}, &streampb.StreamCloseChainTask{FirstRunId: firstRunID})
 }
 
 // ProcessAllUpdateCloseCallbacks triggers callbacks for all updates without touching

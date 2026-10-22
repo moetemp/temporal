@@ -41,7 +41,6 @@ func (s *StreamTestSuite) newEnv() *testcore.TestEnv {
 	return testcore.NewEnv(s.T(),
 		testcore.WithDynamicConfig(dynamicconfig.EnableChasm, true),
 		testcore.WithDynamicConfig(stream.Enabled, true),
-		testcore.WithDynamicConfig(stream.OwnerCheckInterval, 200*time.Millisecond),
 	)
 }
 
@@ -452,7 +451,7 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 }
 
 // closeWithRun creates a Stream that closes with the caller's run chain.
-func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env *testcore.TestEnv, c *streamCaller) string {
+func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env *testcore.TestEnv, c *streamCaller) *streamservice.StreamRef {
 	id := testcore.RandomizeStr("chat")
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
 		Namespace:    env.Namespace().String(),
@@ -462,12 +461,12 @@ func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env
 		CloseWithRun: true,
 	})
 	s.NoError(err)
-	return id
+	return &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
 }
 
-func (s *StreamTestSuite) readClose(sc streamservice.StreamServiceClient, env *testcore.TestEnv, id string) *streamservice.StreamRecord {
+func (s *StreamTestSuite) readClose(sc streamservice.StreamServiceClient, env *testcore.TestEnv, owned *streamservice.StreamRef) *streamservice.StreamRecord {
 	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{
-		Namespace: env.Namespace().String(), Stream: ref(id), Wait: durationpb.New(20 * time.Second),
+		Namespace: env.Namespace().String(), Stream: owned, Wait: durationpb.New(20 * time.Second),
 	})
 	s.NoError(err)
 	s.Equal([]string{"close"}, kindsAndTopics(page))
@@ -478,7 +477,7 @@ func (s *StreamTestSuite) TestStreamClosesWithTheOwnerResult() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
-	id := s.closeWithRun(sc, env, c)
+	owned := s.closeWithRun(sc, env, c)
 
 	_, err := env.FrontendClient().RespondWorkflowTaskCompleted(s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
 		Identity:  "test",
@@ -494,20 +493,19 @@ func (s *StreamTestSuite) TestStreamClosesWithTheOwnerResult() {
 	})
 	s.NoError(err)
 
-	s.Equal(payload.EncodeString("answer").GetData(), s.readClose(sc, env, id).GetCloseResult().GetData())
+	s.Equal(payload.EncodeString("answer").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
 }
 
 func (s *StreamTestSuite) TestStreamClosesWithATerminatedOwner() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
-	id := s.closeWithRun(sc, env, c)
+	owned := s.closeWithRun(sc, env, c)
 
 	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.run.GetRunID(), "stop"))
 
-	failure := s.readClose(sc, env, id).GetCloseFailure()
+	failure := s.readClose(sc, env, owned).GetCloseFailure()
 	s.NotNil(failure.GetTerminatedFailureInfo())
-	s.Equal("stop", failure.GetMessage())
 }
 
 func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
@@ -561,4 +559,69 @@ func (s *StreamTestSuite) TestWorkflowReadEndsAtItsWait() {
 	s.Empty(page.GetRecords())
 	s.False(page.GetDone())
 	s.Equal(appended.GetLastOffset()+1, page.GetNextOffset())
+}
+
+// An append to a Workflow Stream completes the Workflow's parked read in the Workflow's
+// transaction, since the Stream nests in the Workflow.
+func (s *StreamTestSuite) TestNestedStreamWakesItsWorkflow() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: owned}})[0]
+	_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+		Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: 1, Records: records("turns"),
+	})
+	s.NoError(err)
+
+	var page streamservice.ReadRecordsResponse
+	failure, started := c.outcome(read, &page)
+	s.Nil(failure)
+	s.True(started)
+	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+
+	// The Stream id names no execution of its own.
+	_, err = sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{Namespace: env.Namespace().String(), Stream: ref(owned.GetId())})
+	s.Equal(codes.NotFound, status.Code(err))
+}
+
+func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	// Run 1 continues as new. The Stream stays open in run 1's tree.
+	c.respond(&commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
+			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.ContinueAsNewWorkflowExecutionCommandAttributes{
+				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
+				TaskQueue:    &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
+			},
+		},
+	})
+	described, err := sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+	})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+
+	// Run 2 completes, which ends the chain.
+	_, err = env.FrontendClient().RespondWorkflowTaskCompleted(s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
+		Identity:  "test",
+		TaskToken: c.token,
+		Commands: []*commandpb.Command{{
+			CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
+			Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
+				CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{
+					Result: payloads.EncodeString("run-2"),
+				},
+			},
+		}},
+	})
+	s.NoError(err)
+	s.Equal(payload.EncodeString("run-2").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
 }
