@@ -54,9 +54,10 @@ func (s *Stream) Page(
 		limit = n
 	}
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && from > s.CloseOffset {
+		records, after := s.afterClose(ctx, from)
 		return &streamservice.ReadRecordsResponse{
-			Records:    []*streamservice.StreamRecord{s.closeRecord(ctx)},
-			NextOffset: max(from, s.CloseOffset+1),
+			Records:    append(records, s.closeRecord(ctx)),
+			NextOffset: max(from, after),
 			Done:       true,
 		}, true, nil
 	}
@@ -102,16 +103,34 @@ func (s *Stream) scan(
 				}
 				continue
 			}
-			kind := entry.GetKind()
-			// A Superseded item passes every Topic filter, and so does the close Record.
-			if kind != streamservice.STREAM_RECORD_KIND_DATA || passes(req, entry.GetTopic()) {
-				resp.Records = append(resp.Records, common.CloneProto(entry))
-			}
-			resp.Done = kind == streamservice.STREAM_RECORD_KIND_CLOSE
+			s.take(ctx, req, resp, entry)
 		}
 	}
 	return resp, nil
 }
+// take adds one entry to a page. A Superseded item passes every Topic filter, and the close
+// Record ends the page after the Superseded items written after it.
+func (s *Stream) take(
+	ctx chasm.Context,
+	req *streamservice.ReadRecordsRequest,
+	resp *streamservice.ReadRecordsResponse,
+	entry *streamservice.StreamRecord,
+) {
+	switch entry.GetKind() {
+	case streamservice.STREAM_RECORD_KIND_CLOSE:
+		records, after := s.afterClose(ctx, entry.GetOffset()+1)
+		resp.Records = append(append(resp.Records, records...), common.CloneProto(entry))
+		resp.NextOffset = max(resp.NextOffset, after)
+		resp.Done = true
+	case streamservice.STREAM_RECORD_KIND_SUPERSEDED:
+		resp.Records = append(resp.Records, common.CloneProto(entry))
+	default:
+		if passes(req, entry.GetTopic()) {
+			resp.Records = append(resp.Records, common.CloneProto(entry))
+		}
+	}
+}
+
 func passes(req *streamservice.ReadRecordsRequest, topic string) bool {
 	if len(req.GetTopics()) == 0 && len(req.GetTopicPrefixes()) == 0 {
 		return true
@@ -127,6 +146,29 @@ func passes(req *streamservice.ReadRecordsRequest, topic string) bool {
 		}
 	}
 	return false
+}
+
+// afterClose gives the Superseded items written after the close from the offset from, and the
+// offset after the last entry, zero if none. A Workflow Task that completes after the close
+// still withdraws, and a reader stops at the close Record, so a page puts them before it.
+func (s *Stream) afterClose(ctx chasm.Context, from int64) ([]*streamservice.StreamRecord, int64) {
+	var records []*streamservice.StreamRecord
+	var after int64
+	for _, info := range s.Index {
+		if info.GetLastOffset() < from || info.GetLastOffset() <= s.CloseOffset {
+			continue
+		}
+		for _, entry := range s.Batches[info.GetFirstOffset()].Get(ctx).GetRecords() {
+			if entry.GetOffset() < from || entry.GetOffset() <= s.CloseOffset {
+				continue
+			}
+			after = entry.GetOffset() + 1
+			if entry.GetKind() == streamservice.STREAM_RECORD_KIND_SUPERSEDED {
+				records = append(records, common.CloneProto(entry))
+			}
+		}
+	}
+	return records, after
 }
 
 func (s *Stream) closeRecord(ctx chasm.Context) *streamservice.StreamRecord {

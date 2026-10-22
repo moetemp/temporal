@@ -138,6 +138,8 @@ type StreamState struct {
 	Producers map[string]*ProducerState `protobuf:"bytes,13,rep,name=producers,proto3" json:"producers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Runs that a retry run withdrew. Their Producers are fenced.
 	FencedRuns []string `protobuf:"bytes,14,rep,name=fenced_runs,json=fencedRuns,proto3" json:"fenced_runs,omitempty"`
+	// The Workflow Task facts of each run that wrote, keyed by run id.
+	Runs map[string]*RunTasks `protobuf:"bytes,16,rep,name=runs,proto3" json:"runs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// The deadline of the armed timer task, so an older task is a no-op.
 	TimerDeadline *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=timer_deadline,json=timerDeadline,proto3" json:"timer_deadline,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -272,6 +274,13 @@ func (x *StreamState) GetFencedRuns() []string {
 	return nil
 }
 
+func (x *StreamState) GetRuns() map[string]*RunTasks {
+	if x != nil {
+		return x.Runs
+	}
+	return nil
+}
+
 func (x *StreamState) GetTimerDeadline() *timestamppb.Timestamp {
 	if x != nil {
 		return x.TimerDeadline
@@ -340,14 +349,17 @@ func (x *BatchInfo) GetBytes() int64 {
 }
 
 type ProducerState struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	Epoch    *v1.ProducerEpoch      `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Sequence int64                  `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The newest epoch. A lower one is fenced.
+	Epoch *v1.ProducerEpoch `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// The last sequence of that epoch.
+	Sequence int64 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
 	// The offsets of the last batch, which a resend of it gets again.
 	FirstOffset int64 `protobuf:"varint,3,opt,name=first_offset,json=firstOffset,proto3" json:"first_offset,omitempty"`
 	LastOffset  int64 `protobuf:"varint,4,opt,name=last_offset,json=lastOffset,proto3" json:"last_offset,omitempty"`
-	// The Nexus request of the last batch from a Workflow, whose retries carry the same id.
-	RequestId     string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// The epoch of the newest batch with Records, outside Workflow code. The first batch of a
+	// higher epoch withdraws them.
+	Holds         *v1.ProducerEpoch `protobuf:"bytes,6,opt,name=holds,proto3" json:"holds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -410,11 +422,101 @@ func (x *ProducerState) GetLastOffset() int64 {
 	return 0
 }
 
-func (x *ProducerState) GetRequestId() string {
+func (x *ProducerState) GetHolds() *v1.ProducerEpoch {
 	if x != nil {
-		return x.RequestId
+		return x.Holds
 	}
-	return ""
+	return nil
+}
+
+// The Workflow Task facts of one run, as the crate's task index keeps them.
+type RunTasks struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The tasks of the run and of its Local Activities that wrote Records and are not settled.
+	Index []*v1.WorkflowTaskEpoch `protobuf:"bytes,1,rep,name=index,proto3" json:"index,omitempty"`
+	// The tasks a Superseded Record withdrew. A Local Activity of one of them is fenced.
+	Withdrawn []*v1.WorkflowTaskEpoch `protobuf:"bytes,2,rep,name=withdrawn,proto3" json:"withdrawn,omitempty"`
+	// The facts of the run's last Workflow batch, which also fence a Local Activity of a task they
+	// withdraw.
+	LastTask      *v1.WorkflowTaskEpoch `protobuf:"bytes,3,opt,name=last_task,json=lastTask,proto3" json:"last_task,omitempty"`
+	LastCompleted *v1.WorkflowTaskEpoch `protobuf:"bytes,4,opt,name=last_completed,json=lastCompleted,proto3" json:"last_completed,omitempty"`
+	LastFailed    []int64               `protobuf:"varint,5,rep,packed,name=last_failed,json=lastFailed,proto3" json:"last_failed,omitempty"`
+	// The run wrote a Record, so a retry run's withdrawal of it gets a Superseded Record.
+	Wrote         bool `protobuf:"varint,6,opt,name=wrote,proto3" json:"wrote,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RunTasks) Reset() {
+	*x = RunTasks{}
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RunTasks) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RunTasks) ProtoMessage() {}
+
+func (x *RunTasks) ProtoReflect() protoreflect.Message {
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RunTasks.ProtoReflect.Descriptor instead.
+func (*RunTasks) Descriptor() ([]byte, []int) {
+	return file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RunTasks) GetIndex() []*v1.WorkflowTaskEpoch {
+	if x != nil {
+		return x.Index
+	}
+	return nil
+}
+
+func (x *RunTasks) GetWithdrawn() []*v1.WorkflowTaskEpoch {
+	if x != nil {
+		return x.Withdrawn
+	}
+	return nil
+}
+
+func (x *RunTasks) GetLastTask() *v1.WorkflowTaskEpoch {
+	if x != nil {
+		return x.LastTask
+	}
+	return nil
+}
+
+func (x *RunTasks) GetLastCompleted() *v1.WorkflowTaskEpoch {
+	if x != nil {
+		return x.LastCompleted
+	}
+	return nil
+}
+
+func (x *RunTasks) GetLastFailed() []int64 {
+	if x != nil {
+		return x.LastFailed
+	}
+	return nil
+}
+
+func (x *RunTasks) GetWrote() bool {
+	if x != nil {
+		return x.Wrote
+	}
+	return false
 }
 
 // The Records of one append, with their offsets.
@@ -427,7 +529,7 @@ type RecordBatch struct {
 
 func (x *RecordBatch) Reset() {
 	*x = RecordBatch{}
-	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[3]
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -439,7 +541,7 @@ func (x *RecordBatch) String() string {
 func (*RecordBatch) ProtoMessage() {}
 
 func (x *RecordBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[3]
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -452,7 +554,7 @@ func (x *RecordBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordBatch.ProtoReflect.Descriptor instead.
 func (*RecordBatch) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDescGZIP(), []int{3}
+	return file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *RecordBatch) GetRecords() []*v1.StreamRecord {
@@ -484,7 +586,7 @@ type ParkedReadState struct {
 
 func (x *ParkedReadState) Reset() {
 	*x = ParkedReadState{}
-	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[4]
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -496,7 +598,7 @@ func (x *ParkedReadState) String() string {
 func (*ParkedReadState) ProtoMessage() {}
 
 func (x *ParkedReadState) ProtoReflect() protoreflect.Message {
-	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[4]
+	mi := &file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -509,7 +611,7 @@ func (x *ParkedReadState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParkedReadState.ProtoReflect.Descriptor instead.
 func (*ParkedReadState) Descriptor() ([]byte, []int) {
-	return file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDescGZIP(), []int{4}
+	return file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ParkedReadState) GetRequest() *v1.ReadRecordsRequest {
@@ -579,7 +681,7 @@ var File_temporal_server_chasm_lib_stream_proto_v1_message_proto protoreflect.Fi
 
 const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"7temporal/server/chasm/lib/stream/proto/v1/message.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a9temporal/server/chasm/lib/callback/proto/v1/message.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%temporal/api/failure/v1/message.proto\x1a2temporal/api/streamservice/v1/stream_service.proto\"\xd0\a\n" +
+	"7temporal/server/chasm/lib/stream/proto/v1/message.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a9temporal/server/chasm/lib/callback/proto/v1/message.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%temporal/api/failure/v1/message.proto\x1a2temporal/api/streamservice/v1/stream_service.proto\"\x94\t\n" +
 	"\vStreamState\x12L\n" +
 	"\x05phase\x18\x01 \x01(\x0e26.temporal.server.chasm.lib.stream.proto.v1.StreamPhaseR\x05phase\x127\n" +
 	"\tretention\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\tretention\x128\n" +
@@ -599,24 +701,35 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"\fstored_bytes\x18\f \x01(\x03R\vstoredBytes\x12c\n" +
 	"\tproducers\x18\r \x03(\v2E.temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntryR\tproducers\x12\x1f\n" +
 	"\vfenced_runs\x18\x0e \x03(\tR\n" +
-	"fencedRuns\x12A\n" +
+	"fencedRuns\x12T\n" +
+	"\x04runs\x18\x10 \x03(\v2@.temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntryR\x04runs\x12A\n" +
 	"\x0etimer_deadline\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\rtimerDeadline\x1av\n" +
 	"\x0eProducersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12N\n" +
-	"\x05value\x18\x02 \x01(\v28.temporal.server.chasm.lib.stream.proto.v1.ProducerStateR\x05value:\x028\x01\"e\n" +
+	"\x05value\x18\x02 \x01(\v28.temporal.server.chasm.lib.stream.proto.v1.ProducerStateR\x05value:\x028\x01\x1al\n" +
+	"\tRunsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12I\n" +
+	"\x05value\x18\x02 \x01(\v23.temporal.server.chasm.lib.stream.proto.v1.RunTasksR\x05value:\x028\x01\"e\n" +
 	"\tBatchInfo\x12!\n" +
 	"\ffirst_offset\x18\x01 \x01(\x03R\vfirstOffset\x12\x1f\n" +
 	"\vlast_offset\x18\x02 \x01(\x03R\n" +
 	"lastOffset\x12\x14\n" +
-	"\x05bytes\x18\x03 \x01(\x03R\x05bytes\"\xd2\x01\n" +
+	"\x05bytes\x18\x03 \x01(\x03R\x05bytes\"\xfd\x01\n" +
 	"\rProducerState\x12B\n" +
 	"\x05epoch\x18\x01 \x01(\v2,.temporal.api.streamservice.v1.ProducerEpochR\x05epoch\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12!\n" +
 	"\ffirst_offset\x18\x03 \x01(\x03R\vfirstOffset\x12\x1f\n" +
 	"\vlast_offset\x18\x04 \x01(\x03R\n" +
-	"lastOffset\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x05 \x01(\tR\trequestId\"T\n" +
+	"lastOffset\x12B\n" +
+	"\x05holds\x18\x06 \x01(\v2,.temporal.api.streamservice.v1.ProducerEpochR\x05holdsJ\x04\b\x05\x10\x06\"\x81\x03\n" +
+	"\bRunTasks\x12F\n" +
+	"\x05index\x18\x01 \x03(\v20.temporal.api.streamservice.v1.WorkflowTaskEpochR\x05index\x12N\n" +
+	"\twithdrawn\x18\x02 \x03(\v20.temporal.api.streamservice.v1.WorkflowTaskEpochR\twithdrawn\x12M\n" +
+	"\tlast_task\x18\x03 \x01(\v20.temporal.api.streamservice.v1.WorkflowTaskEpochR\blastTask\x12W\n" +
+	"\x0elast_completed\x18\x04 \x01(\v20.temporal.api.streamservice.v1.WorkflowTaskEpochR\rlastCompleted\x12\x1f\n" +
+	"\vlast_failed\x18\x05 \x03(\x03R\n" +
+	"lastFailed\x12\x14\n" +
+	"\x05wrote\x18\x06 \x01(\bR\x05wrote\"T\n" +
 	"\vRecordBatch\x12E\n" +
 	"\arecords\x18\x01 \x03(\v2+.temporal.api.streamservice.v1.StreamRecordR\arecords\"\xb3\x04\n" +
 	"\x0fParkedReadState\x12K\n" +
@@ -653,48 +766,58 @@ func file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDescGZIP() 
 }
 
 var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_goTypes = []any{
 	(StreamPhase)(0),               // 0: temporal.server.chasm.lib.stream.proto.v1.StreamPhase
 	(*StreamState)(nil),            // 1: temporal.server.chasm.lib.stream.proto.v1.StreamState
 	(*BatchInfo)(nil),              // 2: temporal.server.chasm.lib.stream.proto.v1.BatchInfo
 	(*ProducerState)(nil),          // 3: temporal.server.chasm.lib.stream.proto.v1.ProducerState
-	(*RecordBatch)(nil),            // 4: temporal.server.chasm.lib.stream.proto.v1.RecordBatch
-	(*ParkedReadState)(nil),        // 5: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState
-	nil,                            // 6: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry
-	(*durationpb.Duration)(nil),    // 7: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),  // 8: google.protobuf.Timestamp
-	(*v1.ProducerEpoch)(nil),       // 9: temporal.api.streamservice.v1.ProducerEpoch
-	(*v1.StreamRecord)(nil),        // 10: temporal.api.streamservice.v1.StreamRecord
-	(*v1.ReadRecordsRequest)(nil),  // 11: temporal.api.streamservice.v1.ReadRecordsRequest
-	(*v1.ReadRecordsResponse)(nil), // 12: temporal.api.streamservice.v1.ReadRecordsResponse
-	(*v11.Failure)(nil),            // 13: temporal.api.failure.v1.Failure
-	(*v12.CallbackMetadata)(nil),   // 14: temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
+	(*RunTasks)(nil),               // 4: temporal.server.chasm.lib.stream.proto.v1.RunTasks
+	(*RecordBatch)(nil),            // 5: temporal.server.chasm.lib.stream.proto.v1.RecordBatch
+	(*ParkedReadState)(nil),        // 6: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState
+	nil,                            // 7: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry
+	nil,                            // 8: temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry
+	(*durationpb.Duration)(nil),    // 9: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),  // 10: google.protobuf.Timestamp
+	(*v1.ProducerEpoch)(nil),       // 11: temporal.api.streamservice.v1.ProducerEpoch
+	(*v1.WorkflowTaskEpoch)(nil),   // 12: temporal.api.streamservice.v1.WorkflowTaskEpoch
+	(*v1.StreamRecord)(nil),        // 13: temporal.api.streamservice.v1.StreamRecord
+	(*v1.ReadRecordsRequest)(nil),  // 14: temporal.api.streamservice.v1.ReadRecordsRequest
+	(*v1.ReadRecordsResponse)(nil), // 15: temporal.api.streamservice.v1.ReadRecordsResponse
+	(*v11.Failure)(nil),            // 16: temporal.api.failure.v1.Failure
+	(*v12.CallbackMetadata)(nil),   // 17: temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
 }
 var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_depIdxs = []int32{
 	0,  // 0: temporal.server.chasm.lib.stream.proto.v1.StreamState.phase:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamPhase
-	7,  // 1: temporal.server.chasm.lib.stream.proto.v1.StreamState.retention:type_name -> google.protobuf.Duration
-	7,  // 2: temporal.server.chasm.lib.stream.proto.v1.StreamState.auto_close:type_name -> google.protobuf.Duration
-	8,  // 3: temporal.server.chasm.lib.stream.proto.v1.StreamState.create_time:type_name -> google.protobuf.Timestamp
-	8,  // 4: temporal.server.chasm.lib.stream.proto.v1.StreamState.last_write_time:type_name -> google.protobuf.Timestamp
-	8,  // 5: temporal.server.chasm.lib.stream.proto.v1.StreamState.close_time:type_name -> google.protobuf.Timestamp
+	9,  // 1: temporal.server.chasm.lib.stream.proto.v1.StreamState.retention:type_name -> google.protobuf.Duration
+	9,  // 2: temporal.server.chasm.lib.stream.proto.v1.StreamState.auto_close:type_name -> google.protobuf.Duration
+	10, // 3: temporal.server.chasm.lib.stream.proto.v1.StreamState.create_time:type_name -> google.protobuf.Timestamp
+	10, // 4: temporal.server.chasm.lib.stream.proto.v1.StreamState.last_write_time:type_name -> google.protobuf.Timestamp
+	10, // 5: temporal.server.chasm.lib.stream.proto.v1.StreamState.close_time:type_name -> google.protobuf.Timestamp
 	2,  // 6: temporal.server.chasm.lib.stream.proto.v1.StreamState.index:type_name -> temporal.server.chasm.lib.stream.proto.v1.BatchInfo
-	6,  // 7: temporal.server.chasm.lib.stream.proto.v1.StreamState.producers:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry
-	8,  // 8: temporal.server.chasm.lib.stream.proto.v1.StreamState.timer_deadline:type_name -> google.protobuf.Timestamp
-	9,  // 9: temporal.server.chasm.lib.stream.proto.v1.ProducerState.epoch:type_name -> temporal.api.streamservice.v1.ProducerEpoch
-	10, // 10: temporal.server.chasm.lib.stream.proto.v1.RecordBatch.records:type_name -> temporal.api.streamservice.v1.StreamRecord
-	11, // 11: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.request:type_name -> temporal.api.streamservice.v1.ReadRecordsRequest
-	8,  // 12: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.create_deadline:type_name -> google.protobuf.Timestamp
-	8,  // 13: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.start_time:type_name -> google.protobuf.Timestamp
-	12, // 14: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.response:type_name -> temporal.api.streamservice.v1.ReadRecordsResponse
-	13, // 15: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.failure:type_name -> temporal.api.failure.v1.Failure
-	14, // 16: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.callback_metadata:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
-	3,  // 17: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.ProducerState
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	7,  // 7: temporal.server.chasm.lib.stream.proto.v1.StreamState.producers:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry
+	8,  // 8: temporal.server.chasm.lib.stream.proto.v1.StreamState.runs:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry
+	10, // 9: temporal.server.chasm.lib.stream.proto.v1.StreamState.timer_deadline:type_name -> google.protobuf.Timestamp
+	11, // 10: temporal.server.chasm.lib.stream.proto.v1.ProducerState.epoch:type_name -> temporal.api.streamservice.v1.ProducerEpoch
+	11, // 11: temporal.server.chasm.lib.stream.proto.v1.ProducerState.holds:type_name -> temporal.api.streamservice.v1.ProducerEpoch
+	12, // 12: temporal.server.chasm.lib.stream.proto.v1.RunTasks.index:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	12, // 13: temporal.server.chasm.lib.stream.proto.v1.RunTasks.withdrawn:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	12, // 14: temporal.server.chasm.lib.stream.proto.v1.RunTasks.last_task:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	12, // 15: temporal.server.chasm.lib.stream.proto.v1.RunTasks.last_completed:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	13, // 16: temporal.server.chasm.lib.stream.proto.v1.RecordBatch.records:type_name -> temporal.api.streamservice.v1.StreamRecord
+	14, // 17: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.request:type_name -> temporal.api.streamservice.v1.ReadRecordsRequest
+	10, // 18: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.create_deadline:type_name -> google.protobuf.Timestamp
+	10, // 19: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.start_time:type_name -> google.protobuf.Timestamp
+	15, // 20: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.response:type_name -> temporal.api.streamservice.v1.ReadRecordsResponse
+	16, // 21: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.failure:type_name -> temporal.api.failure.v1.Failure
+	17, // 22: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.callback_metadata:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
+	3,  // 23: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.ProducerState
+	4,  // 24: temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.RunTasks
+	25, // [25:25] is the sub-list for method output_type
+	25, // [25:25] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_stream_proto_v1_message_proto_init() }
@@ -708,7 +831,7 @@ func file_temporal_server_chasm_lib_stream_proto_v1_message_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc), len(file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

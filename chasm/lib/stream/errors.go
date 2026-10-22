@@ -5,6 +5,9 @@ import (
 	"strings"
 
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/streamservice/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // The reason tokens of the Brook Stream crate. Each error message starts with one, as in
@@ -37,22 +40,30 @@ var reasons = []string{
 	ReasonUnsupported,
 }
 
-// NewError builds the service error of a reason, with the status code the crate gives it.
+// NewError builds the service error of a reason, with the status code the crate gives it and
+// StreamErrorDetails in the status details.
 func NewError(reason string, format string, args ...any) error {
-	message := reason + ": " + fmt.Sprintf(format, args...)
+	st := status.New(reasonCode(reason), reason+": "+fmt.Sprintf(format, args...))
+	if detailed, err := st.WithDetails(&streamservice.StreamErrorDetails{Reason: reason}); err == nil {
+		st = detailed
+	}
+	return serviceerror.FromStatus(st)
+}
+
+func reasonCode(reason string) codes.Code {
 	switch reason {
 	case ReasonNotFound, ReasonExpired:
-		return serviceerror.NewNotFound(message)
+		return codes.NotFound
 	case ReasonClosed, ReasonFenced, ReasonSequence:
-		return serviceerror.NewFailedPrecondition(message)
+		return codes.FailedPrecondition
 	case ReasonAlreadyExists:
-		return serviceerror.NewAlreadyExists(message)
+		return codes.AlreadyExists
 	case ReasonOffset, ReasonTooLarge, ReasonInvalid:
-		return serviceerror.NewInvalidArgument(message)
+		return codes.InvalidArgument
 	case ReasonUnsupported:
-		return serviceerror.NewUnimplemented(message)
+		return codes.Unimplemented
 	default:
-		return serviceerror.NewUnavailable(message)
+		return codes.Unavailable
 	}
 }
 
