@@ -2,7 +2,9 @@ package frontend
 
 import (
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 
 	"github.com/gorilla/mux"
 	otellog "go.opentelemetry.io/otel/log"
@@ -14,10 +16,12 @@ import (
 	nexusoperationpb "go.temporal.io/server/chasm/lib/nexusoperation/gen/nexusoperationpb/v1"
 	chasmscheduler "go.temporal.io/server/chasm/lib/scheduler"
 	"go.temporal.io/server/chasm/lib/scheduler/gen/schedulerpb/v1"
+	chasmstream "go.temporal.io/server/chasm/lib/stream"
 	chasmtests "go.temporal.io/server/chasm/lib/tests"
 	chasmworkflow "go.temporal.io/server/chasm/lib/workflow"
 	"go.temporal.io/server/client"
 	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/api"
 	"go.temporal.io/server/common/archiver"
 	"go.temporal.io/server/common/archiver/provider"
 	"go.temporal.io/server/common/authorization"
@@ -158,6 +162,7 @@ var Module = fx.Options(
 	chasmworkflow.Module,
 	chasmcallback.Module,
 	activity.FrontendModule,
+	chasmstream.FrontendModule,
 	fx.Provide(visibility.ChasmVisibilityManagerProvider),
 	fx.Provide(chasm.ChasmVisibilityInterceptorProvider),
 )
@@ -170,6 +175,7 @@ func NewServiceProvider(
 	handler Handler,
 	adminHandler *AdminHandler,
 	operatorHandler *OperatorHandlerImpl,
+	streamHandler *chasmstream.FrontendHandler,
 	versionChecker *VersionChecker,
 	visibilityMgr manager.VisibilityManager,
 	logger log.SnTaggedLogger,
@@ -185,6 +191,7 @@ func NewServiceProvider(
 		handler,
 		adminHandler,
 		operatorHandler,
+		streamHandler,
 		versionChecker,
 		visibilityMgr,
 		logger,
@@ -429,7 +436,8 @@ func RedirectionInterceptorProvider(
 		metricsHandler,
 		timeSource,
 		clusterMetadata,
-	)
+	).WithRedirectResponses(chasmstream.RedirectableMethods()).
+		WithAdditionalAllowedMethods(slices.Collect(maps.Keys(chasmstream.RedirectableMethods()))...)
 }
 
 func BusinessIDInterceptorProvider(
@@ -466,7 +474,7 @@ func NamespaceHandoverInterceptorProvider(
 		params.TimeSource,
 		params.RequestErrorHandler,
 		params.AdditionalAllowedMethodsDuringHandover,
-	)
+	).WithAdditionalServicePrefixes(api.StreamServicePrefix)
 }
 
 func ErrorHandlerProvider(

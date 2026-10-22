@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.stream.proto.v1;
+
+import "temporal/api/streamservice/v1/stream_service.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/stream/gen/streampb;streampb";
+
+message CreateStreamRequest {
+  string namespace_id = 1;
+
+  temporal.api.streamservice.v1.CreateStreamRequest frontend_request = 2;
+}
+
+message CreateStreamResponse {
+  temporal.api.streamservice.v1.CreateStreamResponse frontend_response = 1;
+}
+
+message AppendRecordsRequest {
+  string namespace_id = 1;
+
+  temporal.api.streamservice.v1.AppendRecordsRequest frontend_request = 2;
+}
+
+message AppendRecordsResponse {
+  temporal.api.streamservice.v1.AppendRecordsResponse frontend_response = 1;
+}
+
+message CloseStreamRequest {
+  string namespace_id = 1;
+
+  temporal.api.streamservice.v1.CloseStreamRequest frontend_request = 2;
+}
+
+message CloseStreamResponse {
+  temporal.api.streamservice.v1.CloseStreamResponse frontend_response = 1;
+}
+
+message ReadRecordsRequest {
+  string namespace_id = 1;
+
+  temporal.api.streamservice.v1.ReadRecordsRequest frontend_request = 2;
+}
+
+message ReadRecordsResponse {
+  temporal.api.streamservice.v1.ReadRecordsResponse frontend_response = 1;
+}
+
+message DescribeStreamRequest {
+  string namespace_id = 1;
+
+  temporal.api.streamservice.v1.DescribeStreamRequest frontend_request = 2;
+}
+
+message DescribeStreamResponse {
+  temporal.api.streamservice.v1.DescribeStreamResponse frontend_response = 1;
+}

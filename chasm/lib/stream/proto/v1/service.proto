@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package temporal.server.chasm.lib.stream.proto.v1;
+
+import "chasm/lib/stream/proto/v1/request_response.proto";
+import "temporal/server/api/common/v1/api_category.proto";
+import "temporal/server/api/routing/v1/extension.proto";
+
+option go_package = "go.temporal.io/server/chasm/lib/stream/gen/streampb;streampb";
+
+// StreamService carries the frontend's Stream calls to the history shard of the Stream.
+service StreamService {
+  rpc CreateStream(CreateStreamRequest) returns (CreateStreamResponse) {
+    option (temporal.server.api.routing.v1.routing).business_id = "frontend_request.stream_id";
+    option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;
+  }
+
+  rpc AppendRecords(AppendRecordsRequest) returns (AppendRecordsResponse) {
+    option (temporal.server.api.routing.v1.routing).business_id = "frontend_request.stream.id";
+    option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;
+  }
+
+  rpc CloseStream(CloseStreamRequest) returns (CloseStreamResponse) {
+    option (temporal.server.api.routing.v1.routing).business_id = "frontend_request.stream.id";
+    option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;
+  }
+
+  rpc ReadRecords(ReadRecordsRequest) returns (ReadRecordsResponse) {
+    option (temporal.server.api.routing.v1.routing).business_id = "frontend_request.stream.id";
+    option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_LONG_POLL;
+  }
+
+  rpc DescribeStream(DescribeStreamRequest) returns (DescribeStreamResponse) {
+    option (temporal.server.api.routing.v1.routing).business_id = "frontend_request.stream.id";
+    option (temporal.server.api.common.v1.api_category).category = API_CATEGORY_STANDARD;
+  }
+}

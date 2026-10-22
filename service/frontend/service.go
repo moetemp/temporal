@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"go.temporal.io/api/operatorservice/v1"
+	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/api/adminservice/v1"
 	"go.temporal.io/server/chasm/lib/activity"
 	chasmcallback "go.temporal.io/server/chasm/lib/callback"
 	chasmnexus "go.temporal.io/server/chasm/lib/nexusoperation"
+	chasmstream "go.temporal.io/server/chasm/lib/stream"
 	chasmworkflow "go.temporal.io/server/chasm/lib/workflow"
 	"go.temporal.io/server/common/callbacks"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -483,6 +485,7 @@ type Service struct {
 	handler           Handler
 	adminHandler      *AdminHandler
 	operatorHandler   *OperatorHandlerImpl
+	streamHandler     *chasmstream.FrontendHandler
 	versionChecker    *VersionChecker
 	visibilityManager manager.VisibilityManager
 	server            *grpc.Server
@@ -502,6 +505,7 @@ func NewService(
 	handler Handler,
 	adminHandler *AdminHandler,
 	operatorHandler *OperatorHandlerImpl,
+	streamHandler *chasmstream.FrontendHandler,
 	versionChecker *VersionChecker,
 	visibilityMgr manager.VisibilityManager,
 	logger log.Logger,
@@ -517,6 +521,7 @@ func NewService(
 		handler:           handler,
 		adminHandler:      adminHandler,
 		operatorHandler:   operatorHandler,
+		streamHandler:     streamHandler,
 		versionChecker:    versionChecker,
 		visibilityManager: visibilityMgr,
 		logger:            logger,
@@ -534,6 +539,7 @@ func (s *Service) Start() {
 	workflowservice.RegisterWorkflowServiceServer(s.server, s.handler)
 	adminservice.RegisterAdminServiceServer(s.server, s.adminHandler)
 	operatorservice.RegisterOperatorServiceServer(s.server, s.operatorHandler)
+	streamservice.RegisterStreamServiceServer(s.server, s.streamHandler)
 
 	reflection.Register(s.server)
 

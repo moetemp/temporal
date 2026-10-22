@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"go.temporal.io/server/api/adminservice/v1"
+	"go.temporal.io/server/common/api"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/log"
@@ -62,6 +63,9 @@ var (
 		// Dispatching a Nexus task is a potentially long running RPC, it's classified in the same bucket as QueryWorkflow.
 		DispatchNexusTaskByNamespaceAndTaskQueueAPIName: 1,
 		DispatchNexusTaskByEndpointAPIName:              1,
+
+		// A Stream read waits up to its wait for a new Record.
+		api.StreamServicePrefix + "ReadRecords": 1,
 	}
 
 	// PollTaskAPISet is the set of API methods for which NamespaceRateLimitInterceptor will
@@ -197,6 +201,14 @@ var (
 		"/temporal.api.workflowservice.v1.WorkflowService/RecordWorkerHeartbeat":              4,
 		"/temporal.api.workflowservice.v1.WorkflowService/FetchWorkerConfig":                  4,
 		"/temporal.api.workflowservice.v1.WorkflowService/UpdateWorkerConfig":                 4,
+
+		// The Stream service. An append is an external event like a signal, a close changes state,
+		// a describe reads the status, and a read is a poll.
+		api.StreamServicePrefix + "CreateStream":   1,
+		api.StreamServicePrefix + "AppendRecords":  1,
+		api.StreamServicePrefix + "CloseStream":    2,
+		api.StreamServicePrefix + "DescribeStream": 3,
+		api.StreamServicePrefix + "ReadRecords":    4,
 
 		// P5: Low priority APIs
 		// GetWorkflowExecutionHistory with WaitNewEvent set to true is a long poll API.

@@ -63,7 +63,8 @@ const (
 	AdminServicePrefix    = "/temporal.server.api.adminservice.v1.AdminService/"
 	MatchingServicePrefix = "/temporal.server.api.matchingservice.v1.MatchingService/"
 	// Technically not a gRPC service, but still using this format for metadata.
-	NexusServicePrefix = "/temporal.api.nexusservice.v1.NexusService/"
+	NexusServicePrefix  = "/temporal.api.nexusservice.v1.NexusService/"
+	StreamServicePrefix = "/temporal.api.streamservice.v1.StreamService/"
 )
 
 var (
@@ -213,10 +214,17 @@ var (
 		"CompleteNexusOperation":          {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 		"CompleteNexusOperationChasm":     {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
 	}
+	streamServiceMetadata = map[string]MethodMetadata{
+		"CreateStream":   {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
+		"AppendRecords":  {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
+		"CloseStream":    {Scope: ScopeNamespace, Access: AccessWrite, Polling: PollingNone},
+		"ReadRecords":    {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingCapable},
+		"DescribeStream": {Scope: ScopeNamespace, Access: AccessReadOnly, Polling: PollingNone},
+	}
 )
 
 // GetMethodMetadata gets metadata for a given API method in one of the services exported by
-// frontend (WorkflowService, OperatorService, AdminService).
+// frontend (WorkflowService, OperatorService, AdminService, StreamService).
 func GetMethodMetadata(fullApiName string) MethodMetadata {
 	switch {
 	case strings.HasPrefix(fullApiName, WorkflowServicePrefix):
@@ -225,6 +233,8 @@ func GetMethodMetadata(fullApiName string) MethodMetadata {
 		return operatorServiceMetadata[MethodName(fullApiName)]
 	case strings.HasPrefix(fullApiName, NexusServicePrefix):
 		return nexusServiceMetadata[MethodName(fullApiName)]
+	case strings.HasPrefix(fullApiName, StreamServicePrefix):
+		return streamServiceMetadata[MethodName(fullApiName)]
 	case strings.HasPrefix(fullApiName, AdminServicePrefix):
 		return MethodMetadata{Scope: ScopeCluster, Access: AccessAdmin}
 	default:
