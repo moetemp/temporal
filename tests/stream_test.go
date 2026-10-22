@@ -874,6 +874,29 @@ func (s *StreamTestSuite) TestReadOfADroppedRangeFailsAsExpired() {
 	st := status.Convert(err)
 	s.Equal(codes.NotFound, st.Code())
 	s.Equal(stream.ReasonExpired, st.Details()[0].(*streamservice.StreamErrorDetails).GetReason())
+
+	// A direct page answers the reason in its operation failure.
+	_, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(id), FromOffset: first})
+	s.Equal(stream.ReasonExpired, causeType(failure))
+}
+
+// Each Stream error of a direct page keeps its reason, so the SDK raises the Stream error and
+// doesn't retry it.
+func (s *StreamTestSuite) TestDirectReadErrorsKeepTheirReason() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: env.Namespace().String(), StreamId: id})
+	s.NoError(err)
+
+	for reason, req := range map[string]*streamservice.ReadRecordsRequest{
+		stream.ReasonNotFound: {Stream: ref("missing-" + id)},
+		stream.ReasonOffset:   {Stream: ref(id), FromOffset: 1 << 62},
+		stream.ReasonInvalid:  {Stream: &streamservice.StreamRef{Id: id, WorkflowId: "wf"}},
+	} {
+		_, failure := s.directRead(env, req)
+		s.Equal(reason, causeType(failure), reason)
+	}
 }
 
 // createWithRetention creates a Workflow Stream with a client owner and a 1 s Retention, and
