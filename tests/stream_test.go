@@ -693,6 +693,13 @@ func (s *StreamTestSuite) TestWorkflowReadsDirectlyWithNoRecordsInHistory() {
 	s.Equal(page.GetRecords(), again.GetRecords())
 	s.Equal(page.GetNextOffset(), again.GetNextOffset())
 
+	// A direct read with wait long-polls, as the frontend read does.
+	waited, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: owned, Start: streamservice.READ_START_END, Wait: durationpb.New(500 * time.Millisecond),
+	})
+	s.Nil(failure)
+	s.Empty(waited.GetRecords())
+
 	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))})
 	s.Equal(stream.ReasonNotFound, causeType(failure))
 }
