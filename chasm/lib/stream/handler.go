@@ -168,7 +168,9 @@ func (h *handler) CreateStream(
 	}
 	create := func(policy chasm.TransitionOption) (CreateOutput, error) {
 		result, err := chasm.UpdateWithStartExecution(ctx, key, StartStream, (*Stream).Create, in, policy)
-		return result.UpdateOutput, err
+		out := result.UpdateOutput
+		out.Created = out.Created || result.Created
+		return out, err
 	}
 	out, err := create(useExisting)
 	if err != nil && ReasonOf(err) == "" {
