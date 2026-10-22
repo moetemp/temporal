@@ -69,12 +69,16 @@ func update[O any](
 	ctx context.Context,
 	t target,
 	start func(chasm.MutableContext) (*Stream, error),
-	fn func(*Stream, chasm.MutableContext) (O, error),
+	update func(*Stream, chasm.MutableContext) (O, error),
 ) (O, error) {
+	fn := func(s *Stream, mctx chasm.MutableContext) (O, error) {
+		out, err := update(s, mctx)
+		return out, carry(err)
+	}
 	if !t.nested {
 		out, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
 			func(s *Stream, mctx chasm.MutableContext, _ struct{}) (O, error) { return fn(s, mctx) }, struct{}{})
-		return out, err
+		return out, uncarry(err)
 	}
 	out, _, err := chasm.UpdateComponent(ctx, t.hostRef(),
 		func(h Host, mctx chasm.MutableContext, _ struct{}) (O, error) {
@@ -84,7 +88,7 @@ func update[O any](
 			}
 			var zero O
 			if start == nil {
-				return zero, notFound()
+				return zero, carry(notFound())
 			}
 			s, err := start(mctx)
 			if err != nil {
@@ -97,24 +101,50 @@ func update[O any](
 			streams[t.id] = chasm.NewComponentField(mctx, s)
 			return out, nil
 		}, struct{}{})
-	return out, err
+	return out, uncarry(err)
 }
 
 // read runs fn on the Stream with no write.
-func read[O any](ctx context.Context, t target, fn func(*Stream, chasm.Context) (O, error)) (O, error) {
-	if !t.nested {
-		return chasm.ReadComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
-			func(s *Stream, cctx chasm.Context, _ struct{}) (O, error) { return fn(s, cctx) }, struct{}{})
+func read[O any](ctx context.Context, t target, view func(*Stream, chasm.Context) (O, error)) (O, error) {
+	fn := func(s *Stream, cctx chasm.Context) (O, error) {
+		out, err := view(s, cctx)
+		return out, carry(err)
 	}
-	return chasm.ReadComponent(ctx, t.hostRef(),
+	if !t.nested {
+		out, err := chasm.ReadComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
+			func(s *Stream, cctx chasm.Context, _ struct{}) (O, error) { return fn(s, cctx) }, struct{}{})
+		return out, uncarry(err)
+	}
+	out, err := chasm.ReadComponent(ctx, t.hostRef(),
 		func(h Host, cctx chasm.Context, _ struct{}) (O, error) {
 			field, ok := h.NestedStreams()[t.id]
 			if !ok {
 				var zero O
-				return zero, notFound()
+				return zero, carry(notFound())
 			}
 			return fn(field.Get(cctx), cctx)
 		}, struct{}{})
+	return out, uncarry(err)
+}
+
+// carriedError holds a Stream error through the framework, which rewrites a component's NotFound
+// error into a missing execution. stream_expired has the NotFound code too.
+type carriedError struct{ err error }
+
+func (e *carriedError) Error() string { return e.err.Error() }
+
+func carry(err error) error {
+	if ReasonOf(err) == "" {
+		return err
+	}
+	return &carriedError{err: err}
+}
+
+func uncarry(err error) error {
+	if carried, ok := errors.AsType[*carriedError](err); ok {
+		return carried.err
+	}
+	return err
 }
 
 // poll waits until done holds for the Stream. It answers no error when the context ends first.

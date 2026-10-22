@@ -845,3 +845,31 @@ func (s *StreamTestSuite) TestWorkflowReaderKeepsItsRangePastTheRetention() {
 		return failure != nil && causeType(failure) == stream.ReasonExpired
 	}, 10*time.Second, 200*time.Millisecond)
 }
+
+// A read of a range that the size cap dropped fails with stream_expired, not with the framework's
+// missing execution.
+func (s *StreamTestSuite) TestReadOfADroppedRangeFailsAsExpired() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+
+	var first int64
+	for sequence := int64(1); sequence <= 3; sequence++ {
+		resp, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: sequence,
+			Records: []*streamservice.AppendRecord{{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 1536*1024)}}},
+		})
+		s.NoError(err)
+		if first == 0 {
+			first = resp.GetFirstOffset()
+		}
+	}
+
+	_, err = sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id), FromOffset: first})
+	st := status.Convert(err)
+	s.Equal(codes.NotFound, st.Code())
+	s.Equal(stream.ReasonExpired, st.Details()[0].(*streamservice.StreamErrorDetails).GetReason())
+}
