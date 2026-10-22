@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/chasmtest"
@@ -17,6 +18,7 @@ import (
 	"go.temporal.io/server/common/clock"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -70,16 +72,21 @@ func (h *harness) append(producer *streamservice.Producer, sequence int64, topic
 			Body:  &commonpb.Payload{Data: []byte(topic)},
 		})
 	}
-	resp, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Append,
-		AppendInput{Request: req, Producer: producer, Limits: h.limits})
+	return h.appendRequest(req)
+}
+
+func (h *harness) appendRequest(req *streamservice.AppendRecordsRequest) (*streamservice.AppendRecordsResponse, error) {
+	resp, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Append, AppendInput{Request: req, Limits: h.limits})
 	return resp, err
 }
 
 func (h *harness) close(result string) error {
 	_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
-		Request:  &streamservice.CloseStreamRequest{Result: &commonpb.Payload{Data: []byte(result)}},
-		Producer: activityProducer(1),
-		Limits:   h.limits,
+		Request: &streamservice.CloseStreamRequest{
+			Producer: activityProducer(1),
+			Result:   &commonpb.Payload{Data: []byte(result)},
+		},
+		Limits: h.limits,
 	})
 	return err
 }
@@ -398,19 +405,113 @@ func TestReadForTheCreateTimesOut(t *testing.T) {
 	require.Equal(t, ReasonNotFound, read.GetFailure().GetApplicationFailureInfo().GetType())
 }
 
-func TestCompareEpochs(t *testing.T) {
-	tests := []struct {
-		name string
-		a, b *streamservice.ProducerEpoch
-		want int
-	}{
-		{name: "equal", a: &streamservice.ProducerEpoch{Attempt: 1}, b: &streamservice.ProducerEpoch{Attempt: 1}, want: 0},
-		{name: "task first", a: &streamservice.ProducerEpoch{TaskStartedEventId: 5}, b: &streamservice.ProducerEpoch{TaskStartedEventId: 3, Attempt: 9}, want: 1},
-		{name: "unset is zero", a: nil, b: &streamservice.ProducerEpoch{Attempt: 1}, want: -1},
+// workflowProducer is the run's Producer in the Workflow Task that started at event started.
+func workflowProducer(started int64) *streamservice.Producer {
+	return &streamservice.Producer{
+		Kind:  streamservice.PRODUCER_KIND_WORKFLOW,
+		Id:    "wf:run",
+		Epoch: &streamservice.ProducerEpoch{TaskStartedEventId: started, TaskAttempt: 1},
+		RunId: "run",
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, CompareEpochs(tc.a, tc.b))
-		})
+}
+
+func localActivityProducer(started int64) *streamservice.Producer {
+	return &streamservice.Producer{
+		Kind:  streamservice.PRODUCER_KIND_LOCAL_ACTIVITY,
+		Id:    "la:run:1",
+		Epoch: &streamservice.ProducerEpoch{TaskStartedEventId: started, TaskAttempt: 1, Attempt: 1},
+		RunId: "run",
 	}
+}
+
+func records(topics ...string) []*streamservice.AppendRecord {
+	var out []*streamservice.AppendRecord
+	for _, topic := range topics {
+		out = append(out, &streamservice.AppendRecord{Topic: topic, Body: &commonpb.Payload{Data: []byte(topic)}})
+	}
+	return out
+}
+
+func TestWorkflowFailedTaskIsWithdrawn(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+
+	// Task 3 writes and its Local Activity writes, then task 3 fails. Task 7 names it failed.
+	_, err = h.append(workflowProducer(3), 1, "a")
+	require.NoError(t, err)
+	_, err = h.append(localActivityProducer(3), 1, "la")
+	require.NoError(t, err)
+	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{
+		Producer:              workflowProducer(7),
+		Sequence:              1,
+		Records:               records("b"),
+		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: 2, Attempt: 1},
+		FailedTasks:           []int64{3},
+	})
+	require.NoError(t, err)
+
+	all, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "la", "superseded", "b"}, topics(all))
+	require.Equal(t, []int64{3}, all.GetRecords()[2].GetSupersession().GetFailedTasks())
+
+	// A late Local Activity of the withdrawn task is fenced.
+	_, err = h.append(localActivityProducer(3), 2, "late")
+	require.ErrorContains(t, err, ReasonFenced)
+}
+
+func TestWithdrawRunFencesThePreviousRun(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(workflowProducer(3), 1, "a")
+	require.NoError(t, err)
+
+	retry := workflowProducer(3)
+	retry.Id, retry.RunId = "wf:retry", "retry"
+	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{Producer: retry, Sequence: 1, Records: records("b"), WithdrawRun: "run"})
+	require.NoError(t, err)
+	_, err = h.append(workflowProducer(9), 1, "c")
+	require.ErrorContains(t, err, ReasonFenced)
+
+	all, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "superseded", "b"}, topics(all))
+	require.Equal(t, "run", all.GetRecords()[1].GetSupersession().GetWithdrawRun())
+}
+
+func TestWorkflowWithdrawalAfterTheClose(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(workflowProducer(3), 1, "a")
+	require.NoError(t, err)
+	require.NoError(t, h.close("done"))
+
+	// The task that wrote failed. The next task settles with no Records after the close.
+	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{
+		Producer:    workflowProducer(7),
+		Sequence:    1,
+		FailedTasks: []int64{3},
+	})
+	require.NoError(t, err)
+	_, err = h.append(workflowProducer(7), 2, "b")
+	require.ErrorContains(t, err, ReasonClosed)
+
+	all, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "superseded", "close"}, topics(all))
+	require.True(t, all.GetDone())
+	after, err := h.read(&streamservice.ReadRecordsRequest{FromOffset: all.GetNextOffset()})
+	require.NoError(t, err)
+	require.Equal(t, []string{"close"}, topics(after))
+}
+
+func TestErrorsCarryTheReason(t *testing.T) {
+	err := NewError(ReasonFenced, "fenced")
+	details := serviceerror.ToStatus(err).Details()
+	require.Equal(t, codes.FailedPrecondition, serviceerror.ToStatus(err).Code())
+	require.Len(t, details, 1)
+	require.Equal(t, ReasonFenced, details[0].(*streamservice.StreamErrorDetails).GetReason())
 }

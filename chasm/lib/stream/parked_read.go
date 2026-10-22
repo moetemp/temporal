@@ -92,11 +92,14 @@ func FailureOf(err error) *failurepb.Failure {
 			FailureInfo: &failurepb.Failure_CanceledFailureInfo{CanceledFailureInfo: &failurepb.CanceledFailureInfo{}},
 		}
 	}
+	reason := ReasonOf(err)
+	details, _ := sdkconverter.PreferProtoDataConverter.ToPayloads(&streamservice.StreamErrorDetails{Reason: reason})
 	return &failurepb.Failure{
 		Message: err.Error(),
 		FailureInfo: &failurepb.Failure_ApplicationFailureInfo{ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{
-			Type:         ReasonOf(err),
+			Type:         reason,
 			NonRetryable: true,
+			Details:      details,
 		}},
 	}
 }

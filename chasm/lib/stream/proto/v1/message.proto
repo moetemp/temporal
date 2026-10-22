@@ -54,6 +54,8 @@ message StreamState {
   map<string, ProducerState> producers = 13;
   // Runs that a retry run withdrew. Their Producers are fenced.
   repeated string fenced_runs = 14;
+  // The Workflow Task facts of each run that wrote, keyed by run id.
+  map<string, RunTasks> runs = 16;
   // The deadline of the armed timer task, so an older task is a no-op.
   google.protobuf.Timestamp timer_deadline = 15;
 }
@@ -65,13 +67,33 @@ message BatchInfo {
 }
 
 message ProducerState {
+  reserved 5;
+
+  // The newest epoch. A lower one is fenced.
   temporal.api.streamservice.v1.ProducerEpoch epoch = 1;
+  // The last sequence of that epoch.
   int64 sequence = 2;
   // The offsets of the last batch, which a resend of it gets again.
   int64 first_offset = 3;
   int64 last_offset = 4;
-  // The Nexus request of the last batch from a Workflow, whose retries carry the same id.
-  string request_id = 5;
+  // The epoch of the newest batch with Records, outside Workflow code. The first batch of a
+  // higher epoch withdraws them.
+  temporal.api.streamservice.v1.ProducerEpoch holds = 6;
+}
+
+// The Workflow Task facts of one run, as the crate's task index keeps them.
+message RunTasks {
+  // The tasks of the run and of its Local Activities that wrote Records and are not settled.
+  repeated temporal.api.streamservice.v1.WorkflowTaskEpoch index = 1;
+  // The tasks a Superseded Record withdrew. A Local Activity of one of them is fenced.
+  repeated temporal.api.streamservice.v1.WorkflowTaskEpoch withdrawn = 2;
+  // The facts of the run's last Workflow batch, which also fence a Local Activity of a task they
+  // withdraw.
+  temporal.api.streamservice.v1.WorkflowTaskEpoch last_task = 3;
+  temporal.api.streamservice.v1.WorkflowTaskEpoch last_completed = 4;
+  repeated int64 last_failed = 5;
+  // The run wrote a Record, so a retry run's withdrawal of it gets a Superseded Record.
+  bool wrote = 6;
 }
 
 // The Records of one append, with their offsets.
