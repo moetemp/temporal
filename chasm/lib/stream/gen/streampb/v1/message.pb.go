@@ -615,8 +615,10 @@ type ParkedReadState struct {
 	Response         *v1.ReadRecordsResponse `protobuf:"bytes,7,opt,name=response,proto3" json:"response,omitempty"`
 	Failure          *v11.Failure            `protobuf:"bytes,8,opt,name=failure,proto3" json:"failure,omitempty"`
 	CallbackMetadata *v12.CallbackMetadata   `protobuf:"bytes,9,opt,name=callback_metadata,json=callbackMetadata,proto3" json:"callback_metadata,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// When the read answers an empty page, from its wait. Unset for a read with no wait.
+	WaitDeadline  *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=wait_deadline,json=waitDeadline,proto3" json:"wait_deadline,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ParkedReadState) Reset() {
@@ -712,6 +714,13 @@ func (x *ParkedReadState) GetCallbackMetadata() *v12.CallbackMetadata {
 	return nil
 }
 
+func (x *ParkedReadState) GetWaitDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.WaitDeadline
+	}
+	return nil
+}
+
 var File_temporal_server_chasm_lib_stream_proto_v1_message_proto protoreflect.FileDescriptor
 
 const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" +
@@ -771,7 +780,7 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"lastFailed\x12\x14\n" +
 	"\x05wrote\x18\x06 \x01(\bR\x05wrote\"T\n" +
 	"\vRecordBatch\x12E\n" +
-	"\arecords\x18\x01 \x03(\v2+.temporal.api.streamservice.v1.StreamRecordR\arecords\"\xb3\x04\n" +
+	"\arecords\x18\x01 \x03(\v2+.temporal.api.streamservice.v1.StreamRecordR\arecords\"\xf4\x04\n" +
 	"\x0fParkedReadState\x12K\n" +
 	"\arequest\x18\x01 \x01(\v21.temporal.api.streamservice.v1.ReadRecordsRequestR\arequest\x12\x1d\n" +
 	"\n" +
@@ -784,7 +793,9 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"\bresolved\x18\x06 \x01(\bR\bresolved\x12N\n" +
 	"\bresponse\x18\a \x01(\v22.temporal.api.streamservice.v1.ReadRecordsResponseR\bresponse\x12:\n" +
 	"\afailure\x18\b \x01(\v2 .temporal.api.failure.v1.FailureR\afailure\x12k\n" +
-	"\x11callback_metadata\x18\t \x01(\v2>.temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadataR\x10callbackMetadata*\xab\x01\n" +
+	"\x11callback_metadata\x18\t \x01(\v2>.temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadataR\x10callbackMetadata\x12?\n" +
+	"\rwait_deadline\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\fwaitDeadline*\xab\x01\n" +
 	"\vStreamPhase\x12\x1c\n" +
 	"\x18STREAM_PHASE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14STREAM_PHASE_PENDING\x10\x01\x12\x15\n" +
@@ -854,13 +865,14 @@ var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_depIdxs = []int
 	16, // 22: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.response:type_name -> temporal.api.streamservice.v1.ReadRecordsResponse
 	17, // 23: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.failure:type_name -> temporal.api.failure.v1.Failure
 	18, // 24: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.callback_metadata:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
-	3,  // 25: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.ProducerState
-	4,  // 26: temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.RunTasks
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	10, // 25: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.wait_deadline:type_name -> google.protobuf.Timestamp
+	3,  // 26: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.ProducerState
+	4,  // 27: temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.RunTasks
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_stream_proto_v1_message_proto_init() }

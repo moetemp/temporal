@@ -491,6 +491,13 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 		s.expire(ctx)
 		return
 	}
+	// A read whose wait ended answers an empty page, as the frontend long poll does.
+	s.resolveReads(ctx, func(read *ParkedRead) (readOutcome, bool) {
+		if deadline := read.GetWaitDeadline(); deadline != nil && !deadline.AsTime().After(now) {
+			return readOutcome{resp: &streamservice.ReadRecordsResponse{NextOffset: read.GetScanOffset()}}, true
+		}
+		return readOutcome{}, false
+	})
 	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 {
 		if cutMs := now.Add(-retention).UnixMilli(); cutMs > 0 {
 			s.trimTo((cutMs << seqBits) - 1)
@@ -547,6 +554,11 @@ func (s *Stream) nextDeadline(ctx chasm.Context, limits Limits) (time.Time, bool
 		consider(s.closedExpiryAt())
 	default:
 		return deadline, false
+	}
+	for _, field := range s.Reads {
+		if read, ok := field.TryGet(ctx); ok && !read.GetResolved() && read.GetWaitDeadline() != nil {
+			consider(read.GetWaitDeadline().AsTime())
+		}
 	}
 	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 &&
 		s.Index[0].GetFirstOffset() != s.CloseOffset {

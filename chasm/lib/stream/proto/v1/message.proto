@@ -123,4 +123,6 @@ message ParkedReadState {
   temporal.api.streamservice.v1.ReadRecordsResponse response = 7;
   temporal.api.failure.v1.Failure failure = 8;
   temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata callback_metadata = 9;
+  // When the read answers an empty page, from its wait. Unset for a read with no wait.
+  google.protobuf.Timestamp wait_deadline = 10;
 }

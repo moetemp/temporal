@@ -538,3 +538,27 @@ func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
 	s.Equal(streamservice.STREAM_RECORD_KIND_SUPERSEDED, page.GetRecords()[1].GetKind())
 	s.Equal([]int64{3}, page.GetRecords()[1].GetSupersession().GetFailedTasks())
 }
+
+func (s *StreamTestSuite) TestWorkflowReadEndsAtItsWait() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("other"),
+	})
+	s.NoError(err)
+
+	var page streamservice.ReadRecordsResponse
+	failure, started := c.outcome(c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: ref(id), Topics: []string{"turns"}, Wait: durationpb.New(time.Second),
+	}})[0], &page)
+	s.Nil(failure)
+	s.True(started)
+	s.Empty(page.GetRecords())
+	s.False(page.GetDone())
+	s.Equal(appended.GetLastOffset()+1, page.GetNextOffset())
+}
