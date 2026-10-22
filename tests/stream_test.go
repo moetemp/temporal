@@ -746,3 +746,29 @@ func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
 	s.NoError(err)
 	s.Equal([]string{"late"}, kindsAndTopics(page))
 }
+
+// An append that names a Workflow Stream by its bare id, or a Stream that doesn't exist, fails.
+// It never writes somewhere a reader of the Workflow Stream can't see.
+func (s *StreamTestSuite) TestAppendToAStreamThatIsNotThereFails() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	ns := env.Namespace().String()
+
+	for _, target := range []string{owned.GetId(), "missing-" + owned.GetId()} {
+		_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(target),
+			Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: 1, Records: records("lost"),
+		})
+		st := status.Convert(err)
+		s.Equal(codes.NotFound, st.Code(), target)
+		reason := st.Details()[0].(*streamservice.StreamErrorDetails).GetReason()
+		s.Equal(stream.ReasonNotFound, reason, target)
+	}
+
+	page, err := sc.ReadRecords(s.Context(),
+		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Empty(page.GetRecords())
+}
