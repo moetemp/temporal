@@ -3,7 +3,6 @@ package stream
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	commonpb "go.temporal.io/api/common/v1"
@@ -25,67 +24,36 @@ func newHandler(config *Config, namespaceRegistry namespace.Registry) *handler {
 	return &handler{config: config, namespaceRegistry: namespaceRegistry}
 }
 
-// Caller is who calls an operation. A Workflow calls through System Nexus, so the server knows
-// its run and sets the Producer. Any other caller names its own Producer.
-type Caller struct {
-	// Set for a Workflow caller.
-	WorkflowID string
-	RunID      string
+// Reader is a Workflow read through System Nexus.
+type Reader struct {
 	// The Nexus request id, which a retry of the operation start carries again.
 	RequestID string
-	// The completion callback of a Workflow read. A read with none answers at once.
+	// The completion callback of the read's operation. A read with none answers at once.
 	Callback *commonpb.Callback
 }
 
-func (c Caller) workflow() bool {
-	return c.RunID != ""
-}
-
-// producer is the Producer of a write. A Workflow's Producer is its run, as the crate names
-// it. Outside a Workflow the request names it.
-func (c Caller) producer(requested *streamservice.Producer) (*streamservice.Producer, error) {
-	if c.workflow() {
-		return &streamservice.Producer{
-			Kind:  streamservice.PRODUCER_KIND_WORKFLOW,
-			Id:    "wf:" + encodePart(c.RunID),
-			RunId: c.RunID,
-		}, nil
+// checkProducer refuses a write with no Producer, or with an id that lacks the prefix of its
+// kind, so one kind can't take another's id.
+func checkProducer(producer *streamservice.Producer) error {
+	if producer == nil {
+		return invalid("The request has no Producer")
 	}
-	if requested == nil {
-		return nil, invalid("The request has no Producer")
-	}
-	if requested.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
-		return nil, invalid("A Workflow Producer writes through System Nexus only")
-	}
-	prefix, ok := producerPrefixes[requested.GetKind()]
+	prefix, ok := producerPrefixes[producer.GetKind()]
 	if !ok {
-		return nil, invalid("The Producer has no kind")
+		return invalid("The Producer has no kind")
 	}
-	if !strings.HasPrefix(requested.GetId(), prefix) {
-		return nil, invalid("The Producer id %q doesn't start with %q, as its kind requires", requested.GetId(), prefix)
+	if !strings.HasPrefix(producer.GetId(), prefix) {
+		return invalid("The Producer id %q doesn't start with %q, as its kind requires", producer.GetId(), prefix)
 	}
-	return requested, nil
+	return nil
 }
 
 var producerPrefixes = map[streamservice.ProducerKind]string{
+	streamservice.PRODUCER_KIND_WORKFLOW:            "wf:",
 	streamservice.PRODUCER_KIND_LOCAL_ACTIVITY:      "la:",
 	streamservice.PRODUCER_KIND_ACTIVITY:            "act:",
 	streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY: "sa:",
 	streamservice.PRODUCER_KIND_CLIENT:              "client:",
-}
-
-// encodePart percent-encodes every byte but the unreserved ones, as the crate builds ids.
-func encodePart(text string) string {
-	var out strings.Builder
-	for _, b := range []byte(text) {
-		if ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z') || ('0' <= b && b <= '9') ||
-			b == '_' || b == '.' || b == '-' || b == '~' {
-			out.WriteByte(b)
-		} else {
-			fmt.Fprintf(&out, "%%%02X", b)
-		}
-	}
-	return out.String()
 }
 
 // CheckStreamID refuses an empty or too long Stream id.
@@ -156,16 +124,17 @@ func streamError(ctx context.Context, key chasm.ExecutionKey, err error) error {
 func (h *handler) CreateStream(
 	ctx context.Context,
 	req *streamservice.CreateStreamRequest,
-	caller Caller,
 ) (*streamservice.CreateStreamResponse, error) {
 	key, limits, err := h.key(req.GetNamespace(), req.GetStreamId())
 	if err != nil {
 		return nil, err
 	}
-	in := CreateInput{Request: req, WorkflowOwned: caller.workflow(), Limits: limits}
-	if caller.workflow() {
-		in.Producer, _ = caller.producer(nil)
+	if owner := req.GetOwner(); owner != nil {
+		if err := checkProducer(owner); err != nil {
+			return nil, err
+		}
 	}
+	in := CreateInput{Request: req, Limits: limits}
 	create := func(policy chasm.TransitionOption) (CreateOutput, error) {
 		result, err := chasm.UpdateWithStartExecution(ctx, key, StartStream, (*Stream).Create, in, policy)
 		out := result.UpdateOutput
@@ -196,22 +165,16 @@ func (h *handler) CreateStream(
 func (h *handler) AppendRecords(
 	ctx context.Context,
 	req *streamservice.AppendRecordsRequest,
-	caller Caller,
 ) (*streamservice.AppendRecordsResponse, error) {
 	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
 	if err != nil {
 		return nil, err
 	}
-	producer, err := caller.producer(req.GetProducer())
-	if err != nil {
+	if err := checkProducer(req.GetProducer()); err != nil {
 		return nil, err
 	}
-	resp, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](key), (*Stream).Append, AppendInput{
-		Request:   req,
-		Producer:  producer,
-		RequestID: caller.RequestID,
-		Limits:    limits,
-	})
+	resp, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](key), (*Stream).Append,
+		AppendInput{Request: req, Limits: limits})
 	return resp, streamError(ctx, key, err)
 }
 
@@ -219,21 +182,16 @@ func (h *handler) AppendRecords(
 func (h *handler) CloseStream(
 	ctx context.Context,
 	req *streamservice.CloseStreamRequest,
-	caller Caller,
 ) (*streamservice.CloseStreamResponse, error) {
 	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
 	if err != nil {
 		return nil, err
 	}
-	producer, err := caller.producer(req.GetProducer())
-	if err != nil {
+	if err := checkProducer(req.GetProducer()); err != nil {
 		return nil, err
 	}
-	resp, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](key), (*Stream).Close, CloseInput{
-		Request:  req,
-		Producer: producer,
-		Limits:   limits,
-	})
+	resp, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](key), (*Stream).Close,
+		CloseInput{Request: req, Limits: limits})
 	return resp, streamError(ctx, key, err)
 }
 
@@ -278,13 +236,13 @@ func (h *handler) applyDue(ctx context.Context, key chasm.ExecutionKey, limits L
 func (h *handler) ReadOrPark(
 	ctx context.Context,
 	req *streamservice.ReadRecordsRequest,
-	caller Caller,
+	reader Reader,
 ) (*streamservice.ReadRecordsResponse, error) {
 	key, limits, err := h.key(req.GetNamespace(), req.GetStream().GetId())
 	if err != nil {
 		return nil, err
 	}
-	in := ReadInput{Request: req, RequestID: caller.RequestID, Callback: caller.Callback, Limits: limits}
+	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Limits: limits}
 	read := func(policy chasm.TransitionOption) (*streamservice.ReadRecordsResponse, error) {
 		result, err := chasm.UpdateWithStartExecution(ctx, key, StartForRead, (*Stream).ReadOrPark, in, policy)
 		return result.UpdateOutput, err

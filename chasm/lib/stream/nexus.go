@@ -18,23 +18,16 @@ import (
 // ServiceName is the System Nexus service of the Stream operations.
 const ServiceName = "temporal.api.streamservice.v1.StreamService"
 
-// callerOf gives the caller of a System Nexus operation. A Workflow caller is in the links of
-// the start, which point at the event that scheduled the operation.
-func callerOf(options nexus.StartOperationOptions) Caller {
-	caller := Caller{RequestID: options.RequestID}
-	for _, link := range options.Links {
-		if event, err := commonnexus.ConvertNexusLinkToLinkWorkflowEvent(link); err == nil {
-			caller.WorkflowID, caller.RunID = event.GetWorkflowId(), event.GetRunId()
-			break
-		}
-	}
+// readerOf gives the Nexus request id and the completion callback of a read.
+func readerOf(options nexus.StartOperationOptions) Reader {
+	reader := Reader{RequestID: options.RequestID}
 	if options.CallbackURL != "" {
-		caller.Callback = &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
+		reader.Callback = &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
 			Url:    options.CallbackURL,
 			Header: options.CallbackHeader,
 		}}}
 	}
-	return caller
+	return reader
 }
 
 // nexusError gives the Nexus form of a Stream error. A Stream error fails the operation with
@@ -57,24 +50,11 @@ func nexusError(err error) error {
 	return err
 }
 
+// newNexusService serves the reads to Workflow code. Workflow writes go over the frontend from
+// the Core extension, which knows the Workflow Task facts of each write.
 func newNexusService(h *handler) *nexus.Service {
 	service := nexus.NewService(ServiceName)
 	service.MustRegister(
-		nexus.NewSyncOperation("CreateStream",
-			func(ctx context.Context, req *streamservice.CreateStreamRequest, options nexus.StartOperationOptions) (*streamservice.CreateStreamResponse, error) {
-				resp, err := h.CreateStream(ctx, req, callerOf(options))
-				return resp, nexusError(err)
-			}),
-		nexus.NewSyncOperation("AppendRecords",
-			func(ctx context.Context, req *streamservice.AppendRecordsRequest, options nexus.StartOperationOptions) (*streamservice.AppendRecordsResponse, error) {
-				resp, err := h.AppendRecords(ctx, req, callerOf(options))
-				return resp, nexusError(err)
-			}),
-		nexus.NewSyncOperation("CloseStream",
-			func(ctx context.Context, req *streamservice.CloseStreamRequest, options nexus.StartOperationOptions) (*streamservice.CloseStreamResponse, error) {
-				resp, err := h.CloseStream(ctx, req, callerOf(options))
-				return resp, nexusError(err)
-			}),
 		nexus.NewSyncOperation("DescribeStream",
 			func(ctx context.Context, req *streamservice.DescribeStreamRequest, _ nexus.StartOperationOptions) (*streamservice.DescribeStreamResponse, error) {
 				resp, err := h.DescribeStream(ctx, req)
@@ -103,7 +83,7 @@ func (o *readRecordsOperation) Start(
 	req *streamservice.ReadRecordsRequest,
 	options nexus.StartOperationOptions,
 ) (nexus.HandlerStartOperationResult[*streamservice.ReadRecordsResponse], error) {
-	resp, err := o.handler.ReadOrPark(ctx, req, callerOf(options))
+	resp, err := o.handler.ReadOrPark(ctx, req, readerOf(options))
 	if err != nil {
 		return nil, nexusError(err)
 	}
@@ -199,21 +179,6 @@ func (p processor[R]) ProcessInput(
 
 func newNexusServiceProcessor(config *Config) *chasm.NexusServiceProcessor {
 	sp := chasm.NewNexusServiceProcessor(ServiceName)
-	sp.MustRegisterOperation("CreateStream", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.CreateStreamRequest]{
-		config:       config,
-		streamID:     (*streamservice.CreateStreamRequest).GetStreamId,
-		setNamespace: func(r *streamservice.CreateStreamRequest, ns string) { r.Namespace = ns },
-	}))
-	sp.MustRegisterOperation("AppendRecords", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.AppendRecordsRequest]{
-		config:       config,
-		streamID:     func(r *streamservice.AppendRecordsRequest) string { return r.GetStream().GetId() },
-		setNamespace: func(r *streamservice.AppendRecordsRequest, ns string) { r.Namespace = ns },
-	}))
-	sp.MustRegisterOperation("CloseStream", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.CloseStreamRequest]{
-		config:       config,
-		streamID:     func(r *streamservice.CloseStreamRequest) string { return r.GetStream().GetId() },
-		setNamespace: func(r *streamservice.CloseStreamRequest, ns string) { r.Namespace = ns },
-	}))
 	sp.MustRegisterOperation("ReadRecords", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.ReadRecordsRequest]{
 		config:       config,
 		streamID:     func(r *streamservice.ReadRecordsRequest) string { return r.GetStream().GetId() },
