@@ -16,8 +16,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// StartOffset is where a read starts: its from_offset, or the newest offset + 1 for a read from
-// the end.
+// StartOffset is where a read starts. That is its from_offset, or the newest offset + 1 for a
+// read from the end.
 func (s *Stream) StartOffset(req *streamservice.ReadRecordsRequest) (int64, error) {
 	if !s.Exists() {
 		return 0, notFound()
@@ -226,7 +226,7 @@ func (s *Stream) CancelRead(ctx chasm.MutableContext, requestID string, limits L
 	return nil
 }
 
-// readOutcome is the answer of a parked read: a page or an error.
+// readOutcome is the answer of a parked read, a page or an error.
 type readOutcome struct {
 	resp *streamservice.ReadRecordsResponse
 	err  error
