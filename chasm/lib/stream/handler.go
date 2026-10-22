@@ -340,10 +340,8 @@ func (h *handler) ReadRecords(
 	if err := h.applyDue(ctx, t, limits); err != nil {
 		return nil, streamError(ctx, t, err)
 	}
-	if run != nil && t.nested && !req.GetWakeOnly() {
-		if err := h.keepFloor(ctx, t, limits, req, *run); err != nil {
-			return nil, streamError(ctx, t, err)
-		}
+	if err := h.keepFloor(ctx, t, limits, req, run); err != nil {
+		return nil, streamError(ctx, t, err)
 	}
 	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
 	if err != nil {
@@ -377,7 +375,11 @@ func (h *handler) ReadRecords(
 }
 
 // keepFloor writes the run's floor only when the read lowers it, which is mostly its first page.
-func (h *handler) keepFloor(ctx context.Context, t target, limits Limits, req *streamservice.ReadRecordsRequest, run ReaderRun) error {
+// A wake reads no Records, and only a Workflow Stream keeps floors.
+func (h *handler) keepFloor(ctx context.Context, t target, limits Limits, req *streamservice.ReadRecordsRequest, run *ReaderRun) error {
+	if run == nil || !t.nested || req.GetWakeOnly() {
+		return nil
+	}
 	lowers, err := read(ctx, t, func(s *Stream, _ chasm.Context) (bool, error) {
 		_, ok := s.readerFloor(run.RunID, req)
 		return ok, nil
@@ -386,7 +388,7 @@ func (h *handler) keepFloor(ctx context.Context, t target, limits Limits, req *s
 		return err
 	}
 	_, err = update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
-		return struct{}{}, s.AddReader(mctx, run, req, limits)
+		return struct{}{}, s.AddReader(mctx, *run, req, limits)
 	})
 	return err
 }

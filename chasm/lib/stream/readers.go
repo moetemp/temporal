@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/server/chasm"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
-	commonnexus "go.temporal.io/server/common/nexus"
 	"go.temporal.io/server/common/namespace"
+	commonnexus "go.temporal.io/server/common/nexus"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

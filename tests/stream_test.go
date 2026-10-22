@@ -840,7 +840,7 @@ func (s *StreamTestSuite) TestWorkflowReaderKeepsItsRangePastTheRetention() {
 	s.Equal(page.GetNextOffset(), again.GetNextOffset())
 
 	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), readerRun.GetID(), readerRun.GetRunID(), "reader done"))
-	s.Eventually(func() bool {
+	s.AwaitTrue(func() bool {
 		_, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()})
 		return failure != nil && causeType(failure) == stream.ReasonExpired
 	}, 10*time.Second, 200*time.Millisecond)
