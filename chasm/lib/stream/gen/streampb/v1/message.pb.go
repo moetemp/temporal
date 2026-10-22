@@ -143,7 +143,7 @@ type StreamState struct {
 	// The owner run of a Stream that closes with its run chain.
 	Owner           *v1.Producer `protobuf:"bytes,17,opt,name=owner,proto3" json:"owner,omitempty"`
 	OwnerWorkflowId string       `protobuf:"bytes,18,opt,name=owner_workflow_id,json=ownerWorkflowId,proto3" json:"owner_workflow_id,omitempty"`
-	// The first run of the owner's chain, from the first owner check.
+	// The first run of the owner's chain.
 	OwnerFirstRunId string `protobuf:"bytes,19,opt,name=owner_first_run_id,json=ownerFirstRunId,proto3" json:"owner_first_run_id,omitempty"`
 	// When the armed owner check runs, so an older check does nothing.
 	OwnerCheckTime *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=owner_check_time,json=ownerCheckTime,proto3" json:"owner_check_time,omitempty"`

@@ -152,7 +152,9 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 		s.CreateTime = now
 		s.LastWriteTime = now
 		if in.Request.GetCloseWithRun() {
-			s.Owner, s.OwnerWorkflowId = in.Request.GetOwner(), in.Request.GetOwnerWorkflowId()
+			s.Owner = in.Request.GetOwner()
+			s.OwnerWorkflowId = in.Request.GetRef().GetWorkflowId()
+			s.OwnerFirstRunId = in.Request.GetRef().GetFirstExecutionRunId()
 			s.armOwnerCheck(ctx, in.OwnerCheckInterval)
 		}
 		s.withdrawOnCreate(ctx, in.Request)

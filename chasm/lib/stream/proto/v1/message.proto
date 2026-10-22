@@ -59,7 +59,7 @@ message StreamState {
   // The owner run of a Stream that closes with its run chain.
   temporal.api.streamservice.v1.Producer owner = 17;
   string owner_workflow_id = 18;
-  // The first run of the owner's chain, from the first owner check.
+  // The first run of the owner's chain.
   string owner_first_run_id = 19;
   // When the armed owner check runs, so an older check does nothing.
   google.protobuf.Timestamp owner_check_time = 20;

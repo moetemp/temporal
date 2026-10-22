@@ -455,11 +455,11 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env *testcore.TestEnv, c *streamCaller) string {
 	id := testcore.RandomizeStr("chat")
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
-		Namespace:       env.Namespace().String(),
-		StreamId:        id,
-		Owner:           workflowWriter(c.run.GetRunID(), 3),
-		OwnerWorkflowId: c.run.GetID(),
-		CloseWithRun:    true,
+		Namespace:    env.Namespace().String(),
+		StreamId:     id,
+		Owner:        workflowWriter(c.run.GetRunID(), 3),
+		Ref:          &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()},
+		CloseWithRun: true,
 	})
 	s.NoError(err)
 	return id

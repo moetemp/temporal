@@ -136,8 +136,8 @@ func (h *handler) CreateStream(
 		}
 	}
 	if req.GetCloseWithRun() && (req.GetOwner().GetKind() != streamservice.PRODUCER_KIND_WORKFLOW ||
-		req.GetOwner().GetRunId() == "" || req.GetOwnerWorkflowId() == "") {
-		return nil, invalid("close_with_run needs a Workflow owner with its run id and owner_workflow_id")
+		req.GetRef().GetWorkflowId() == "" || req.GetRef().GetFirstExecutionRunId() == "") {
+		return nil, invalid("close_with_run needs a Workflow owner and a ref with workflow_id and first_execution_run_id")
 	}
 	in := CreateInput{Request: req, Limits: limits, OwnerCheckInterval: h.config.OwnerCheckInterval(req.GetNamespace())}
 	create := func(policy chasm.TransitionOption) (CreateOutput, error) {

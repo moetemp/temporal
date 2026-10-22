@@ -60,8 +60,6 @@ type ownerEnd struct {
 	ended   bool
 	result  *commonpb.Payload
 	failure *failurepb.Failure
-	// The first run id of the chain, kept after the first check.
-	firstRunID string
 }
 
 // Execute describes the owner's chain. When it closed, the Stream closes with the result or the
@@ -93,7 +91,6 @@ func (h *ownerCheckTaskHandler) Execute(
 			if s.Phase != streampb.STREAM_PHASE_OPEN || !s.GetOwnerCheckTime().AsTime().Equal(task.GetScheduledTime().AsTime()) {
 				return struct{}{}, nil
 			}
-			s.OwnerFirstRunId = end.firstRunID
 			if end.ended {
 				s.close(mctx, s.GetOwner(), end.result, end.failure)
 				s.finish(mctx, limits)
@@ -114,24 +111,14 @@ func (h *ownerCheckTaskHandler) ownerEnded(
 	ns *namespace.Namespace,
 	state *streampb.StreamState,
 ) (ownerEnd, error) {
-	end := ownerEnd{firstRunID: state.GetOwnerFirstRunId()}
+	end := ownerEnd{}
 	gone := ownerEnd{ended: true, failure: &failurepb.Failure{
 		Message: "The owner Workflow ended without closing the Stream",
 		FailureInfo: &failurepb.Failure_ApplicationFailureInfo{ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{
 			NonRetryable: true,
 		}},
 	}}
-	if end.firstRunID == "" {
-		owner, err := h.describe(ctx, ns, state.GetOwnerWorkflowId(), state.GetOwner().GetRunId())
-		if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
-			return gone, nil
-		}
-		if err != nil {
-			return ownerEnd{}, err
-		}
-		end.firstRunID = owner.GetWorkflowExecutionInfo().GetFirstRunId()
-	}
-	current, err := h.describe(ctx, ns, state.GetOwnerWorkflowId(), "")
+	current, err := h.describe(ctx, ns, state.GetOwnerWorkflowId())
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return gone, nil
 	}
@@ -139,7 +126,7 @@ func (h *ownerCheckTaskHandler) ownerEnded(
 		return ownerEnd{}, err
 	}
 	info := current.GetWorkflowExecutionInfo()
-	if info.GetFirstRunId() != end.firstRunID {
+	if info.GetFirstRunId() != state.GetOwnerFirstRunId() {
 		return gone, nil
 	}
 	switch info.GetStatus() {
@@ -187,13 +174,13 @@ func (h *ownerCheckTaskHandler) ownerEnded(
 func (h *ownerCheckTaskHandler) describe(
 	ctx context.Context,
 	ns *namespace.Namespace,
-	workflowID, runID string,
+	workflowID string,
 ) (*historyservice.DescribeWorkflowExecutionResponse, error) {
 	return h.historyClient.DescribeWorkflowExecution(ctx, &historyservice.DescribeWorkflowExecutionRequest{
 		NamespaceId: ns.ID().String(),
 		Request: &workflowservice.DescribeWorkflowExecutionRequest{
 			Namespace: ns.Name().String(),
-			Execution: &commonpb.WorkflowExecution{WorkflowId: workflowID, RunId: runID},
+			Execution: &commonpb.WorkflowExecution{WorkflowId: workflowID},
 		},
 	})
 }
