@@ -920,3 +920,26 @@ func TestLocalActivityProducerGoesFirstAtTheCap(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"client", "call", "tool"}, topics(read))
 }
+
+// A Local Activity's next attempt in the same Workflow Task redoes the call, so its first batch
+// withdraws the earlier attempt's Records, as the crate's append script does.
+func TestLocalActivityRetryWithdrawsTheEarlierAttempt(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(localActivityProducer(3), 1, "x")
+	require.NoError(t, err)
+	retry := localActivityProducer(3)
+	retry.Epoch.Attempt = 2
+	_, err = h.append(retry, 1, "y")
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"x", "superseded", "y"}, topics(read))
+	require.Equal(t, int32(2), read.GetRecords()[1].GetSupersession().GetEpoch().GetAttempt())
+	last, err := chasm.ReadComponent(h.ctx, h.ref(), (*Stream).Last,
+		&streamservice.ReadRecordsRequest{Last: 2})
+	require.NoError(t, err)
+	require.Equal(t, []string{"y"}, topics(last))
+}
