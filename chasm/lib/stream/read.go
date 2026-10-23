@@ -56,9 +56,8 @@ func (s *Stream) Page(
 	if n := int(req.GetMaxRecords()); n > 0 && n < MaxRecords {
 		limit = n
 	}
-	if end := req.GetToOffset(); end > 0 && from >= end {
-		return &streamservice.ReadRecordsResponse{NextOffset: from}, false, nil
-	}
+	// A page from past the close answers the close Record even when to_offset is from, so the
+	// replay of that page reads it again.
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && from > s.CloseOffset {
 		records, after := s.afterClose(ctx, from, req.GetToOffset())
 		return &streamservice.ReadRecordsResponse{
@@ -66,6 +65,9 @@ func (s *Stream) Page(
 			NextOffset: max(from, after),
 			Done:       true,
 		}, true, nil
+	}
+	if end := req.GetToOffset(); end > 0 && from >= end {
+		return &streamservice.ReadRecordsResponse{NextOffset: from}, false, nil
 	}
 	resp, err := s.scan(ctx, req, from, limit)
 	if err != nil {
