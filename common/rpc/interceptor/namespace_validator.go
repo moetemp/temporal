@@ -8,6 +8,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/api/adminservice/v1"
 	"go.temporal.io/server/common"
@@ -397,6 +398,9 @@ func (ni *NamespaceValidatorInterceptor) extractNamespaceFromTaskToken(req any) 
 	}
 	taskTokenBytes := reqWithTaskToken.GetTaskToken()
 	if len(taskTokenBytes) == 0 {
+		if optionalTaskToken(req) {
+			return nil, nil
+		}
 		return nil, errTaskTokenNotSet
 	}
 	var namespaceID namespace.ID
@@ -419,6 +423,17 @@ func (ni *NamespaceValidatorInterceptor) extractNamespaceFromTaskToken(req any) 
 		return nil, errNamespaceNotSet
 	}
 	return ni.namespaceRegistry.GetNamespaceByID(namespaceID)
+}
+
+// optionalTaskToken says whether a request carries a task token only from some callers. A Stream
+// write carries one only from an Activity, and other callers name the namespace.
+func optionalTaskToken(req any) bool {
+	switch req.(type) {
+	case *streamservice.CreateStreamRequest, *streamservice.AppendRecordsRequest, *streamservice.CloseStreamRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 func (ni *NamespaceValidatorInterceptor) checkNamespaceMatch(requestNamespace *namespace.Namespace, tokenNamespace *namespace.Namespace) error {
