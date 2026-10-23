@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nexus-rpc/sdk-go/nexus"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
+	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/server/chasm"
-	"go.temporal.io/server/chasm/lib/callback"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
 	"go.temporal.io/server/common/namespace"
 	commonnexus "go.temporal.io/server/common/nexus"
@@ -21,8 +21,32 @@ import (
 // commits in the Workflow's transaction, so an append and the wake of its readers go together.
 type Host interface {
 	chasm.Component
-	callback.CompletionSource
 	NestedStreams() chasm.Map[string, *Stream]
+	// RunEnd is how this closed run ended.
+	RunEnd(ctx chasm.Context) (RunEnd, error)
+}
+
+// RunEnd is how the run that ends a chain ended. The chain's close-with-run Streams close with it.
+type RunEnd struct {
+	Result  *commonpb.Payload
+	Failure *failurepb.Failure
+	Status  streamservice.CloseStatus
+	RunID   string
+	// The started event id of the run's last completed Workflow Task, zero if none.
+	LastCompleted int64
+}
+
+// EndChain closes the Stream with the end of its run chain when it closes with the run. First it
+// withdraws the closing run's Records of tasks after its last completed Workflow Task, since a
+// terminate or a timeout ends the run while a task is open, and that task never completes.
+func (s *Stream) EndChain(ctx chasm.MutableContext, end RunEnd, limits Limits) {
+	if s.Phase == streampb.STREAM_PHASE_OPEN || s.Phase == streampb.STREAM_PHASE_CLOSED {
+		s.withdrawRunTail(ctx, end)
+	}
+	if s.GetCloseWithRun() && s.Phase == streampb.STREAM_PHASE_OPEN {
+		s.close(ctx, s.GetOwner(), end.Result, end.Failure, end.Status)
+	}
+	s.finish(ctx, limits)
 }
 
 // target is where a Stream lives: its own execution keyed by the Stream id, or a child of the
@@ -187,14 +211,10 @@ func (h *closeChainTaskHandler) Execute(
 	_ chasm.TaskAttributes,
 	task *streampb.StreamCloseChainTask,
 ) error {
-	completion, err := chasm.ReadComponent(ctx, ref,
-		func(h Host, cctx chasm.Context, _ struct{}) (nexusrpc.CompleteOperationOptions, error) {
-			return h.GetNexusCompletion(cctx, "")
+	end, err := chasm.ReadComponent(ctx, ref,
+		func(h Host, cctx chasm.Context, _ struct{}) (RunEnd, error) {
+			return h.RunEnd(cctx)
 		}, struct{}{})
-	if err != nil {
-		return err
-	}
-	result, failure, err := outcome(completion)
 	if err != nil {
 		return err
 	}
@@ -210,11 +230,7 @@ func (h *closeChainTaskHandler) Execute(
 	_, _, err = chasm.UpdateComponent(ctx, first.hostRef(),
 		func(h Host, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
 			for _, field := range h.NestedStreams() {
-				s := field.Get(mctx)
-				if s.GetCloseWithRun() && s.Phase == streampb.STREAM_PHASE_OPEN {
-					s.close(mctx, s.GetOwner(), result, failure)
-				}
-				s.finish(mctx, limits)
+				field.Get(mctx).EndChain(mctx, end, limits)
 			}
 			return struct{}{}, nil
 		}, struct{}{})
@@ -225,25 +241,88 @@ func (h *closeChainTaskHandler) Execute(
 	return err
 }
 
-// outcome gives the result or the failure of a closed run from its Nexus completion.
-func outcome(completion nexusrpc.CompleteOperationOptions) (*commonpb.Payload, *failurepb.Failure, error) {
+// RunEndOfCompletion gives the end of a closed run from its Nexus completion and its status.
+func RunEndOfCompletion(
+	completion nexusrpc.CompleteOperationOptions,
+	status enumspb.WorkflowExecutionStatus,
+) (RunEnd, error) {
+	end := RunEnd{Status: closeStatusOf(status)}
 	if completion.Error == nil {
 		if result, ok := completion.Result.(*commonpb.Payload); ok {
-			return result, nil, nil
+			end.Result = result
 		}
-		return nil, nil, nil
+		return end, nil
 	}
 	nf, err := nexusrpc.DefaultFailureConverter().ErrorToFailure(completion.Error)
 	if err != nil {
-		return nil, nil, err
+		return RunEnd{}, err
 	}
 	failure, err := commonnexus.NexusFailureToTemporalFailure(nf)
 	if err != nil {
-		return nil, nil, err
+		return RunEnd{}, err
 	}
 	// The operation error wraps the run's own failure.
-	if cause := failure.GetCause(); cause != nil && completion.Error.State != nexus.OperationStateCanceled {
-		return nil, cause, nil
+	end.Failure = failure
+	if cause := failure.GetCause(); cause != nil {
+		end.Failure = cause
 	}
-	return nil, failure, nil
+	return end, nil
+}
+
+// RunEndOfEvent gives the end of a run from its close event, in the same shape as
+// RunEndOfCompletion, so a close in the run's own transaction and a close by the task agree.
+func RunEndOfEvent(event *historypb.HistoryEvent) RunEnd {
+	switch event.GetEventType() {
+	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
+		end := RunEnd{Status: streamservice.CLOSE_STATUS_COMPLETED}
+		attrs := event.GetWorkflowExecutionCompletedEventAttributes()
+		if results := attrs.GetResult().GetPayloads(); len(results) > 0 {
+			end.Result = results[0]
+		}
+		return end
+	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
+		return RunEnd{
+			Status:  streamservice.CLOSE_STATUS_FAILED,
+			Failure: event.GetWorkflowExecutionFailedEventAttributes().GetFailure(),
+		}
+	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED:
+		details := event.GetWorkflowExecutionCanceledEventAttributes().GetDetails()
+		return RunEnd{Status: streamservice.CLOSE_STATUS_CANCELED, Failure: &failurepb.Failure{
+			Message: "operation canceled",
+			FailureInfo: &failurepb.Failure_CanceledFailureInfo{
+				CanceledFailureInfo: &failurepb.CanceledFailureInfo{Details: details},
+			},
+		}}
+	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED:
+		return RunEnd{Status: streamservice.CLOSE_STATUS_TERMINATED, Failure: &failurepb.Failure{
+			Message: "operation terminated",
+			FailureInfo: &failurepb.Failure_TerminatedFailureInfo{
+				TerminatedFailureInfo: &failurepb.TerminatedFailureInfo{},
+			},
+		}}
+	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
+		return RunEnd{Status: streamservice.CLOSE_STATUS_TIMED_OUT, Failure: &failurepb.Failure{
+			Message: "operation exceeded internal timeout",
+			FailureInfo: &failurepb.Failure_TimeoutFailureInfo{
+				TimeoutFailureInfo: &failurepb.TimeoutFailureInfo{},
+			},
+		}}
+	default:
+		return RunEnd{Status: streamservice.CLOSE_STATUS_COMPLETED}
+	}
+}
+
+func closeStatusOf(status enumspb.WorkflowExecutionStatus) streamservice.CloseStatus {
+	switch status {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		return streamservice.CLOSE_STATUS_FAILED
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		return streamservice.CLOSE_STATUS_CANCELED
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+		return streamservice.CLOSE_STATUS_TERMINATED
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return streamservice.CLOSE_STATUS_TIMED_OUT
+	default:
+		return streamservice.CLOSE_STATUS_COMPLETED
+	}
 }

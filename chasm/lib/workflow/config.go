@@ -24,6 +24,7 @@ type Config struct {
 	timeSkippingMaxSkipPerSession      dynamicconfig.IntPropertyFnWithNamespaceFilter
 	timeSkippingMaxAccumulatedDuration dynamicconfig.DurationPropertyFn
 	streamsEnabled                     dynamicconfig.BoolPropertyFnWithNamespaceFilter
+	streamLimits                       func(string) stream.Limits
 }
 
 func NewConfig(dc *dynamicconfig.Collection) Config {
@@ -37,5 +38,6 @@ func NewConfig(dc *dynamicconfig.Collection) Config {
 		timeSkippingMaxSkipPerSession:      dynamicconfig.TimeSkippingMaxSkipPerSession.Get(dc),
 		timeSkippingMaxAccumulatedDuration: dynamicconfig.TimeSkippingMaxAccumulatedDuration.Get(dc),
 		streamsEnabled:                     stream.Enabled.Get(dc),
+		streamLimits:                       stream.ConfigProvider(dc).LimitsFor,
 	}
 }

@@ -130,10 +130,39 @@ func (w *Workflow) HoldsStreams(ctx chasm.Context) bool {
 	return false
 }
 
-// CloseChainStreams closes the chain's close-with-run Streams through a task on this run, which
-// reads this run's outcome and writes the first run on the same shard.
-func (w *Workflow) CloseChainStreams(ctx chasm.MutableContext, firstRunID string) {
-	ctx.AddTask(w, chasm.TaskAttributes{}, &streampb.StreamCloseChainTask{FirstRunId: firstRunID})
+// EndChainStreams closes the chain's close-with-run Streams with this run's close event. The
+// Streams of this run close in its own transaction. Those of the chain's first run close through
+// a task on this run, which writes the first run on the same shard.
+func (w *Workflow) EndChainStreams(
+	ctx chasm.MutableContext,
+	firstRunID string,
+	closeEvent *historypb.HistoryEvent,
+) {
+	if len(w.Streams) > 0 {
+		end := stream.RunEndOfEvent(closeEvent)
+		end.RunID = ctx.ExecutionKey().RunID
+		end.LastCompleted = w.LastCompletedWorkflowTaskStartedEventID()
+		limits := workflowContextFromChasm(ctx).streamLimits(ctx.NamespaceEntry().Name().String())
+		for _, field := range w.Streams {
+			field.Get(ctx).EndChain(ctx, end, limits)
+		}
+	}
+	if firstRunID != "" && firstRunID != ctx.ExecutionKey().RunID {
+		task := &streampb.StreamCloseChainTask{FirstRunId: firstRunID}
+		ctx.AddTask(w, chasm.TaskAttributes{}, task)
+	}
+}
+
+// RunEnd is how this closed run ended. It implements [stream.Host].
+func (w *Workflow) RunEnd(ctx chasm.Context) (stream.RunEnd, error) {
+	completion, err := w.GetNexusCompletion(ctx, "")
+	if err != nil {
+		return stream.RunEnd{}, err
+	}
+	end, err := stream.RunEndOfCompletion(completion, w.ExecutionStatus())
+	end.RunID = ctx.ExecutionKey().RunID
+	end.LastCompleted = w.LastCompletedWorkflowTaskStartedEventID()
+	return end, err
 }
 
 // ProcessAllUpdateCloseCallbacks triggers callbacks for all updates without touching

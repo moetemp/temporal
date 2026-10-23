@@ -293,6 +293,8 @@ func TestAutoCloseAfterNoAppend(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "close"}, topics(closed))
 	require.Nil(t, closed.GetRecords()[1].GetCloseResult())
+	// A Producer with no id fails a client's decode of the Record.
+	require.Nil(t, closed.GetRecords()[1].GetProducer())
 }
 
 func TestRetentionDropsOldRecordsAndExpiresTheStream(t *testing.T) {
@@ -636,4 +638,52 @@ func TestFailedTaskBeforeTheLastCompletedOneIsWithdrawnByItsID(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"orphan", "superseded", "next"}, topics(read))
 	require.Equal(t, []int64{3}, read.GetRecords()[1].GetSupersession().GetFailedTasks())
+}
+
+// A run terminated while a task is open never completes that task. The chain's end withdraws the
+// run's Records of tasks after its last completed one, before the close, so a reader drops them.
+func TestChainEndWithdrawsTheTasksThatNeverCompleted(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: workflowProducer(1), CloseWithRun: true,
+	})
+	require.NoError(t, err)
+	_, err = h.appendRequest(localActivityWrite("call-1", 3, 0, "kept"))
+	require.NoError(t, err)
+	_, err = h.appendRequest(localActivityWrite("call-2", 7, 3, "open"))
+	require.NoError(t, err)
+
+	end := RunEnd{RunID: "run", LastCompleted: 3, Status: streamservice.CLOSE_STATUS_TERMINATED}
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(),
+		func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			s.EndChain(mctx, end, h.limits)
+			return struct{}{}, nil
+		}, struct{}{})
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"kept", "open", "superseded", "close"}, topics(read))
+	completed := read.GetRecords()[2].GetSupersession().GetPreviousCompletedTask()
+	require.Equal(t, int64(3), completed.GetStartedEventId())
+	require.Equal(t, streamservice.CLOSE_STATUS_TERMINATED, read.GetRecords()[3].GetCloseStatus())
+}
+
+// Only the owner's end terminates or times out a Stream, so a caller can't forge either status.
+func TestCallerCantCloseAsTerminated(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
+		Request: &streamservice.CloseStreamRequest{
+			Producer: activityProducer(1), Status: streamservice.CLOSE_STATUS_TERMINATED,
+		},
+		Limits: h.limits,
+	})
+	require.ErrorContains(t, err, ReasonInvalid)
+
+	require.NoError(t, h.close("done"))
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, streamservice.CLOSE_STATUS_COMPLETED, read.GetRecords()[0].GetCloseStatus())
 }

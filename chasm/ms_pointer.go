@@ -73,6 +73,17 @@ func (m MSPointer) GetNexusCompletion(ctx Context, requestID string) (nexusrpc.C
 	return m.backend.GetNexusCompletion(ctx.goContext(), requestID)
 }
 
+// ExecutionStatus is the status of the underlying execution.
+func (m MSPointer) ExecutionStatus() enumspb.WorkflowExecutionStatus {
+	return m.backend.GetExecutionState().GetStatus()
+}
+
+// LastCompletedWorkflowTaskStartedEventID is the started event id of the last completed Workflow
+// Task, zero if none.
+func (m MSPointer) LastCompletedWorkflowTaskStartedEventID() int64 {
+	return m.backend.GetExecutionInfo().GetLastCompletedWorkflowTaskStartedEventId()
+}
+
 // GetWorkflowTypeName retrieves the workflow type name from the underlying mutable state.
 func (m MSPointer) GetWorkflowTypeName() string {
 	return m.backend.GetExecutionInfo().GetWorkflowTypeName()

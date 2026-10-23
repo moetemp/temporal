@@ -497,7 +497,9 @@ func (s *StreamTestSuite) TestStreamClosesWithTheOwnerResult() {
 	})
 	s.NoError(err)
 
-	s.Equal(payload.EncodeString("answer").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
+	closed := s.readClose(sc, env, owned)
+	s.Equal(payload.EncodeString("answer").GetData(), closed.GetCloseResult().GetData())
+	s.Equal(streamservice.CLOSE_STATUS_COMPLETED, closed.GetCloseStatus())
 }
 
 func (s *StreamTestSuite) TestStreamClosesWithATerminatedOwner() {
@@ -508,8 +510,50 @@ func (s *StreamTestSuite) TestStreamClosesWithATerminatedOwner() {
 
 	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.run.GetRunID(), "stop"))
 
-	failure := s.readClose(sc, env, owned).GetCloseFailure()
-	s.NotNil(failure.GetTerminatedFailureInfo())
+	closed := s.readClose(sc, env, owned)
+	s.NotNil(closed.GetCloseFailure().GetTerminatedFailureInfo())
+	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, closed.GetCloseStatus())
+}
+
+// A cron run's end isn't the chain's end, so the next cron run writes on. The terminate of a later
+// run ends the chain and closes the Stream with its status.
+func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := &streamCaller{s: s, env: env, taskQueue: testcore.RandomizeStr(s.T().Name())}
+	run, err := env.SdkClient().ExecuteWorkflow(s.Context(), client.StartWorkflowOptions{
+		TaskQueue: c.taskQueue, CronSchedule: "@every 1s",
+	}, "stream-caller")
+	s.NoError(err)
+	c.run = run
+	s.T().Cleanup(func() {
+		_ = env.SdkClient().TerminateWorkflow(s.Context(), run.GetID(), "", "test cleanup")
+	})
+	c.poll()
+	owned := s.closeWithRun(sc, env, c)
+
+	// Run 1 completes and the next cron run starts.
+	c.respond(&commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
+			CompleteWorkflowExecutionCommandAttributes: &commandpb.
+				CompleteWorkflowExecutionCommandAttributes{},
+		},
+	})
+	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+		Producer: workflowWriter("run-2", 3), Sequence: 1, Records: records("next"),
+	})
+	s.NoError(err)
+
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), run.GetID(), "", "stop"))
+	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+		FromOffset: appended.GetLastOffset() + 1, Wait: durationpb.New(20 * time.Second),
+	})
+	s.NoError(err)
+	s.Equal([]string{"close"}, kindsAndTopics(page))
+	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, page.GetRecords()[0].GetCloseStatus())
 }
 
 func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
@@ -627,7 +671,9 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 		}},
 	})
 	s.NoError(err)
-	s.Equal(payload.EncodeString("run-2").GetData(), s.readClose(sc, env, owned).GetCloseResult().GetData())
+	closed := s.readClose(sc, env, owned)
+	s.Equal(payload.EncodeString("run-2").GetData(), closed.GetCloseResult().GetData())
+	s.Equal(streamservice.CLOSE_STATUS_COMPLETED, closed.GetCloseStatus())
 }
 
 // directRead reads through the direct System Nexus call, which adds no History event.

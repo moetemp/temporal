@@ -5087,7 +5087,7 @@ func (ms *MutableStateImpl) ApplyWorkflowExecutionCompletedEvent(
 	ms.executionInfo.CloseTime = event.GetEventTime()
 	ms.ClearStickyTaskQueue()
 	ms.writeEventToCache(event)
-	return ms.processCloseCallbacks()
+	return ms.processCloseCallbacks(event)
 }
 
 func (ms *MutableStateImpl) AddFailWorkflowEvent(
@@ -5134,7 +5134,7 @@ func (ms *MutableStateImpl) ApplyWorkflowExecutionFailedEvent(
 
 	attrs := event.GetWorkflowExecutionFailedEventAttributes()
 	if attrs.RetryState != enumspb.RETRY_STATE_IN_PROGRESS {
-		return ms.processCloseCallbacks()
+		return ms.processCloseCallbacks(event)
 	}
 	// Workflow-level callbacks are inherited by the retry run, but update callbacks
 	// must fire now because the update was aborted on the old run.
@@ -5183,7 +5183,7 @@ func (ms *MutableStateImpl) ApplyWorkflowExecutionTimedoutEvent(
 
 	attrs := event.GetWorkflowExecutionTimedOutEventAttributes()
 	if attrs.RetryState != enumspb.RETRY_STATE_IN_PROGRESS {
-		return ms.processCloseCallbacks()
+		return ms.processCloseCallbacks(event)
 	}
 	// Workflow-level callbacks are inherited by the retry run, but update callbacks
 	// must fire now because the update was aborted on the old run.
@@ -5265,7 +5265,7 @@ func (ms *MutableStateImpl) ApplyWorkflowExecutionCanceledEvent(
 	ms.executionInfo.CloseTime = event.GetEventTime()
 	ms.ClearStickyTaskQueue()
 	ms.writeEventToCache(event)
-	return ms.processCloseCallbacks()
+	return ms.processCloseCallbacks(event)
 }
 
 func (ms *MutableStateImpl) AddRequestCancelExternalWorkflowExecutionInitiatedEvent(
@@ -6330,7 +6330,7 @@ func (ms *MutableStateImpl) ApplyWorkflowExecutionTerminatedEvent(
 	ms.ClearStickyTaskQueue()
 	ms.writeEventToCache(event)
 
-	return ms.processCloseCallbacks()
+	return ms.processCloseCallbacks(event)
 }
 
 func (ms *MutableStateImpl) AddWorkflowExecutionSignaled(
@@ -7459,7 +7459,7 @@ func (ms *MutableStateImpl) processUpdateCloseCallbacks() error {
 
 // processCloseCallbacks triggers "WorkflowClosed" callbacks, applying the state machine transition that schedules
 // callback tasks.
-func (ms *MutableStateImpl) processCloseCallbacks() error {
+func (ms *MutableStateImpl) processCloseCallbacks(closeEvent *historypb.HistoryEvent) error {
 	resetRunID := ms.GetExecutionInfo().GetResetRunId()
 	if ms.GetExecutionInfo().GetWorkflowWasReset() && resetRunID != "" && resetRunID != ms.executionState.RunId {
 		return nil
@@ -7470,7 +7470,7 @@ func (ms *MutableStateImpl) processCloseCallbacks() error {
 	// were enabled can still be triggered even if the EnableCHASMCallbacks dynamic config is later
 	// turned off. Once created in CHASM, callbacks should always be processed as long as CHASM is enabled.
 	if ms.ChasmEnabled() {
-		if err := ms.processCloseCallbacksChasm(); err != nil {
+		if err := ms.processCloseCallbacksChasm(closeEvent); err != nil {
 			return err
 		}
 	}
@@ -7502,14 +7502,16 @@ func (ms *MutableStateImpl) processCloseCallbacksHsm() error {
 }
 
 // processCloseCallbacksChasm triggers "WorkflowClosed" callbacks using the CHASM implementation.
-func (ms *MutableStateImpl) processCloseCallbacksChasm() error {
+func (ms *MutableStateImpl) processCloseCallbacksChasm(closeEvent *historypb.HistoryEvent) error {
 	wf, readCtx, err := ms.ChasmWorkflowComponentReadOnly(context.Background())
 	if err != nil {
 		return err
 	}
 
 	firstRunID := ms.GetExecutionInfo().GetFirstExecutionRunId()
-	hasStreams := wf.HasChainStreams(readCtx, firstRunID)
+	// A cron run's end isn't the chain's end. The next run writes on to the chain's Streams.
+	chainEnds := ms.executionInfo.NewExecutionRunId == ""
+	hasStreams := chainEnds && wf.HasChainStreams(readCtx, firstRunID)
 
 	// Return early if there are no chasm callbacks to process.
 	if len(wf.Callbacks) == 0 && len(wf.Updates) == 0 && !hasStreams {
@@ -7523,7 +7525,7 @@ func (ms *MutableStateImpl) processCloseCallbacksChasm() error {
 	}
 
 	if hasStreams {
-		wf.CloseChainStreams(ctx, firstRunID)
+		wf.EndChainStreams(ctx, firstRunID, closeEvent)
 	}
 	return wf.ProcessCloseCallbacks(ctx)
 }

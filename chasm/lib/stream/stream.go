@@ -317,6 +317,10 @@ type CloseInput struct {
 func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.CloseStreamResponse, error) {
 	req := in.Request
 	producer := req.GetProducer()
+	status, err := callerStatus(req)
+	if err != nil {
+		return nil, err
+	}
 	s.applyDue(ctx, in.Limits)
 	if s.Phase == streampb.STREAM_PHASE_CLOSED {
 		return &streamservice.CloseStreamResponse{}, nil
@@ -333,9 +337,25 @@ func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.
 		s.write(ctx, []*streamservice.StreamRecord{supersededRecord(producer, w)})
 	}
 	s.settle(producer, w, false)
-	s.close(ctx, producer, req.GetResult(), req.GetFailure())
+	s.close(ctx, producer, req.GetResult(), req.GetFailure(), status)
 	s.finish(ctx, in.Limits)
 	return &streamservice.CloseStreamResponse{}, nil
+}
+
+// callerStatus is the status of a caller's close. Only the owner's end terminates or times out a
+// Stream, so a reader can trust those two.
+func callerStatus(req *streamservice.CloseStreamRequest) (streamservice.CloseStatus, error) {
+	switch status := req.GetStatus(); status {
+	case streamservice.CLOSE_STATUS_TERMINATED, streamservice.CLOSE_STATUS_TIMED_OUT:
+		return 0, invalid("A caller can't close a Stream as %v", status)
+	case streamservice.CLOSE_STATUS_UNSPECIFIED:
+		if req.GetFailure() != nil {
+			return streamservice.CLOSE_STATUS_FAILED, nil
+		}
+		return streamservice.CLOSE_STATUS_COMPLETED, nil
+	default:
+		return status, nil
+	}
 }
 
 // Describe answers the state of the Stream.
@@ -414,12 +434,14 @@ func (s *Stream) close(
 	producer *streamservice.Producer,
 	result *commonpb.Payload,
 	failure *failurepb.Failure,
+	status streamservice.CloseStatus,
 ) {
 	offset, _ := s.write(ctx, []*streamservice.StreamRecord{{
 		Kind:         streamservice.STREAM_RECORD_KIND_CLOSE,
 		Producer:     producer,
 		CloseResult:  result,
 		CloseFailure: failure,
+		CloseStatus:  status,
 	}})
 	s.Phase = streampb.STREAM_PHASE_CLOSED
 	s.CloseOffset = offset
@@ -547,7 +569,8 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 	case streampb.STREAM_PHASE_OPEN:
 		if at, ok := s.autoCloseAt(); ok && !at.After(now) {
 			s.LastWriteTime = timestamppb.New(at)
-			s.close(ctx, &streamservice.Producer{}, nil, nil)
+			// No Producer made this close, so its Record has none, as the crate's auto close.
+			s.close(ctx, nil, nil, nil, streamservice.CLOSE_STATUS_COMPLETED)
 		} else if !s.ttlAt(limits).After(now) && len(s.Readers) == 0 {
 			s.expire(ctx)
 			return
