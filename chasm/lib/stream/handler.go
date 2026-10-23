@@ -433,8 +433,8 @@ func (h *handler) floorRun(
 	if run == nil || !t.nested || req.GetWakeOnly() {
 		return nil, nil
 	}
-	lowers, err := read(ctx, t, func(s *Stream, _ chasm.Context) (bool, error) {
-		_, ok := s.readerFloor(run.RunID, s.floorStart(req, from))
+	lowers, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (bool, error) {
+		_, ok := s.readerFloor(cctx, run.RunID, s.floorStart(req, from))
 		return ok, nil
 	})
 	if err != nil || !lowers {
@@ -469,7 +469,7 @@ func (h *handler) page(
 			resp = s.wakeAnswer(start)
 		}
 		if reader != nil {
-			resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(reader.RunID, limits)
+			resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(cctx, reader.RunID, limits)
 		}
 		return pagedRead{resp: resp, found: found}, nil
 	}

@@ -563,7 +563,7 @@ func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	require.Equal(t, []string{"b"}, topics(all))
 
 	setReaders(func(s *Stream, mctx chasm.MutableContext) error {
-		delete(s.Readers, "run-1")
+		s.dropReaders(mctx, []string{"run-1"})
 		s.ApplyDue(mctx, h.limits)
 		return nil
 	})
@@ -803,4 +803,26 @@ func TestBatchDigestVector(t *testing.T) {
 	}})
 	require.Equal(t, "817ca6adadba99bd9a23764d62be9b40d78f1be310682bb85f208699f9c1f621",
 		hex.EncodeToString(digest))
+}
+
+// At the Producer cap a Local Activity's entry goes first, since a call writes only while it
+// runs. A client's older entry keeps its dedupe state, so its resend still goes in once.
+func TestLocalActivityProducerGoesFirstAtTheCap(t *testing.T) {
+	h := newHarness(t)
+	h.limits.MaxProducers = 2
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	client, err := h.append(clientProducer(), 1, "client")
+	require.NoError(t, err)
+	_, err = h.append(localActivityProducer(3), 1, "call")
+	require.NoError(t, err)
+	_, err = h.append(activityProducer(1), 1, "tool")
+	require.NoError(t, err)
+
+	again, err := h.append(clientProducer(), 1, "client")
+	require.NoError(t, err)
+	require.Equal(t, client.GetFirstOffset(), again.GetFirstOffset())
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"client", "call", "tool"}, topics(read))
 }

@@ -176,7 +176,7 @@ func (s *Stream) Last(
 				}
 				scanned++
 				if entry.GetKind() != streamservice.STREAM_RECORD_KIND_DATA ||
-					!passes(req, entry.GetTopic()) || s.withdrawn(entry) {
+					!passes(req, entry.GetTopic()) || s.withdrawn(ctx, entry) {
 					continue
 				}
 				entrySize := int64(proto.Size(entry))
@@ -377,7 +377,8 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 			if in.Request.GetWakeOnly() {
 				resp = s.wakeAnswer(from)
 			}
-			resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(read.GetReaderRunId(), in.Limits)
+			resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(ctx, read.GetReaderRunId(),
+				in.Limits)
 			return resp, nil
 		}
 		read.StartOffset = from
@@ -444,7 +445,7 @@ func (s *Stream) wake(
 		resp = s.wakeAnswer(read.GetStartOffset())
 	}
 	if found {
-		resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(read.GetReaderRunId(), limits)
+		resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(ctx, read.GetReaderRunId(), limits)
 		return readOutcome{resp: resp}, true
 	}
 	read.ScanOffset = max(read.GetScanOffset(), resp.GetNextOffset())

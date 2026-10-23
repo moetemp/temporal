@@ -134,12 +134,8 @@ type StreamState struct {
 	// The stored batches in offset order.
 	Index       []*BatchInfo `protobuf:"bytes,11,rep,name=index,proto3" json:"index,omitempty"`
 	StoredBytes int64        `protobuf:"varint,12,opt,name=stored_bytes,json=storedBytes,proto3" json:"stored_bytes,omitempty"`
-	// Keyed by the Producer kind, id and run.
-	Producers map[string]*ProducerState `protobuf:"bytes,13,rep,name=producers,proto3" json:"producers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Runs that a retry run withdrew. Their Producers are fenced.
 	FencedRuns []string `protobuf:"bytes,14,rep,name=fenced_runs,json=fencedRuns,proto3" json:"fenced_runs,omitempty"`
-	// The Workflow Task facts of each run that wrote, keyed by run id.
-	Runs map[string]*RunTasks `protobuf:"bytes,16,rep,name=runs,proto3" json:"runs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// The owner run of a Workflow Stream, the Producer of its close with the run chain.
 	Owner *v1.Producer `protobuf:"bytes,17,opt,name=owner,proto3" json:"owner,omitempty"`
 	// The Stream closes with the result or the failure of its owner's run chain.
@@ -147,9 +143,10 @@ type StreamState struct {
 	// A Workflow Stream, nested in its chain's first run. Its reads see every Record that is still
 	// stored, so a replay of a read from the start begins where the read did.
 	Nested bool `protobuf:"varint,23,opt,name=nested,proto3" json:"nested,omitempty"`
-	// The open Workflow runs that read the Stream, keyed by run id. The Retention, the size cap and
-	// the expiry drop no Record at or past the lowest floor, since the run's replay reads it again.
-	Readers map[string]*ReaderFloor `protobuf:"bytes,24,rep,name=readers,proto3" json:"readers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// The lowest floor of the open Workflow runs that read the Stream, zero with none. The
+	// Retention, the size cap and the expiry drop no Record at or past it, since the run's replay
+	// reads it again. The floors themselves are data nodes.
+	Floor int64 `protobuf:"varint,26,opt,name=floor,proto3" json:"floor,omitempty"`
 	// The deadline of the armed reader check, so an older task is a no-op.
 	ReadersCheckTime *timestamppb.Timestamp `protobuf:"bytes,25,opt,name=readers_check_time,json=readersCheckTime,proto3" json:"readers_check_time,omitempty"`
 	// The deadline of the armed timer task, so an older task is a no-op.
@@ -272,23 +269,9 @@ func (x *StreamState) GetStoredBytes() int64 {
 	return 0
 }
 
-func (x *StreamState) GetProducers() map[string]*ProducerState {
-	if x != nil {
-		return x.Producers
-	}
-	return nil
-}
-
 func (x *StreamState) GetFencedRuns() []string {
 	if x != nil {
 		return x.FencedRuns
-	}
-	return nil
-}
-
-func (x *StreamState) GetRuns() map[string]*RunTasks {
-	if x != nil {
-		return x.Runs
 	}
 	return nil
 }
@@ -314,11 +297,11 @@ func (x *StreamState) GetNested() bool {
 	return false
 }
 
-func (x *StreamState) GetReaders() map[string]*ReaderFloor {
+func (x *StreamState) GetFloor() int64 {
 	if x != nil {
-		return x.Readers
+		return x.Floor
 	}
-	return nil
+	return 0
 }
 
 func (x *StreamState) GetReadersCheckTime() *timestamppb.Timestamp {
@@ -829,7 +812,7 @@ var File_temporal_server_chasm_lib_stream_proto_v1_message_proto protoreflect.Fi
 
 const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" +
 	"\n" +
-	"7temporal/server/chasm/lib/stream/proto/v1/message.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a9temporal/server/chasm/lib/callback/proto/v1/message.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%temporal/api/failure/v1/message.proto\x1a2temporal/api/streamservice/v1/stream_service.proto\"\xd4\f\n" +
+	"7temporal/server/chasm/lib/stream/proto/v1/message.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a9temporal/server/chasm/lib/callback/proto/v1/message.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%temporal/api/failure/v1/message.proto\x1a2temporal/api/streamservice/v1/stream_service.proto\"\xa2\b\n" +
 	"\vStreamState\x12L\n" +
 	"\x05phase\x18\x01 \x01(\x0e26.temporal.server.chasm.lib.stream.proto.v1.StreamPhaseR\x05phase\x127\n" +
 	"\tretention\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\tretention\x128\n" +
@@ -846,26 +829,15 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"\x0etrimmed_offset\x18\n" +
 	" \x01(\x03R\rtrimmedOffset\x12J\n" +
 	"\x05index\x18\v \x03(\v24.temporal.server.chasm.lib.stream.proto.v1.BatchInfoR\x05index\x12!\n" +
-	"\fstored_bytes\x18\f \x01(\x03R\vstoredBytes\x12c\n" +
-	"\tproducers\x18\r \x03(\v2E.temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntryR\tproducers\x12\x1f\n" +
+	"\fstored_bytes\x18\f \x01(\x03R\vstoredBytes\x12\x1f\n" +
 	"\vfenced_runs\x18\x0e \x03(\tR\n" +
-	"fencedRuns\x12T\n" +
-	"\x04runs\x18\x10 \x03(\v2@.temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntryR\x04runs\x12=\n" +
+	"fencedRuns\x12=\n" +
 	"\x05owner\x18\x11 \x01(\v2'.temporal.api.streamservice.v1.ProducerR\x05owner\x12$\n" +
 	"\x0eclose_with_run\x18\x15 \x01(\bR\fcloseWithRun\x12\x16\n" +
-	"\x06nested\x18\x17 \x01(\bR\x06nested\x12]\n" +
-	"\areaders\x18\x18 \x03(\v2C.temporal.server.chasm.lib.stream.proto.v1.StreamState.ReadersEntryR\areaders\x12H\n" +
+	"\x06nested\x18\x17 \x01(\bR\x06nested\x12\x14\n" +
+	"\x05floor\x18\x1a \x01(\x03R\x05floor\x12H\n" +
 	"\x12readers_check_time\x18\x19 \x01(\v2\x1a.google.protobuf.TimestampR\x10readersCheckTime\x12A\n" +
-	"\x0etimer_deadline\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\rtimerDeadline\x1av\n" +
-	"\x0eProducersEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12N\n" +
-	"\x05value\x18\x02 \x01(\v28.temporal.server.chasm.lib.stream.proto.v1.ProducerStateR\x05value:\x028\x01\x1al\n" +
-	"\tRunsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12I\n" +
-	"\x05value\x18\x02 \x01(\v23.temporal.server.chasm.lib.stream.proto.v1.RunTasksR\x05value:\x028\x01\x1ar\n" +
-	"\fReadersEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12L\n" +
-	"\x05value\x18\x02 \x01(\v26.temporal.server.chasm.lib.stream.proto.v1.ReaderFloorR\x05value:\x028\x01J\x04\b\x12\x10\x13J\x04\b\x13\x10\x14J\x04\b\x14\x10\x15J\x04\b\x16\x10\x17R\fhold_records\"F\n" +
+	"\x0etimer_deadline\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\rtimerDeadlineJ\x04\b\r\x10\x0eJ\x04\b\x10\x10\x11J\x04\b\x12\x10\x13J\x04\b\x13\x10\x14J\x04\b\x14\x10\x15J\x04\b\x16\x10\x17J\x04\b\x18\x10\x19R\fhold_recordsR\tproducersR\x04runsR\areaders\"F\n" +
 	"\vReaderFloor\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x16\n" +
@@ -933,7 +905,7 @@ func file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDescGZIP() 
 }
 
 var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_goTypes = []any{
 	(StreamPhase)(0),               // 0: temporal.server.chasm.lib.stream.proto.v1.StreamPhase
 	(*StreamState)(nil),            // 1: temporal.server.chasm.lib.stream.proto.v1.StreamState
@@ -943,57 +915,48 @@ var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_goTypes = []any
 	(*RunTasks)(nil),               // 5: temporal.server.chasm.lib.stream.proto.v1.RunTasks
 	(*RecordBatch)(nil),            // 6: temporal.server.chasm.lib.stream.proto.v1.RecordBatch
 	(*ParkedReadState)(nil),        // 7: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState
-	nil,                            // 8: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry
-	nil,                            // 9: temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry
-	nil,                            // 10: temporal.server.chasm.lib.stream.proto.v1.StreamState.ReadersEntry
-	(*durationpb.Duration)(nil),    // 11: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),  // 12: google.protobuf.Timestamp
-	(*v1.Producer)(nil),            // 13: temporal.api.streamservice.v1.Producer
-	(*v1.ProducerEpoch)(nil),       // 14: temporal.api.streamservice.v1.ProducerEpoch
-	(*v1.WorkflowTaskEpoch)(nil),   // 15: temporal.api.streamservice.v1.WorkflowTaskEpoch
-	(*v1.StreamRecord)(nil),        // 16: temporal.api.streamservice.v1.StreamRecord
-	(*v1.ReadRecordsRequest)(nil),  // 17: temporal.api.streamservice.v1.ReadRecordsRequest
-	(*v1.ReadRecordsResponse)(nil), // 18: temporal.api.streamservice.v1.ReadRecordsResponse
-	(*v11.Failure)(nil),            // 19: temporal.api.failure.v1.Failure
-	(*v12.CallbackMetadata)(nil),   // 20: temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
+	(*durationpb.Duration)(nil),    // 8: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),  // 9: google.protobuf.Timestamp
+	(*v1.Producer)(nil),            // 10: temporal.api.streamservice.v1.Producer
+	(*v1.ProducerEpoch)(nil),       // 11: temporal.api.streamservice.v1.ProducerEpoch
+	(*v1.WorkflowTaskEpoch)(nil),   // 12: temporal.api.streamservice.v1.WorkflowTaskEpoch
+	(*v1.StreamRecord)(nil),        // 13: temporal.api.streamservice.v1.StreamRecord
+	(*v1.ReadRecordsRequest)(nil),  // 14: temporal.api.streamservice.v1.ReadRecordsRequest
+	(*v1.ReadRecordsResponse)(nil), // 15: temporal.api.streamservice.v1.ReadRecordsResponse
+	(*v11.Failure)(nil),            // 16: temporal.api.failure.v1.Failure
+	(*v12.CallbackMetadata)(nil),   // 17: temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
 }
 var file_temporal_server_chasm_lib_stream_proto_v1_message_proto_depIdxs = []int32{
 	0,  // 0: temporal.server.chasm.lib.stream.proto.v1.StreamState.phase:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamPhase
-	11, // 1: temporal.server.chasm.lib.stream.proto.v1.StreamState.retention:type_name -> google.protobuf.Duration
-	11, // 2: temporal.server.chasm.lib.stream.proto.v1.StreamState.auto_close:type_name -> google.protobuf.Duration
-	12, // 3: temporal.server.chasm.lib.stream.proto.v1.StreamState.create_time:type_name -> google.protobuf.Timestamp
-	12, // 4: temporal.server.chasm.lib.stream.proto.v1.StreamState.last_write_time:type_name -> google.protobuf.Timestamp
-	12, // 5: temporal.server.chasm.lib.stream.proto.v1.StreamState.close_time:type_name -> google.protobuf.Timestamp
+	8,  // 1: temporal.server.chasm.lib.stream.proto.v1.StreamState.retention:type_name -> google.protobuf.Duration
+	8,  // 2: temporal.server.chasm.lib.stream.proto.v1.StreamState.auto_close:type_name -> google.protobuf.Duration
+	9,  // 3: temporal.server.chasm.lib.stream.proto.v1.StreamState.create_time:type_name -> google.protobuf.Timestamp
+	9,  // 4: temporal.server.chasm.lib.stream.proto.v1.StreamState.last_write_time:type_name -> google.protobuf.Timestamp
+	9,  // 5: temporal.server.chasm.lib.stream.proto.v1.StreamState.close_time:type_name -> google.protobuf.Timestamp
 	3,  // 6: temporal.server.chasm.lib.stream.proto.v1.StreamState.index:type_name -> temporal.server.chasm.lib.stream.proto.v1.BatchInfo
-	8,  // 7: temporal.server.chasm.lib.stream.proto.v1.StreamState.producers:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry
-	9,  // 8: temporal.server.chasm.lib.stream.proto.v1.StreamState.runs:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry
-	13, // 9: temporal.server.chasm.lib.stream.proto.v1.StreamState.owner:type_name -> temporal.api.streamservice.v1.Producer
-	10, // 10: temporal.server.chasm.lib.stream.proto.v1.StreamState.readers:type_name -> temporal.server.chasm.lib.stream.proto.v1.StreamState.ReadersEntry
-	12, // 11: temporal.server.chasm.lib.stream.proto.v1.StreamState.readers_check_time:type_name -> google.protobuf.Timestamp
-	12, // 12: temporal.server.chasm.lib.stream.proto.v1.StreamState.timer_deadline:type_name -> google.protobuf.Timestamp
-	14, // 13: temporal.server.chasm.lib.stream.proto.v1.ProducerState.epoch:type_name -> temporal.api.streamservice.v1.ProducerEpoch
-	14, // 14: temporal.server.chasm.lib.stream.proto.v1.ProducerState.holds:type_name -> temporal.api.streamservice.v1.ProducerEpoch
-	15, // 15: temporal.server.chasm.lib.stream.proto.v1.RunTasks.index:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
-	15, // 16: temporal.server.chasm.lib.stream.proto.v1.RunTasks.withdrawn:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
-	15, // 17: temporal.server.chasm.lib.stream.proto.v1.RunTasks.last_task:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
-	15, // 18: temporal.server.chasm.lib.stream.proto.v1.RunTasks.last_completed:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
-	15, // 19: temporal.server.chasm.lib.stream.proto.v1.RunTasks.open_local:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
-	16, // 20: temporal.server.chasm.lib.stream.proto.v1.RecordBatch.records:type_name -> temporal.api.streamservice.v1.StreamRecord
-	17, // 21: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.request:type_name -> temporal.api.streamservice.v1.ReadRecordsRequest
-	12, // 22: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.create_deadline:type_name -> google.protobuf.Timestamp
-	12, // 23: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.start_time:type_name -> google.protobuf.Timestamp
-	18, // 24: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.response:type_name -> temporal.api.streamservice.v1.ReadRecordsResponse
-	19, // 25: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.failure:type_name -> temporal.api.failure.v1.Failure
-	20, // 26: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.callback_metadata:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
-	12, // 27: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.wait_deadline:type_name -> google.protobuf.Timestamp
-	4,  // 28: temporal.server.chasm.lib.stream.proto.v1.StreamState.ProducersEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.ProducerState
-	5,  // 29: temporal.server.chasm.lib.stream.proto.v1.StreamState.RunsEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.RunTasks
-	2,  // 30: temporal.server.chasm.lib.stream.proto.v1.StreamState.ReadersEntry.value:type_name -> temporal.server.chasm.lib.stream.proto.v1.ReaderFloor
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	10, // 7: temporal.server.chasm.lib.stream.proto.v1.StreamState.owner:type_name -> temporal.api.streamservice.v1.Producer
+	9,  // 8: temporal.server.chasm.lib.stream.proto.v1.StreamState.readers_check_time:type_name -> google.protobuf.Timestamp
+	9,  // 9: temporal.server.chasm.lib.stream.proto.v1.StreamState.timer_deadline:type_name -> google.protobuf.Timestamp
+	11, // 10: temporal.server.chasm.lib.stream.proto.v1.ProducerState.epoch:type_name -> temporal.api.streamservice.v1.ProducerEpoch
+	11, // 11: temporal.server.chasm.lib.stream.proto.v1.ProducerState.holds:type_name -> temporal.api.streamservice.v1.ProducerEpoch
+	12, // 12: temporal.server.chasm.lib.stream.proto.v1.RunTasks.index:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	12, // 13: temporal.server.chasm.lib.stream.proto.v1.RunTasks.withdrawn:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	12, // 14: temporal.server.chasm.lib.stream.proto.v1.RunTasks.last_task:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	12, // 15: temporal.server.chasm.lib.stream.proto.v1.RunTasks.last_completed:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	12, // 16: temporal.server.chasm.lib.stream.proto.v1.RunTasks.open_local:type_name -> temporal.api.streamservice.v1.WorkflowTaskEpoch
+	13, // 17: temporal.server.chasm.lib.stream.proto.v1.RecordBatch.records:type_name -> temporal.api.streamservice.v1.StreamRecord
+	14, // 18: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.request:type_name -> temporal.api.streamservice.v1.ReadRecordsRequest
+	9,  // 19: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.create_deadline:type_name -> google.protobuf.Timestamp
+	9,  // 20: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.start_time:type_name -> google.protobuf.Timestamp
+	15, // 21: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.response:type_name -> temporal.api.streamservice.v1.ReadRecordsResponse
+	16, // 22: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.failure:type_name -> temporal.api.failure.v1.Failure
+	17, // 23: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.callback_metadata:type_name -> temporal.server.chasm.lib.callbacks.proto.v1.CallbackMetadata
+	9,  // 24: temporal.server.chasm.lib.stream.proto.v1.ParkedReadState.wait_deadline:type_name -> google.protobuf.Timestamp
+	25, // [25:25] is the sub-list for method output_type
+	25, // [25:25] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_temporal_server_chasm_lib_stream_proto_v1_message_proto_init() }
@@ -1007,7 +970,7 @@ func file_temporal_server_chasm_lib_stream_proto_v1_message_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc), len(file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
