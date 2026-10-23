@@ -616,7 +616,8 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 	case streampb.STREAM_PHASE_OPEN:
 		if at, ok := s.autoCloseAt(); ok && !at.After(now) {
 			s.LastWriteTime = timestamppb.New(at)
-			s.close(ctx, &streamservice.Producer{}, nil, nil, streamservice.CLOSE_STATUS_COMPLETED)
+			// No Producer made this close, so its Record has none, as the crate's auto close.
+			s.close(ctx, nil, nil, nil, streamservice.CLOSE_STATUS_COMPLETED)
 		} else if !s.ttlAt(limits).After(now) && len(s.Readers) == 0 {
 			s.expire(ctx)
 			return

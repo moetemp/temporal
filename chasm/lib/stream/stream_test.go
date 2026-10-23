@@ -304,6 +304,8 @@ func TestAutoCloseAfterNoAppend(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "close"}, topics(closed))
 	require.Nil(t, closed.GetRecords()[1].GetCloseResult())
+	// A Producer with no id fails a client's decode of the Record.
+	require.Nil(t, closed.GetRecords()[1].GetProducer())
 }
 
 func TestRetentionDropsOldRecordsAndExpiresTheStream(t *testing.T) {
