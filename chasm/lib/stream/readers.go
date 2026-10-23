@@ -55,7 +55,7 @@ func (s *Stream) readerFloor(ctx chasm.Context, runID string, from int64) (int64
 }
 
 // floorStart is where a run's floor starts for a read from start. A reset run copied the reads of
-// the old run into its History, and its first live read names the lowest of them in floor_from,
+// the old run into its History, and its first live read gives the lowest of them in floor_from,
 // so the floor covers what its replay reads again.
 func (s *Stream) floorStart(req *streamservice.ReadRecordsRequest, start int64) int64 {
 	floorFrom := req.GetFloorFrom()
