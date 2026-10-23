@@ -70,7 +70,7 @@ func ofRun(kind streamservice.ProducerKind) bool {
 		kind == streamservice.PRODUCER_KIND_LOCAL_ACTIVITY
 }
 
-// checkRunID refuses a Producer whose id doesn't name its run, so a write can't claim a run in
+// checkRunID refuses a Producer whose id doesn't carry its run, so a write can't claim a run in
 // one field and show another in its id.
 func checkRunID(producer *streamservice.Producer) error {
 	run := encodePart(producer.GetRunId())
@@ -91,7 +91,7 @@ func checkRunID(producer *streamservice.Producer) error {
 	default:
 		return nil
 	}
-	return notOwner("The Producer id %q doesn't name its run %q", id, producer.GetRunId())
+	return notOwner("The Producer id %q doesn't carry its run %q", id, producer.GetRunId())
 }
 
 // chainRun says whether runID is an open run of the chain that a Workflow Stream nests in. The
@@ -226,7 +226,7 @@ func missingRun(err error) bool {
 	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return true
 	}
-	// A request can name a run id that is no run id at all.
+	// A request can give a run id that is no run id at all.
 	_, ok := errors.AsType[*serviceerror.InvalidArgument](err)
 	return ok
 }
