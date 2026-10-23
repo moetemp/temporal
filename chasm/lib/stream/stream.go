@@ -589,7 +589,10 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 			if read.GetRequest().GetWakeOnly() {
 				next = read.GetStartOffset()
 			}
-			return readOutcome{resp: &streamservice.ReadRecordsResponse{NextOffset: next}}, true
+			return readOutcome{resp: &streamservice.ReadRecordsResponse{
+				NextOffset:             next,
+				ContinueAsNewSuggested: s.suggestsContinueAsNew(read.GetReaderRunId(), limits),
+			}}, true
 		}
 		return readOutcome{}, false
 	})
@@ -671,7 +674,7 @@ func (s *Stream) finish(ctx chasm.MutableContext, limits Limits) {
 	s.limitStored(limits.MaxStoredBytes)
 	if s.Phase != streampb.STREAM_PHASE_PENDING {
 		s.resolveReads(ctx, func(read *ParkedRead) (readOutcome, bool) {
-			return s.wake(ctx, read)
+			return s.wake(ctx, read, limits)
 		})
 	} else if s.waitingReads(ctx) == 0 {
 		// No read waits for the create any more, so the execution can go.

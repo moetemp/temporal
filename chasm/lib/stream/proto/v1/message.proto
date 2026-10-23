@@ -144,4 +144,7 @@ message ParkedReadState {
   google.protobuf.Timestamp wait_deadline = 10;
   // Where the read started. A wake_only read answers it as its next offset.
   int64 start_offset = 11;
+  // The Workflow run that reads, from the link of the server's Nexus call. Its answer suggests
+  // continue-as-new when the run's floor keeps too much.
+  string reader_run_id = 12;
 }

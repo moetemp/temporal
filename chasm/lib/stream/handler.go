@@ -270,6 +270,9 @@ func (h *handler) ReadOrPark(
 	if err != nil {
 		return nil, err
 	}
+	if err := checkLast(req, true); err != nil {
+		return nil, err
+	}
 	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Reader: reader.Run, Limits: limits}
 	if t.nested {
 		resp, err := update(ctx, t, newNestedStream,
@@ -330,6 +333,9 @@ func (h *handler) ReadRecords(
 	if err != nil {
 		return nil, err
 	}
+	if err := checkLast(req, run != nil); err != nil {
+		return nil, err
+	}
 	wait, createWait := ReadTimeout(req)
 	// nolint:forbidigo // A long poll measures wall-clock time, not component time.
 	started := time.Now()
@@ -344,6 +350,13 @@ func (h *handler) ReadRecords(
 	if err := h.applyDue(ctx, t, limits); err != nil {
 		return nil, streamError(ctx, t, err)
 	}
+	if req.GetLast() != 0 {
+		resp, err := read(ctx, t,
+			func(s *Stream, cctx chasm.Context) (*streamservice.ReadRecordsResponse, error) {
+				return s.Last(cctx, req)
+			})
+		return resp, streamError(ctx, t, err)
+	}
 	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
 	if err != nil {
 		return nil, streamError(ctx, t, err)
@@ -354,7 +367,7 @@ func (h *handler) ReadRecords(
 	}
 	cursor := start
 	for {
-		page, err := h.page(ctx, t, limits, req, start, cursor, floorRun)
+		page, err := h.page(ctx, t, limits, req, start, cursor, floorRun, run)
 		if err != nil {
 			return nil, streamError(ctx, t, err)
 		}
@@ -387,7 +400,7 @@ func (h *handler) floorRun(
 		return nil, nil
 	}
 	lowers, err := read(ctx, t, func(s *Stream, _ chasm.Context) (bool, error) {
-		_, ok := s.readerFloor(run.RunID, from)
+		_, ok := s.readerFloor(run.RunID, s.floorStart(req, from))
 		return ok, nil
 	})
 	if err != nil || !lowers {
@@ -400,8 +413,9 @@ func (h *handler) floorRun(
 	return run, nil
 }
 
-// page reads one page from from. With run set, the transaction that answers the page keeps the
-// run's floor too, so no trim comes between the answer and the floor.
+// page reads one page from from. With floorRun set, the transaction that answers the page keeps
+// the run's floor too, so no trim comes between the answer and the floor. The page of a reader
+// run suggests continue-as-new when the run's floor keeps too much.
 func (h *handler) page(
 	ctx context.Context,
 	t target,
@@ -409,20 +423,27 @@ func (h *handler) page(
 	req *streamservice.ReadRecordsRequest,
 	start int64,
 	from int64,
-	run *ReaderRun,
+	floorRun *ReaderRun,
+	reader *ReaderRun,
 ) (pagedRead, error) {
 	view := func(s *Stream, cctx chasm.Context) (pagedRead, error) {
 		resp, found, err := s.Page(cctx, req, from)
+		if err != nil {
+			return pagedRead{}, err
+		}
 		if found && req.GetWakeOnly() {
 			resp = s.wakeAnswer(start)
 		}
-		return pagedRead{resp: resp, found: found}, err
+		if reader != nil {
+			resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(reader.RunID, limits)
+		}
+		return pagedRead{resp: resp, found: found}, nil
 	}
-	if run == nil {
+	if floorRun == nil {
 		return read(ctx, t, view)
 	}
 	return update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (pagedRead, error) {
-		if err := s.AddReader(mctx, *run, from, limits); err != nil {
+		if err := s.AddReader(mctx, *floorRun, s.floorStart(req, from), limits); err != nil {
 			return pagedRead{}, err
 		}
 		return view(s, mctx)
