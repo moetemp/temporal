@@ -24,6 +24,8 @@ const (
 	ReasonInvalid       = "stream_invalid"
 	ReasonStorage       = "stream_storage"
 	ReasonUnsupported   = "stream_unsupported"
+	ReasonNotOwner      = "stream_not_owner"
+	ReasonSeqDivergent  = "seq_divergent"
 )
 
 var reasons = []string{
@@ -38,6 +40,8 @@ var reasons = []string{
 	ReasonInvalid,
 	ReasonStorage,
 	ReasonUnsupported,
+	ReasonNotOwner,
+	ReasonSeqDivergent,
 }
 
 // NewError builds the service error of a reason, with the status code the crate gives it and
@@ -54,7 +58,7 @@ func reasonCode(reason string) codes.Code {
 	switch reason {
 	case ReasonNotFound, ReasonExpired:
 		return codes.NotFound
-	case ReasonClosed, ReasonFenced, ReasonSequence:
+	case ReasonClosed, ReasonFenced, ReasonSequence, ReasonNotOwner, ReasonSeqDivergent:
 		return codes.FailedPrecondition
 	case ReasonAlreadyExists:
 		return codes.AlreadyExists

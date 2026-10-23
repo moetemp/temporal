@@ -57,6 +57,8 @@ type streamCaller struct {
 	token     []byte
 	history   []*historypb.HistoryEvent
 	run       client.WorkflowRun
+	// The run of the open Workflow Task, which a continue-as-new or a cron run changes.
+	current string
 }
 
 func (s *StreamTestSuite) newCaller(env *testcore.TestEnv) *streamCaller {
@@ -81,6 +83,7 @@ func (c *streamCaller) poll() {
 	c.s.NotEmpty(resp.GetTaskToken())
 	c.token = resp.GetTaskToken()
 	c.history = resp.GetHistory().GetEvents()
+	c.current = resp.GetWorkflowExecution().GetRunId()
 }
 
 // schedule completes the open task with one System Nexus operation per request and answers the
@@ -542,7 +545,7 @@ func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 	})
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned,
-		Producer: workflowWriter("run-2", 3), Sequence: 1, Records: records("next"),
+		Producer: workflowWriter(c.current, 3), Sequence: 1, Records: records("next"),
 	})
 	s.NoError(err)
 
@@ -552,8 +555,10 @@ func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 		FromOffset: appended.GetLastOffset() + 1, Wait: durationpb.New(20 * time.Second),
 	})
 	s.NoError(err)
-	s.Equal([]string{"close"}, kindsAndTopics(page))
-	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, page.GetRecords()[0].GetCloseStatus())
+	// Run 2's task never completed, so the chain's end withdraws its Record before the close.
+	s.Equal([]string{"", "close"}, kindsAndTopics(page))
+	s.Equal(streamservice.STREAM_RECORD_KIND_SUPERSEDED, page.GetRecords()[0].GetKind())
+	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, page.GetRecords()[1].GetCloseStatus())
 }
 
 func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
@@ -793,7 +798,7 @@ func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
 
 	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned,
-		Producer: workflowWriter("run-2", 3), Sequence: 1, Records: records("late"),
+		Producer: workflowWriter(c.current, 3), Sequence: 1, Records: records("late"),
 	})
 	s.NoError(err)
 	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned})
@@ -865,6 +870,7 @@ func (s *StreamTestSuite) TestWorkflowReaderKeepsItsRangePastTheRetention() {
 	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
 		Namespace: ns, StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+		Owner: workflowWriter(c.run.GetRunID(), 3),
 	})
 	s.NoError(err)
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
@@ -945,8 +951,8 @@ func (s *StreamTestSuite) TestDirectReadErrorsKeepTheirReason() {
 	}
 }
 
-// createWithRetention creates a Workflow Stream with a client owner and a 1 s Retention, and
-// appends one Record.
+// createWithRetention creates a Workflow Stream with a 1 s Retention, and appends one Record of a
+// client.
 func (s *StreamTestSuite) createWithRetention(
 	sc streamservice.StreamServiceClient,
 	env *testcore.TestEnv,
@@ -956,6 +962,7 @@ func (s *StreamTestSuite) createWithRetention(
 	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
 		Namespace: env.Namespace().String(), StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+		Owner: workflowWriter(c.run.GetRunID(), 3),
 	})
 	s.NoError(err)
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
@@ -1084,4 +1091,154 @@ func (s *StreamTestSuite) TestFloorFromKeepsTheReadsOfAResetRun() {
 	})
 	s.Nil(failure)
 	s.Equal([]string{"a"}, kindsAndTopics(copied))
+}
+
+// reasonOf is the reason in the StreamErrorDetails of a gRPC error.
+func reasonOf(err error) string {
+	for _, detail := range status.Convert(err).Details() {
+		if details, ok := detail.(*streamservice.StreamErrorDetails); ok {
+			return details.GetReason()
+		}
+	}
+	return ""
+}
+
+// localActivityWriter is the Producer of a Local Activity call of a run.
+func localActivityWriter(runID string, started int64) *streamservice.Producer {
+	return &streamservice.Producer{
+		Kind: streamservice.PRODUCER_KIND_LOCAL_ACTIVITY,
+		Id:   "la:" + runID + ":1",
+		Epoch: &streamservice.ProducerEpoch{
+			TaskStartedEventId: started, TaskAttempt: 1, Attempt: 1,
+		},
+		RunId: runID,
+	}
+}
+
+// A caller with write access can't close a Workflow Stream, write as a run outside its chain,
+// fence a run it doesn't follow, or put a Stream into another Workflow's first run.
+func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	ctx := s.Context()
+	ns := env.Namespace().String()
+	run := c.run.GetRunID()
+
+	_, err := sc.CloseStream(ctx, &streamservice.CloseStreamRequest{
+		Namespace: ns, Stream: owned, Producer: clientProducer(),
+		Result: payload.EncodeString("forged"),
+	})
+	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a client's close")
+
+	stranger := s.newCaller(env).run.GetRunID()
+	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: localActivityWriter(stranger, 3), Sequence: 1,
+		Records: records("forged"),
+	})
+	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a run outside the chain")
+
+	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: localActivityWriter(run, 3), Sequence: 1,
+		Records: records("forged"), WithdrawRun: run,
+	})
+	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a withdraw_run of a run it doesn't follow")
+
+	id := testcore.RandomizeStr("chat")
+	inChain := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: run}
+	for name, owner := range map[string]*streamservice.Producer{
+		"a create from another chain": workflowWriter(stranger, 3),
+		"a create with no owner":      nil,
+	} {
+		_, err = sc.CreateStream(ctx, &streamservice.CreateStreamRequest{
+			Namespace: ns, StreamId: id, Ref: inChain, Owner: owner,
+		})
+		s.Equal(stream.ReasonNotOwner, reasonOf(err), name)
+	}
+
+	page, err := sc.ReadRecords(ctx,
+		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Empty(page.GetRecords())
+	s.False(page.GetDone())
+}
+
+// An Activity writes with its task token. A token of an earlier attempt is refused, so a zombie
+// attempt can't write as the Activity once its retry started.
+func (s *StreamTestSuite) TestStaleActivityAttemptIsRefused() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ctx := s.Context()
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	taskQueue := &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL}
+	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+
+	schedule := &commandpb.ScheduleActivityTaskCommandAttributes{
+		ActivityId:          "tool",
+		ActivityType:        &commonpb.ActivityType{Name: "tool"},
+		TaskQueue:           taskQueue,
+		StartToCloseTimeout: durationpb.New(time.Minute),
+		RetryPolicy: &commonpb.RetryPolicy{
+			InitialInterval: durationpb.New(100 * time.Millisecond),
+		},
+	}
+	_, err = env.FrontendClient().RespondWorkflowTaskCompleted(ctx,
+		&workflowservice.RespondWorkflowTaskCompletedRequest{
+			Identity:  "test",
+			TaskToken: c.token,
+			Commands: []*commandpb.Command{{
+				CommandType: enumspb.COMMAND_TYPE_SCHEDULE_ACTIVITY_TASK,
+				Attributes: &commandpb.Command_ScheduleActivityTaskCommandAttributes{
+					ScheduleActivityTaskCommandAttributes: schedule,
+				},
+			}},
+		})
+	s.NoError(err)
+	pollAttempt := func() *workflowservice.PollActivityTaskQueueResponse {
+		resp, err := env.FrontendClient().PollActivityTaskQueue(ctx,
+			&workflowservice.PollActivityTaskQueueRequest{
+				Namespace: ns, TaskQueue: taskQueue, Identity: "test",
+			})
+		s.NoError(err)
+		s.NotEmpty(resp.GetTaskToken())
+		return resp
+	}
+	write := func(task *workflowservice.PollActivityTaskQueueResponse, sequence int64) error {
+		_, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(id), Sequence: sequence, Records: records("tool"),
+			TaskToken: task.GetTaskToken(),
+			Producer: &streamservice.Producer{
+				Kind:  streamservice.PRODUCER_KIND_ACTIVITY,
+				Id:    "act:" + c.run.GetRunID() + ":tool:5",
+				RunId: c.run.GetRunID(),
+				Epoch: &streamservice.ProducerEpoch{
+					AttemptScheduledTime: task.GetCurrentAttemptScheduledTime(),
+					Attempt:              task.GetAttempt(),
+				},
+			},
+		})
+		return err
+	}
+
+	first := pollAttempt()
+	s.NoError(write(first, 1))
+	_, err = env.FrontendClient().RespondActivityTaskFailed(ctx,
+		&workflowservice.RespondActivityTaskFailedRequest{
+			Namespace: ns, TaskToken: first.GetTaskToken(), Identity: "test",
+			Failure: &failurepb.Failure{
+				Message: "retry",
+				FailureInfo: &failurepb.Failure_ApplicationFailureInfo{
+					ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{},
+				},
+			},
+		})
+	s.NoError(err)
+	second := pollAttempt()
+
+	s.Equal(stream.ReasonNotOwner, reasonOf(write(first, 2)))
+	s.NoError(write(second, 1))
 }

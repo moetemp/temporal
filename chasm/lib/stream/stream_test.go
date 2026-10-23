@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func (h *harness) appendRequest(req *streamservice.AppendRecordsRequest) (*strea
 func (h *harness) close(result string) error {
 	_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
 		Request: &streamservice.CloseStreamRequest{
-			Producer: activityProducer(1),
+			Producer: clientProducer(),
 			Result:   &commonpb.Payload{Data: []byte(result)},
 		},
 		Limits: h.limits,
@@ -148,6 +149,14 @@ func (h *harness) advance(d time.Duration) {
 	h.clock.Update(h.clock.Now().Add(d))
 	_, err := h.engine.FirePureTasks(h.ref(), h.clock.Now())
 	require.NoError(h.t, err)
+}
+
+func clientProducer() *streamservice.Producer {
+	return &streamservice.Producer{
+		Kind:  streamservice.PRODUCER_KIND_CLIENT,
+		Id:    "client:test:1",
+		Epoch: &streamservice.ProducerEpoch{Attempt: 1},
+	}
 }
 
 func activityProducer(attempt int32) *streamservice.Producer {
@@ -765,4 +774,33 @@ func TestLastReadsTheNewestRecords(t *testing.T) {
 	require.Equal(t, []string{"tools", "close"}, last(&streamservice.ReadRecordsRequest{Last: 1}))
 	wake := &streamservice.ReadRecordsRequest{Last: 1, WakeOnly: true}
 	require.ErrorContains(t, checkLast(wake, false), ReasonInvalid)
+}
+
+// A resend with the last sequence and other content is not a duplicate. Dropping it would lose
+// the batch with no error, so it fails as seq_divergent. The same content answers its offsets.
+func TestResendWithOtherContentIsDivergent(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	first, err := h.append(clientProducer(), 1, "a")
+	require.NoError(t, err)
+
+	again, err := h.append(clientProducer(), 1, "a")
+	require.NoError(t, err)
+	require.Equal(t, first.GetFirstOffset(), again.GetFirstOffset())
+	_, err = h.append(clientProducer(), 1, "b")
+	require.ErrorContains(t, err, ReasonSeqDivergent)
+}
+
+// The digest is the crate's, so the shared test vectors cover the server too.
+func TestBatchDigestVector(t *testing.T) {
+	digest := BatchDigest([]*streamservice.AppendRecord{{
+		Topic: "a",
+		Body: &commonpb.Payload{
+			Metadata: map[string][]byte{"encoding": []byte("json/plain")},
+			Data:     []byte(`"x"`),
+		},
+	}})
+	require.Equal(t, "817ca6adadba99bd9a23764d62be9b40d78f1be310682bb85f208699f9c1f621",
+		hex.EncodeToString(digest))
 }
