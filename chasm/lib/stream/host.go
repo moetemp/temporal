@@ -96,7 +96,7 @@ func (t target) activity() bool {
 // chain, since a run's CHASM tree doesn't move to the next run.
 func targetOf(namespaceID, streamID string, ref *streamservice.StreamRef) (target, error) {
 	if ref.GetWorkflowId() != "" && ref.GetActivityId() != "" {
-		return target{}, invalid("A Stream ref names a Workflow or an Activity, not both")
+		return target{}, invalid("A Stream ref has a Workflow or an Activity, not both")
 	}
 	if ref.GetActivityId() != "" {
 		// An empty activity_run_id is the Activity's current run.
