@@ -31,15 +31,23 @@ func ownerKind(owner *streamservice.Producer) streamservice.ProducerKind {
 }
 
 // checkOwner refuses a create whose owner can't own a Stream. A Workflow Stream nests in its
-// chain's first run, so only that chain creates one.
-func checkOwner(owner *streamservice.Producer, nested bool) error {
+// chain's first run, so only that chain creates one. A Standalone Activity's Stream nests in the
+// Activity, so only the Activity creates one, and its host checks the task token.
+func checkOwner(owner *streamservice.Producer, t target) error {
 	switch kind := ownerKind(owner); {
-	case nested && kind != streamservice.PRODUCER_KIND_WORKFLOW:
+	case t.workflow() && kind != streamservice.PRODUCER_KIND_WORKFLOW:
 		return notOwner("Only the Workflow's run chain creates a Workflow Stream")
-	case kind == streamservice.PRODUCER_KIND_WORKFLOW || kind == streamservice.PRODUCER_KIND_CLIENT:
+	case t.activity() && kind != streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY:
+		return notOwner("Only the Standalone Activity creates its Stream")
+	case kind == streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY && !t.activity():
+		return invalid("A Standalone Activity owns only a Stream in its ref")
+	case kind == streamservice.PRODUCER_KIND_WORKFLOW ||
+		kind == streamservice.PRODUCER_KIND_CLIENT ||
+		kind == streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY:
 		return nil
 	default:
-		return invalid("A Stream's owner is a Workflow or a client, not %v", kind)
+		return invalid("A Stream's owner is a Workflow, a client or a Standalone Activity, not %v",
+			kind)
 	}
 }
 
@@ -56,6 +64,11 @@ func (s *Stream) checkCloser(producer *streamservice.Producer) error {
 		}
 	case streamservice.PRODUCER_KIND_CLIENT:
 		if kind == streamservice.PRODUCER_KIND_CLIENT {
+			return nil
+		}
+	case streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY:
+		// The host checks the Activity's task token.
+		if kind == owner && producer.GetId() == s.GetOwner().GetId() {
 			return nil
 		}
 	default:
@@ -138,7 +151,7 @@ func (h *handler) checkChain(
 	producer *streamservice.Producer,
 	withdrawRun string,
 ) error {
-	if !t.nested {
+	if !t.workflow() {
 		return nil
 	}
 	if !ofRun(producer.GetKind()) {

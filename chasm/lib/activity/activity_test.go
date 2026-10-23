@@ -19,6 +19,7 @@ import (
 	tokenspb "go.temporal.io/server/api/token/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/activity/gen/activitypb/v1"
+	"go.temporal.io/server/chasm/lib/stream"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/metrics/metricstest"
@@ -1146,4 +1147,10 @@ func TestEffectiveUserMetadata_FallsBackToLegacy(t *testing.T) {
 
 	got := activity.effectiveUserMetadata(ctx)
 	require.Same(t, legacyMD, got)
+}
+
+// A Stream ref with an activity id routes to the Activity's component, so the stream library's
+// copy of the archetype must stay this library's.
+func TestStreamHostArchetypeIsTheActivity(t *testing.T) {
+	require.Equal(t, ArchetypeID, stream.ActivityArchetypeID)
 }

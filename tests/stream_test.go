@@ -1242,3 +1242,74 @@ func (s *StreamTestSuite) TestStaleActivityAttemptIsRefused() {
 	s.Equal(stream.ReasonNotOwner, reasonOf(write(first, 2)))
 	s.NoError(write(second, 1))
 }
+
+// A Standalone Activity owns its Stream. Only its current attempt creates and closes it, and its
+// end closes it in the same transaction, with its status and result.
+func (s *StreamTestSuite) TestStandaloneActivityOwnsItsStream() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	ctx := s.Context()
+	ns := env.Namespace().String()
+	activityID := "tool-" + uuid.NewString()
+	taskQueue := &taskqueuepb.TaskQueue{
+		Name: "tools-" + uuid.NewString(), Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
+	}
+	started, err := env.FrontendClient().StartActivityExecution(ctx,
+		&workflowservice.StartActivityExecutionRequest{
+			Namespace:           ns,
+			ActivityId:          activityID,
+			ActivityType:        &commonpb.ActivityType{Name: "tool"},
+			Identity:            "test",
+			TaskQueue:           taskQueue,
+			StartToCloseTimeout: durationpb.New(time.Minute),
+		})
+	s.NoError(err)
+	task, err := env.FrontendClient().PollActivityTaskQueue(ctx,
+		&workflowservice.PollActivityTaskQueueRequest{
+			Namespace: ns, TaskQueue: taskQueue, Identity: "test",
+		})
+	s.NoError(err)
+
+	id := testcore.RandomizeStr("tokens")
+	owned := &streamservice.StreamRef{
+		Id: id, ActivityId: activityID, ActivityRunId: started.GetRunId(),
+	}
+	owner := &streamservice.Producer{
+		Kind: streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY,
+		Id:   "sa:" + activityID + ":" + started.GetRunId(),
+		Epoch: &streamservice.ProducerEpoch{
+			AttemptScheduledTime: task.GetCurrentAttemptScheduledTime(),
+			Attempt:              task.GetAttempt(),
+		},
+	}
+	create := &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Ref: owned, Owner: owner,
+	}
+	_, err = sc.CreateStream(ctx, create)
+	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a create with no task token")
+	create.TaskToken = task.GetTaskToken()
+	_, err = sc.CreateStream(ctx, create)
+	s.NoError(err)
+	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: owner, Sequence: 1, Records: records("tokens"),
+		TaskToken: task.GetTaskToken(),
+	})
+	s.NoError(err)
+	_, err = sc.CloseStream(ctx,
+		&streamservice.CloseStreamRequest{Namespace: ns, Stream: owned, Producer: clientProducer()})
+	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a client's close")
+
+	_, err = env.FrontendClient().RespondActivityTaskCompleted(ctx,
+		&workflowservice.RespondActivityTaskCompletedRequest{
+			Namespace: ns, TaskToken: task.GetTaskToken(), Identity: "test",
+			Result: payloads.EncodeString("done"),
+		})
+	s.NoError(err)
+	page, err := sc.ReadRecords(ctx,
+		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Equal([]string{"tokens", "close"}, kindsAndTopics(page))
+	closed := page.GetRecords()[1]
+	s.Equal(streamservice.CLOSE_STATUS_COMPLETED, closed.GetCloseStatus())
+	s.Equal(payload.EncodeString("done").GetData(), closed.GetCloseResult().GetData())
+}

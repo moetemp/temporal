@@ -1,6 +1,7 @@
 package activity
 
 import (
+	"go.temporal.io/server/chasm/lib/stream"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/callbacks"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -80,6 +81,8 @@ type Config struct {
 	MaxUserMetadataSummarySize                dynamicconfig.IntPropertyFnWithNamespaceFilter
 	StartDelayEnabled                         dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	VisibilityMaxPageSize                     dynamicconfig.IntPropertyFnWithNamespaceFilter
+	// The Stream limits of a namespace, for the close of the Activity's Streams.
+	StreamLimits func(string) stream.Limits
 }
 
 func ConfigProvider(dc *dynamicconfig.Collection) *Config {
@@ -102,6 +105,7 @@ func ConfigProvider(dc *dynamicconfig.Collection) *Config {
 		MaxUserMetadataDetailsSize:                dynamicconfig.MaxUserMetadataDetailsSize.Get(dc),
 		MaxUserMetadataSummarySize:                dynamicconfig.MaxUserMetadataSummarySize.Get(dc),
 		VisibilityMaxPageSize:                     dynamicconfig.FrontendVisibilityMaxPageSize.Get(dc),
+		StreamLimits:                              stream.ConfigProvider(dc).LimitsFor,
 	}
 }
 

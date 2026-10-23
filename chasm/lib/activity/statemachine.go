@@ -536,6 +536,7 @@ func (a *Activity) applyCompleted(ctx chasm.MutableContext, event completeEvent)
 		}
 
 		a.emitOnCompletedMetrics(ctx, event.baseHandler, event.enrichedHandler, req.GetResult(), attemptWasStarted)
+		a.endStreams(ctx, activitypb.ACTIVITY_EXECUTION_STATUS_COMPLETED)
 
 		return nil
 	})
@@ -568,6 +569,7 @@ func (a *Activity) applyFailed(ctx chasm.MutableContext, event failedEvent) erro
 		}
 
 		a.emitOnFailedMetrics(ctx, event.baseHandler, event.enrichedHandler, req.GetFailure())
+		a.endStreams(ctx, activitypb.ACTIVITY_EXECUTION_STATUS_FAILED)
 
 		return nil
 	})
@@ -594,6 +596,7 @@ func (a *Activity) applyTerminated(ctx chasm.MutableContext, event terminateEven
 		}
 
 		a.emitOnTerminatedMetrics(event.metricsHandler)
+		a.endStreams(ctx, activitypb.ACTIVITY_EXECUTION_STATUS_TERMINATED)
 
 		return nil
 	})
@@ -632,6 +635,7 @@ func (a *Activity) applyCanceled(ctx chasm.MutableContext, event cancelEvent) er
 		}
 
 		a.emitOnCanceledMetrics(ctx, event.metricsHandler, event.fromStatus)
+		a.endStreams(ctx, activitypb.ACTIVITY_EXECUTION_STATUS_CANCELED)
 
 		return nil
 	})
@@ -685,6 +689,7 @@ func (a *Activity) applyTimedOut(ctx chasm.MutableContext, event timeoutEvent) e
 		}
 
 		a.emitOnTimedOutMetrics(event.metricsHandler, timeoutType)
+		a.endStreams(ctx, activitypb.ACTIVITY_EXECUTION_STATUS_TIMED_OUT)
 
 		return nil
 	})

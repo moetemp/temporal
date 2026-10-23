@@ -247,7 +247,11 @@ func orphanRecord(req *streamservice.AppendRecordsRequest) *streamservice.Stream
 	}
 }
 
-// encodePart percent-encodes an id part as the crate does, so a Producer id matches its.
+// EncodeIDPart percent-encodes an id part as the crate does, so a Producer id matches its.
+func EncodeIDPart(text string) string {
+	return encodePart(text)
+}
+
 func encodePart(text string) string {
 	var out strings.Builder
 	for _, b := range []byte(text) {

@@ -27,13 +27,14 @@ var File_temporal_server_chasm_lib_stream_proto_v1_service_proto protoreflect.Fi
 
 const file_temporal_server_chasm_lib_stream_proto_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"7temporal/server/chasm/lib/stream/proto/v1/service.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a@temporal/server/chasm/lib/stream/proto/v1/request_response.proto\x1a0temporal/server/api/common/v1/api_category.proto\x1a.temporal/server/api/routing/v1/extension.proto2\xea\b\n" +
-	"\rStreamService\x12\xd9\x01\n" +
-	"\fCreateStream\x12>.temporal.server.chasm.lib.stream.proto.v1.CreateStreamRequest\x1a?.temporal.server.chasm.lib.stream.proto.v1.CreateStreamResponse\"H\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18>\x1a frontend_request.ref.workflow_id\x1a\x1afrontend_request.stream_id\x12\xdf\x01\n" +
-	"\rAppendRecords\x12?.temporal.server.chasm.lib.stream.proto.v1.AppendRecordsRequest\x1a@.temporal.server.chasm.lib.stream.proto.v1.AppendRecordsResponse\"K\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18A\x1a#frontend_request.stream.workflow_id\x1a\x1afrontend_request.stream.id\x12\xd9\x01\n" +
-	"\vCloseStream\x12=.temporal.server.chasm.lib.stream.proto.v1.CloseStreamRequest\x1a>.temporal.server.chasm.lib.stream.proto.v1.CloseStreamResponse\"K\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18A\x1a#frontend_request.stream.workflow_id\x1a\x1afrontend_request.stream.id\x12\xd9\x01\n" +
-	"\vReadRecords\x12=.temporal.server.chasm.lib.stream.proto.v1.ReadRecordsRequest\x1a>.temporal.server.chasm.lib.stream.proto.v1.ReadRecordsResponse\"K\x8a\xb5\x18\x02\b\x02\xd2\xc3\x18A\x1a#frontend_request.stream.workflow_id\x1a\x1afrontend_request.stream.id\x12\xe2\x01\n" +
-	"\x0eDescribeStream\x12@.temporal.server.chasm.lib.stream.proto.v1.DescribeStreamRequest\x1aA.temporal.server.chasm.lib.stream.proto.v1.DescribeStreamResponse\"K\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18A\x1a#frontend_request.stream.workflow_id\x1a\x1afrontend_request.stream.idB>Z<go.temporal.io/server/chasm/lib/stream/gen/streampb;streampbb\x06proto3"
+	"7temporal/server/chasm/lib/stream/proto/v1/service.proto\x12)temporal.server.chasm.lib.stream.proto.v1\x1a@temporal/server/chasm/lib/stream/proto/v1/request_response.proto\x1a0temporal/server/api/common/v1/api_category.proto\x1a.temporal/server/api/routing/v1/extension.proto2\xa0\n" +
+	"\n" +
+	"\rStreamService\x12\xfb\x01\n" +
+	"\fCreateStream\x12>.temporal.server.chasm.lib.stream.proto.v1.CreateStreamRequest\x1a?.temporal.server.chasm.lib.stream.proto.v1.CreateStreamResponse\"j\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18`\x1a frontend_request.ref.workflow_id\x1a frontend_request.ref.activity_id\x1a\x1afrontend_request.stream_id\x12\x84\x02\n" +
+	"\rAppendRecords\x12?.temporal.server.chasm.lib.stream.proto.v1.AppendRecordsRequest\x1a@.temporal.server.chasm.lib.stream.proto.v1.AppendRecordsResponse\"p\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18f\x1a#frontend_request.stream.workflow_id\x1a#frontend_request.stream.activity_id\x1a\x1afrontend_request.stream.id\x12\xfe\x01\n" +
+	"\vCloseStream\x12=.temporal.server.chasm.lib.stream.proto.v1.CloseStreamRequest\x1a>.temporal.server.chasm.lib.stream.proto.v1.CloseStreamResponse\"p\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18f\x1a#frontend_request.stream.workflow_id\x1a#frontend_request.stream.activity_id\x1a\x1afrontend_request.stream.id\x12\xfe\x01\n" +
+	"\vReadRecords\x12=.temporal.server.chasm.lib.stream.proto.v1.ReadRecordsRequest\x1a>.temporal.server.chasm.lib.stream.proto.v1.ReadRecordsResponse\"p\x8a\xb5\x18\x02\b\x02\xd2\xc3\x18f\x1a#frontend_request.stream.workflow_id\x1a#frontend_request.stream.activity_id\x1a\x1afrontend_request.stream.id\x12\x87\x02\n" +
+	"\x0eDescribeStream\x12@.temporal.server.chasm.lib.stream.proto.v1.DescribeStreamRequest\x1aA.temporal.server.chasm.lib.stream.proto.v1.DescribeStreamResponse\"p\x8a\xb5\x18\x02\b\x01\xd2\xc3\x18f\x1a#frontend_request.stream.workflow_id\x1a#frontend_request.stream.activity_id\x1a\x1afrontend_request.stream.idB>Z<go.temporal.io/server/chasm/lib/stream/gen/streampb;streampbb\x06proto3"
 
 var file_temporal_server_chasm_lib_stream_proto_v1_service_proto_goTypes = []any{
 	(*CreateStreamRequest)(nil),    // 0: temporal.server.chasm.lib.stream.proto.v1.CreateStreamRequest

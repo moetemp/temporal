@@ -5,6 +5,7 @@ import (
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/callback"
 	"go.temporal.io/server/chasm/lib/nexusoperation"
@@ -104,6 +105,17 @@ func (w *Workflow) NestedStreams() chasm.Map[string, *stream.Stream] {
 		w.Streams = make(chasm.Map[string, *stream.Stream])
 	}
 	return w.Streams
+}
+
+// CheckOwner implements [stream.Host]. The chain of a create's owner is checked before the
+// transaction, through the history client, since the owner may be a later run.
+func (w *Workflow) CheckOwner(chasm.Context, *streamservice.Producer, []byte) error {
+	return nil
+}
+
+// CheckWriter implements [stream.Host]. A Workflow's writers are checked before the transaction.
+func (w *Workflow) CheckWriter(chasm.Context, *streamservice.Producer, []byte) error {
+	return nil
 }
 
 // HasChainStreams says whether the final close of this run may have Streams to close: its own,

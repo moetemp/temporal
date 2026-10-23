@@ -102,11 +102,13 @@ func (o *readRecordsOperation) Start(
 	}
 	if resp == nil {
 		token, err := json.Marshal(readToken{
-			Namespace:  req.GetNamespace(),
-			StreamID:   req.GetStream().GetId(),
-			WorkflowID: req.GetStream().GetWorkflowId(),
-			FirstRunID: req.GetStream().GetFirstExecutionRunId(),
-			RequestID:  options.RequestID,
+			Namespace:     req.GetNamespace(),
+			StreamID:      req.GetStream().GetId(),
+			WorkflowID:    req.GetStream().GetWorkflowId(),
+			FirstRunID:    req.GetStream().GetFirstExecutionRunId(),
+			ActivityID:    req.GetStream().GetActivityId(),
+			ActivityRunID: req.GetStream().GetActivityRunId(),
+			RequestID:     options.RequestID,
 		})
 		if err != nil {
 			return nil, err
@@ -121,17 +123,25 @@ func (o *readRecordsOperation) Cancel(ctx context.Context, token string, _ nexus
 	if err := json.Unmarshal([]byte(token), &t); err != nil {
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid operation token")
 	}
-	ref := &streamservice.StreamRef{Id: t.StreamID, WorkflowId: t.WorkflowID, FirstExecutionRunId: t.FirstRunID}
+	ref := &streamservice.StreamRef{
+		Id:                  t.StreamID,
+		WorkflowId:          t.WorkflowID,
+		FirstExecutionRunId: t.FirstRunID,
+		ActivityId:          t.ActivityID,
+		ActivityRunId:       t.ActivityRunID,
+	}
 	return nexusError(o.handler.CancelRead(ctx, t.Namespace, ref, t.RequestID))
 }
 
 // readToken names a parked read.
 type readToken struct {
-	Namespace  string `json:"n"`
-	StreamID   string `json:"s"`
-	WorkflowID string `json:"w,omitempty"`
-	FirstRunID string `json:"f,omitempty"`
-	RequestID  string `json:"r"`
+	Namespace     string `json:"n"`
+	StreamID      string `json:"s"`
+	WorkflowID    string `json:"w,omitempty"`
+	FirstRunID    string `json:"f,omitempty"`
+	ActivityID    string `json:"a,omitempty"`
+	ActivityRunID string `json:"ar,omitempty"`
+	RequestID     string `json:"r"`
 }
 
 // operationError gives the failed or canceled operation error of a failure.
@@ -188,6 +198,9 @@ func (p processor[R]) ProcessInput(
 		return nil, serviceerror.NewInvalidArgumentf("Namespace in request %q does not match namespace in context %q", req.GetNamespace(), name)
 	}
 	businessID := ref.GetWorkflowId()
+	if businessID == "" {
+		businessID = ref.GetActivityId()
+	}
 	if businessID == "" {
 		businessID = ref.GetId()
 	}
