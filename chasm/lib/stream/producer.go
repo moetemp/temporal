@@ -24,15 +24,19 @@ type Withdrawal struct {
 
 // admit runs the Producer checks of a write in the order of the crate's append script, and
 // answers whether the write withdraws earlier Records. It changes no state.
-func (s *Stream) admit(producer *streamservice.Producer, w Withdrawal) (bool, error) {
+func (s *Stream) admit(
+	ctx chasm.Context,
+	producer *streamservice.Producer,
+	w Withdrawal,
+) (bool, error) {
 	if s.runFenced(producer.GetRunId()) {
 		return false, NewError(ReasonFenced, "A Workflow retry withdrew the run of the Producer")
 	}
-	known := s.Producers[producerKey(producer)]
+	known := s.producer(ctx, producerKey(producer))
 	if known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0 {
 		return false, NewError(ReasonFenced, "The epoch is lower than the newest one of the Producer")
 	}
-	run := s.Runs[producer.GetRunId()]
+	run := s.run(ctx, producer.GetRunId())
 	task := taskOf(producer.GetEpoch())
 	switch producer.GetKind() {
 	case streamservice.PRODUCER_KIND_LOCAL_ACTIVITY:
@@ -43,12 +47,12 @@ func (s *Stream) admit(producer *streamservice.Producer, w Withdrawal) (bool, er
 		).withdrawn) > 0)) {
 			return false, NewError(ReasonFenced, "A Superseded Record withdrew the Workflow Task of the call")
 		}
-		return newEpoch(producer, known) || s.withdrawsRun(w.WithdrawRun), nil
+		return newEpoch(producer, known) || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	case streamservice.PRODUCER_KIND_WORKFLOW:
 		flagged := !w.Defer && len(withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks).withdrawn) > 0
-		return flagged || s.withdrawsRun(w.WithdrawRun), nil
+		return flagged || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	default:
-		return newEpoch(producer, known) || s.withdrawsRun(w.WithdrawRun), nil
+		return newEpoch(producer, known) || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	}
 }
 
@@ -61,22 +65,20 @@ func newEpoch(producer *streamservice.Producer, known *streampb.ProducerState) b
 }
 
 // settle keeps the facts of a write that went in: the epoch, the task index and the run.
-func (s *Stream) settle(producer *streamservice.Producer, w Withdrawal, wroteRecords bool) {
+func (s *Stream) settle(
+	ctx chasm.MutableContext,
+	producer *streamservice.Producer,
+	w Withdrawal,
+	wroteRecords bool,
+) {
 	if w.WithdrawRun != "" && !s.runFenced(w.WithdrawRun) {
 		s.FencedRuns = append(s.FencedRuns, w.WithdrawRun)
 	}
 	kind := producer.GetKind()
-	if kind != streamservice.PRODUCER_KIND_WORKFLOW && kind != streamservice.PRODUCER_KIND_LOCAL_ACTIVITY {
+	if !ofRun(kind) {
 		return
 	}
-	if s.Runs == nil {
-		s.Runs = make(map[string]*streampb.RunTasks)
-	}
-	run := s.Runs[producer.GetRunId()]
-	if run == nil {
-		run = &streampb.RunTasks{}
-		s.Runs[producer.GetRunId()] = run
-	}
+	run := s.runForWrite(ctx, producer.GetRunId())
 	task := taskOf(producer.GetEpoch())
 	if kind == streamservice.PRODUCER_KIND_WORKFLOW && !w.Defer {
 		split := withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks)
@@ -94,21 +96,21 @@ func (s *Stream) settle(producer *streamservice.Producer, w Withdrawal, wroteRec
 
 // withdrawn says whether the Stream knows that a Superseded Record withdrew the Record: its run
 // is fenced, its Workflow Task was withdrawn, or a higher epoch of its Producer wrote.
-func (s *Stream) withdrawn(record *streamservice.StreamRecord) bool {
+func (s *Stream) withdrawn(ctx chasm.Context, record *streamservice.StreamRecord) bool {
 	producer := record.GetProducer()
 	if s.runFenced(producer.GetRunId()) {
 		return true
 	}
 	if ofRun(producer.GetKind()) {
 		task := taskOf(producer.GetEpoch())
-		withdrawn := s.Runs[producer.GetRunId()].GetWithdrawn()
+		withdrawn := s.run(ctx, producer.GetRunId()).GetWithdrawn()
 		if slices.ContainsFunc(withdrawn, func(t *streamservice.WorkflowTaskEpoch) bool {
 			return compareTasks(t, task) == 0
 		}) {
 			return true
 		}
 	}
-	known := s.Producers[producerKey(producer)]
+	known := s.producer(ctx, producerKey(producer))
 	return withdrawsEpochs(producer.GetKind()) && known != nil &&
 		CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0
 }
@@ -127,8 +129,8 @@ func (s *Stream) runFenced(run string) bool {
 
 // withdrawsRun says whether a retry run's withdrawal of run gets a Superseded Record. Only a run
 // that wrote has Records to withdraw.
-func (s *Stream) withdrawsRun(run string) bool {
-	return run != "" && !s.runFenced(run) && s.Runs[run].GetWrote()
+func (s *Stream) withdrawsRun(ctx chasm.Context, run string) bool {
+	return run != "" && !s.runFenced(run) && s.run(ctx, run).GetWrote()
 }
 
 func supersededRecord(producer *streamservice.Producer, w Withdrawal) *streamservice.StreamRecord {
@@ -153,19 +155,28 @@ func supersededRecord(producer *streamservice.Producer, w Withdrawal) *streamser
 
 // orphans applies to a Local Activity write with its run's last completed task (S110). It splits
 // the run's open Local Activity tasks into those that never completed and those still open.
-func (s *Stream) orphans(req *streamservice.AppendRecordsRequest) (bool, taskSplit) {
+func (s *Stream) orphans(
+	ctx chasm.Context,
+	req *streamservice.AppendRecordsRequest,
+) (bool, taskSplit) {
 	producer := req.GetProducer()
 	if producer.GetKind() != streamservice.PRODUCER_KIND_LOCAL_ACTIVITY ||
 		req.GetPreviousCompletedTask() == nil || producer.GetRunId() == "" {
 		return false, taskSplit{}
 	}
-	return true, withdrawTasks(s.Runs[producer.GetRunId()].GetOpenLocal(), taskOf(producer.GetEpoch()),
+	open := s.run(ctx, producer.GetRunId()).GetOpenLocal()
+	return true, withdrawTasks(open, taskOf(producer.GetEpoch()),
 		completedTask(req), req.GetFailedTasks())
 }
 
 // settleOrphans keeps the open Local Activity tasks and fences the withdrawn ones.
-func (s *Stream) settleOrphans(producer *streamservice.Producer, split taskSplit, wroteRecords bool) {
-	run := s.Runs[producer.GetRunId()]
+func (s *Stream) settleOrphans(
+	ctx chasm.MutableContext,
+	producer *streamservice.Producer,
+	split taskSplit,
+	wroteRecords bool,
+) {
+	run := s.runForWrite(ctx, producer.GetRunId())
 	run.OpenLocal = split.kept
 	task := taskOf(producer.GetEpoch())
 	if wroteRecords && !slices.ContainsFunc(run.OpenLocal, func(t *streamservice.WorkflowTaskEpoch) bool { return compareTasks(t, task) == 0 }) {
@@ -177,7 +188,7 @@ func (s *Stream) settleOrphans(producer *streamservice.Producer, split taskSplit
 // withdrawRunTail withdraws a closed run's tasks after its last completed Workflow Task. No such
 // task completes any more, and no later write of the run comes to withdraw it.
 func (s *Stream) withdrawRunTail(ctx chasm.MutableContext, end RunEnd) {
-	run := s.Runs[end.RunID]
+	run := s.run(ctx, end.RunID)
 	if run == nil || s.runFenced(end.RunID) {
 		return
 	}

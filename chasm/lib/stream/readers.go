@@ -38,7 +38,7 @@ func readerRunOf(links []nexus.Link) *ReaderRun {
 
 // readerFloor is the floor that a read from from sets for the run. It is false when the Stream
 // keeps no floors, when the run's floor is already that low, or when the read fails anyway.
-func (s *Stream) readerFloor(runID string, from int64) (int64, bool) {
+func (s *Stream) readerFloor(ctx chasm.Context, runID string, from int64) (int64, bool) {
 	if !s.Nested {
 		return 0, false
 	}
@@ -48,7 +48,7 @@ func (s *Stream) readerFloor(runID string, from int64) (int64, bool) {
 	if from <= s.TrimmedOffset {
 		return 0, false
 	}
-	if reader, ok := s.Readers[runID]; ok && reader.GetOffset() <= from {
+	if reader := s.reader(ctx, runID); reader != nil && reader.GetOffset() <= from {
 		return 0, false
 	}
 	return from, true
@@ -67,9 +67,12 @@ func (s *Stream) floorStart(req *streamservice.ReadRecordsRequest, start int64) 
 
 // suggestsContinueAsNew says whether a run's floor keeps more than half of the byte cap. The
 // writer fails when the cap fills, and only the run's continue-as-new frees what its floor keeps.
-func (s *Stream) suggestsContinueAsNew(runID string, limits Limits) bool {
-	reader, ok := s.Readers[runID]
-	if runID == "" || !ok || limits.MaxStoredBytes <= 0 {
+func (s *Stream) suggestsContinueAsNew(ctx chasm.Context, runID string, limits Limits) bool {
+	if runID == "" || limits.MaxStoredBytes <= 0 {
+		return false
+	}
+	reader := s.reader(ctx, runID)
+	if reader == nil {
 		return false
 	}
 	var kept int64
@@ -82,7 +85,7 @@ func (s *Stream) suggestsContinueAsNew(runID string, limits Limits) bool {
 // AddReader keeps the floor of a Workflow run that reads from from, in the transaction that
 // answers the read. No trim passes the floor while the run is open.
 func (s *Stream) AddReader(ctx chasm.MutableContext, run ReaderRun, from int64, limits Limits) error {
-	floor, ok := s.readerFloor(run.RunID, from)
+	floor, ok := s.readerFloor(ctx, run.RunID, from)
 	if !ok {
 		return nil
 	}
@@ -91,10 +94,7 @@ func (s *Stream) AddReader(ctx chasm.MutableContext, run ReaderRun, from int64, 
 			enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT,
 			"The Stream has the most Workflow readers")
 	}
-	if s.Readers == nil {
-		s.Readers = make(map[string]*streampb.ReaderFloor)
-	}
-	s.Readers[run.RunID] = &streampb.ReaderFloor{WorkflowId: run.WorkflowID, Offset: floor}
+	s.setReader(ctx, run, floor)
 	s.armReadersCheck(ctx, limits)
 	return nil
 }
@@ -147,10 +147,10 @@ func (h *readersCheckTaskHandler) Execute(
 	_ *streampb.StreamReadersCheckTask,
 ) error {
 	readers, err := chasm.ReadComponent(ctx, ref,
-		func(s *Stream, _ chasm.Context, _ struct{}) (map[string]string, error) {
+		func(s *Stream, cctx chasm.Context, _ struct{}) (map[string]string, error) {
 			runs := make(map[string]string, len(s.Readers))
-			for runID, reader := range s.Readers {
-				runs[runID] = reader.GetWorkflowId()
+			for runID := range s.Readers {
+				runs[runID] = s.reader(cctx, runID).GetWorkflowId()
 			}
 			return runs, nil
 		}, struct{}{})
@@ -174,9 +174,7 @@ func (h *readersCheckTaskHandler) Execute(
 	limits := h.config.LimitsFor(ns.Name().String())
 	_, _, err = chasm.UpdateComponent(ctx, ref,
 		func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-			for _, runID := range closed {
-				delete(s.Readers, runID)
-			}
+			s.dropReaders(mctx, closed)
 			// Cleared first, so the transition arms the next check while floors are left.
 			s.ReadersCheckTime = nil
 			s.ApplyDue(mctx, limits)

@@ -2255,6 +2255,25 @@ func (ms *MutableStateImpl) DeleteActivity(
 	return nil
 }
 
+// closeActivity deletes an Activity that closed, and drops its Producer entries from the
+// Streams of this run, since it never writes again.
+func (ms *MutableStateImpl) closeActivity(scheduledEventID int64) error {
+	if ai, ok := ms.pendingActivityInfoIDs[scheduledEventID]; ok && ms.ChasmEnabled() {
+		wf, _, err := ms.ChasmWorkflowComponentReadOnly(context.Background())
+		if err != nil {
+			return err
+		}
+		if len(wf.Streams) > 0 {
+			wf, ctx, err := ms.ChasmWorkflowComponent(context.Background())
+			if err != nil {
+				return err
+			}
+			wf.DropActivityProducers(ctx, ai.ActivityId)
+		}
+	}
+	return ms.DeleteActivity(scheduledEventID)
+}
+
 // GetUserTimerInfo gives details about a user timer.
 func (ms *MutableStateImpl) GetUserTimerInfo(
 	timerID string,
@@ -4730,7 +4749,7 @@ func (ms *MutableStateImpl) ApplyActivityTaskCompletedEvent(
 	attributes := event.GetActivityTaskCompletedEventAttributes()
 	scheduledEventID := attributes.GetScheduledEventId()
 
-	return ms.DeleteActivity(scheduledEventID)
+	return ms.closeActivity(scheduledEventID)
 }
 
 func (ms *MutableStateImpl) AddActivityTaskFailedEvent(
@@ -4780,7 +4799,7 @@ func (ms *MutableStateImpl) ApplyActivityTaskFailedEvent(
 	attributes := event.GetActivityTaskFailedEventAttributes()
 	scheduledEventID := attributes.GetScheduledEventId()
 
-	return ms.DeleteActivity(scheduledEventID)
+	return ms.closeActivity(scheduledEventID)
 }
 
 func (ms *MutableStateImpl) AddActivityTaskTimedOutEvent(
@@ -4832,7 +4851,7 @@ func (ms *MutableStateImpl) ApplyActivityTaskTimedOutEvent(
 	attributes := event.GetActivityTaskTimedOutEventAttributes()
 	scheduledEventID := attributes.GetScheduledEventId()
 
-	return ms.DeleteActivity(scheduledEventID)
+	return ms.closeActivity(scheduledEventID)
 }
 
 func (ms *MutableStateImpl) AddActivityTaskCancelRequestedEvent(
@@ -5044,7 +5063,7 @@ func (ms *MutableStateImpl) ApplyActivityTaskCanceledEvent(
 	attributes := event.GetActivityTaskCanceledEventAttributes()
 	scheduledEventID := attributes.GetScheduledEventId()
 
-	return ms.DeleteActivity(scheduledEventID)
+	return ms.closeActivity(scheduledEventID)
 }
 
 func (ms *MutableStateImpl) AddCompletedWorkflowEvent(

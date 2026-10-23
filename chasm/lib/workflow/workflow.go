@@ -153,6 +153,16 @@ func (w *Workflow) EndChainStreams(
 	}
 }
 
+// DropActivityProducers drops a closed Activity's Producer entries from the Streams of this run.
+// After continue-as-new the Streams are in the chain's first run, another execution, and keep
+// the entries until the Producer cap.
+func (w *Workflow) DropActivityProducers(ctx chasm.MutableContext, activityID string) {
+	runID := ctx.ExecutionKey().RunID
+	for _, field := range w.Streams {
+		field.Get(ctx).DropActivityProducers(runID, activityID)
+	}
+}
+
 // RunEnd is how this closed run ended. It implements [stream.Host].
 func (w *Workflow) RunEnd(ctx chasm.Context) (stream.RunEnd, error) {
 	completion, err := w.GetNexusCompletion(ctx, "")

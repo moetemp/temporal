@@ -29,8 +29,8 @@ enum StreamPhase {
 // The state of one Stream. It grows with the batches and the Producers, not with the Records.
 // The Records are in the batch data nodes.
 message StreamState {
-  reserved 18, 19, 20, 22;
-  reserved "hold_records";
+  reserved 13, 16, 18, 19, 20, 22, 24;
+  reserved "hold_records", "producers", "runs", "readers";
 
   StreamPhase phase = 1;
   // The Retention in effect, the Store default when the create had none.
@@ -53,12 +53,8 @@ message StreamState {
   // The stored batches in offset order.
   repeated BatchInfo index = 11;
   int64 stored_bytes = 12;
-  // Keyed by the Producer kind, id and run.
-  map<string, ProducerState> producers = 13;
   // Runs that a retry run withdrew. Their Producers are fenced.
   repeated string fenced_runs = 14;
-  // The Workflow Task facts of each run that wrote, keyed by run id.
-  map<string, RunTasks> runs = 16;
   // The owner run of a Workflow Stream, the Producer of its close with the run chain.
   temporal.api.streamservice.v1.Producer owner = 17;
   // The Stream closes with the result or the failure of its owner's run chain.
@@ -66,9 +62,10 @@ message StreamState {
   // A Workflow Stream, nested in its chain's first run. Its reads see every Record that is still
   // stored, so a replay of a read from the start begins where the read did.
   bool nested = 23;
-  // The open Workflow runs that read the Stream, keyed by run id. The Retention, the size cap and
-  // the expiry drop no Record at or past the lowest floor, since the run's replay reads it again.
-  map<string, ReaderFloor> readers = 24;
+  // The lowest floor of the open Workflow runs that read the Stream, zero with none. The
+  // Retention, the size cap and the expiry drop no Record at or past it, since the run's replay
+  // reads it again. The floors themselves are data nodes.
+  int64 floor = 26;
   // The deadline of the armed reader check, so an older task is a no-op.
   google.protobuf.Timestamp readers_check_time = 25;
   // The deadline of the armed timer task, so an older task is a no-op.

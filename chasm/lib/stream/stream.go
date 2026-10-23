@@ -45,6 +45,15 @@ type Stream struct {
 	// Batches are keyed by the offset of their first entry.
 	Batches chasm.Map[int64, *streampb.RecordBatch]
 
+	// Producers are keyed by the Producer kind, id and run.
+	Producers chasm.Map[string, *streampb.ProducerState]
+
+	// Runs are the Workflow Task facts of each run that wrote, keyed by run id.
+	Runs chasm.Map[string, *streampb.RunTasks]
+
+	// Readers are the floors of the open Workflow runs that read the Stream, keyed by run id.
+	Readers chasm.Map[string, *streampb.ReaderFloor]
+
 	// Reads are the Workflow reads that wait for Records, keyed by their Nexus request id.
 	Reads chasm.Map[string, *ParkedRead]
 }
@@ -54,12 +63,12 @@ var _ chasm.RootComponent = (*Stream)(nil)
 // NewStream builds a Stream in the given phase. An open Stream gets its settings from create.
 func NewStream(ctx chasm.MutableContext, phase streampb.StreamPhase) *Stream {
 	s := &Stream{
-		StreamState: &streampb.StreamState{
-			Phase:     phase,
-			Producers: make(map[string]*streampb.ProducerState),
-		},
-		Batches: make(chasm.Map[int64, *streampb.RecordBatch]),
-		Reads:   make(chasm.Map[string, *ParkedRead]),
+		StreamState: &streampb.StreamState{Phase: phase},
+		Batches:     make(chasm.Map[int64, *streampb.RecordBatch]),
+		Producers:   make(chasm.Map[string, *streampb.ProducerState]),
+		Runs:        make(chasm.Map[string, *streampb.RunTasks]),
+		Readers:     make(chasm.Map[string, *streampb.ReaderFloor]),
+		Reads:       make(chasm.Map[string, *ParkedRead]),
 	}
 	now := timestamppb.New(ctx.Now(s))
 	s.CreateTime = now
@@ -204,7 +213,8 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	}
 	key := producerKey(producer)
 	digest := BatchDigest(req.GetRecords())
-	if known := s.Producers[key]; known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) == 0 {
+	known := s.producer(ctx, key)
+	if known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) == 0 {
 		if req.GetSequence() == known.GetSequence() {
 			if len(known.GetDigest()) > 0 && !bytes.Equal(known.GetDigest(), digest) {
 				return nil, NewError(ReasonSeqDivergent,
@@ -228,11 +238,11 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	if producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
 		w.PreviousCompleted, w.FailedTasks = req.GetPreviousCompletedTask(), req.GetFailedTasks()
 	}
-	flagged, err := s.admit(producer, w)
+	flagged, err := s.admit(ctx, producer, w)
 	if err != nil {
 		return nil, err
 	}
-	orphans, orphaned := s.orphans(req)
+	orphans, orphaned := s.orphans(ctx, req)
 
 	entries := batchEntries(req, w, flagged, len(orphaned.withdrawn) > 0)
 	if err := s.checkSize(ctx, batchSize(entries), in.Limits); err != nil {
@@ -248,19 +258,16 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 		first = entries[1].GetOffset()
 	}
 	wrote := len(req.GetRecords()) > 0
-	s.settle(producer, w, wrote)
+	s.settle(ctx, producer, w, wrote)
 	if orphans {
-		s.settleOrphans(producer, orphaned, wrote)
-	}
-	if s.Producers == nil {
-		s.Producers = make(map[string]*streampb.ProducerState)
+		s.settleOrphans(ctx, producer, orphaned, wrote)
 	}
 	state := &streampb.ProducerState{
 		Epoch:       producer.GetEpoch(),
 		Sequence:    req.GetSequence(),
 		FirstOffset: first,
 		LastOffset:  last,
-		Holds:       s.Producers[key].GetHolds(),
+		Holds:       s.producer(ctx, key).GetHolds(),
 		Digest:      digest,
 	}
 	if withdrawsEpochs(producer.GetKind()) {
@@ -270,11 +277,11 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 			state.Holds = nil
 		}
 	}
-	s.Producers[key] = state
+	s.setProducer(ctx, key, state)
 	if wrote {
 		s.LastWriteTime = timestamppb.New(ctx.Now(s))
 	}
-	s.limitProducers(in.Limits.MaxProducers)
+	s.limitProducers(ctx, in.Limits.MaxProducers)
 	s.finish(ctx, in.Limits)
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
 }
@@ -376,14 +383,14 @@ func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.
 		return nil, err
 	}
 	w := Withdrawal{PreviousCompleted: req.GetPreviousCompletedTask(), FailedTasks: req.GetFailedTasks(), WithdrawRun: req.GetWithdrawRun()}
-	flagged, err := s.admit(producer, w)
+	flagged, err := s.admit(ctx, producer, w)
 	if err != nil {
 		return nil, err
 	}
 	if flagged {
 		s.write(ctx, []*streamservice.StreamRecord{supersededRecord(producer, w)})
 	}
-	s.settle(producer, w, false)
+	s.settle(ctx, producer, w, false)
 	s.close(ctx, producer, req.GetResult(), req.GetFailure(), status)
 	s.finish(ctx, in.Limits)
 	return &streamservice.CloseStreamResponse{}, nil
@@ -447,10 +454,10 @@ func (s *Stream) writable() error {
 // withdrawOnCreate applies a retry run's withdraw_run at its first create.
 func (s *Stream) withdrawOnCreate(ctx chasm.MutableContext, req *streamservice.CreateStreamRequest) {
 	w := Withdrawal{WithdrawRun: req.GetWithdrawRun()}
-	if s.withdrawsRun(w.WithdrawRun) {
+	if s.withdrawsRun(ctx, w.WithdrawRun) {
 		s.write(ctx, []*streamservice.StreamRecord{supersededRecord(req.GetOwner(), w)})
 	}
-	s.settle(req.GetOwner(), w, false)
+	s.settle(ctx, req.GetOwner(), w, false)
 }
 
 // write gives the entries their offsets and stores them as one batch.
@@ -567,26 +574,7 @@ func (s *Stream) keptBytes() int64 {
 
 // floor is the lowest offset that an open Workflow reader read.
 func (s *Stream) floor() (int64, bool) {
-	var floor int64
-	for _, reader := range s.Readers {
-		if floor == 0 || reader.GetOffset() < floor {
-			floor = reader.GetOffset()
-		}
-	}
-	return floor, floor > 0
-}
-
-func (s *Stream) limitProducers(maxProducers int) {
-	for maxProducers > 0 && len(s.Producers) > maxProducers {
-		oldestKey := ""
-		var oldest int64
-		for key, producer := range s.Producers {
-			if oldestKey == "" || producer.GetLastOffset() < oldest {
-				oldestKey, oldest = key, producer.GetLastOffset()
-			}
-		}
-		delete(s.Producers, oldestKey)
-	}
+	return s.Floor, s.Floor > 0 && len(s.Readers) > 0
 }
 
 // retainedFrom is the offset below which the Retention hides the Records at now. A Workflow Stream
@@ -638,7 +626,7 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 			}
 			return readOutcome{resp: &streamservice.ReadRecordsResponse{
 				NextOffset:             next,
-				ContinueAsNewSuggested: s.suggestsContinueAsNew(read.GetReaderRunId(), limits),
+				ContinueAsNewSuggested: s.suggestsContinueAsNew(ctx, read.GetReaderRunId(), limits),
 			}}, true
 		}
 		return readOutcome{}, false
