@@ -89,6 +89,9 @@ func (c *StreamServiceLayeredClient) callCreateStreamNoRetry(
 	}()
 	businessID := request.GetFrontendRequest().GetRef().GetWorkflowId()
 	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetRef().GetActivityId()
+	}
+	if businessID == "" {
 		businessID = request.GetFrontendRequest().GetStreamId()
 	}
 	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
@@ -135,6 +138,9 @@ func (c *StreamServiceLayeredClient) callAppendRecordsNoRetry(
 		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
 	}()
 	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
+	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetActivityId()
+	}
 	if businessID == "" {
 		businessID = request.GetFrontendRequest().GetStream().GetId()
 	}
@@ -183,6 +189,9 @@ func (c *StreamServiceLayeredClient) callCloseStreamNoRetry(
 	}()
 	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
 	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetActivityId()
+	}
+	if businessID == "" {
 		businessID = request.GetFrontendRequest().GetStream().GetId()
 	}
 	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
@@ -230,6 +239,9 @@ func (c *StreamServiceLayeredClient) callReadRecordsNoRetry(
 	}()
 	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
 	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetActivityId()
+	}
+	if businessID == "" {
 		businessID = request.GetFrontendRequest().GetStream().GetId()
 	}
 	shardID := common.WorkflowIDToHistoryShard(request.GetNamespaceId(), businessID, c.numShards)
@@ -276,6 +288,9 @@ func (c *StreamServiceLayeredClient) callDescribeStreamNoRetry(
 		metrics.ClientLatency.With(metricsHandler).Record(time.Since(startTime))
 	}()
 	businessID := request.GetFrontendRequest().GetStream().GetWorkflowId()
+	if businessID == "" {
+		businessID = request.GetFrontendRequest().GetStream().GetActivityId()
+	}
 	if businessID == "" {
 		businessID = request.GetFrontendRequest().GetStream().GetId()
 	}

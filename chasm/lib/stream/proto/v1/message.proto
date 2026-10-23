@@ -37,8 +37,8 @@ message StreamState {
   google.protobuf.Duration retention = 2;
   // Unset when the Stream never closes on its own.
   google.protobuf.Duration auto_close = 3;
-  // A Workflow created the Stream, so an open Stream lives for the safety TTL after its last
-  // write, not for one Retention.
+  // A Workflow or a Standalone Activity created the Stream, so an open Stream lives for the
+  // safety TTL after its last write, not for one Retention. Its owner closes it.
   bool workflow_owned = 4;
   google.protobuf.Timestamp create_time = 5;
   // The auto close and the TTL of an open Stream count from it. The create sets it too.

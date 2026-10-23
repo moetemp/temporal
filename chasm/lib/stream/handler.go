@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/server/chasm"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
+	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/resource"
 )
@@ -169,10 +170,11 @@ func (h *handler) CreateStream(
 			return nil, err
 		}
 	}
-	if err := checkOwner(req.GetOwner(), t.nested); err != nil {
+	if err := checkOwner(req.GetOwner(), t); err != nil {
 		return nil, err
 	}
-	if req.GetCloseWithRun() && (!t.nested || req.GetOwner().GetKind() != streamservice.PRODUCER_KIND_WORKFLOW) {
+	workflowOwner := req.GetOwner().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW
+	if req.GetCloseWithRun() && (!t.workflow() || !workflowOwner) {
 		return nil, invalid("close_with_run needs a Workflow owner and a ref with workflow_id and first_execution_run_id")
 	}
 	if err := h.checkChain(ctx, t, req.GetOwner(), req.GetWithdrawRun()); err != nil {
@@ -181,7 +183,10 @@ func (h *handler) CreateStream(
 	in := CreateInput{Request: req, Limits: limits}
 	var out CreateOutput
 	if t.nested {
-		out, err = update(ctx, t, newNestedStream,
+		check := func(h Host, cctx chasm.Context) error {
+			return h.CheckOwner(cctx, req.GetOwner(), req.GetTaskToken())
+		}
+		out, err = update(ctx, t, newNestedStream, check,
 			func(s *Stream, mctx chasm.MutableContext) (CreateOutput, error) { return s.Create(mctx, in) })
 	} else {
 		out, err = h.createStandalone(ctx, t, in)
@@ -189,10 +194,13 @@ func (h *handler) CreateStream(
 	if err != nil {
 		return nil, err
 	}
+	ref := common.CloneProto(req.GetRef())
+	if ref == nil {
+		ref = &streamservice.StreamRef{}
+	}
+	ref.Id = req.GetStreamId()
 	return &streamservice.CreateStreamResponse{
-		Stream:  &streamservice.StreamRef{Id: req.GetStreamId(), WorkflowId: req.GetRef().GetWorkflowId(), FirstExecutionRunId: req.GetRef().GetFirstExecutionRunId()},
-		Created: out.Created,
-		Status:  out.Status,
+		Stream: ref, Created: out.Created, Status: out.Status,
 	}, nil
 }
 
@@ -234,9 +242,13 @@ func (h *handler) AppendRecords(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (*streamservice.AppendRecordsResponse, error) {
-		return s.Append(mctx, AppendInput{Request: req, Limits: limits})
-	})
+	check := func(h Host, cctx chasm.Context) error {
+		return h.CheckWriter(cctx, req.GetProducer(), req.GetTaskToken())
+	}
+	resp, err := update(ctx, t, nil, check,
+		func(s *Stream, mctx chasm.MutableContext) (*streamservice.AppendRecordsResponse, error) {
+			return s.Append(mctx, AppendInput{Request: req, Limits: limits})
+		})
 	return resp, streamError(ctx, t, err)
 }
 
@@ -254,9 +266,13 @@ func (h *handler) CloseStream(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (*streamservice.CloseStreamResponse, error) {
-		return s.Close(mctx, CloseInput{Request: req, Limits: limits})
-	})
+	check := func(h Host, cctx chasm.Context) error {
+		return h.CheckWriter(cctx, req.GetProducer(), req.GetTaskToken())
+	}
+	resp, err := update(ctx, t, nil, check,
+		func(s *Stream, mctx chasm.MutableContext) (*streamservice.CloseStreamResponse, error) {
+			return s.Close(mctx, CloseInput{Request: req, Limits: limits})
+		})
 	return resp, streamError(ctx, t, err)
 }
 
@@ -285,7 +301,7 @@ func (h *handler) applyDue(ctx context.Context, t target, limits Limits) error {
 	if err != nil || !due {
 		return err
 	}
-	_, err = update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
+	_, err = update(ctx, t, nil, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
 		s.ApplyDue(mctx, limits)
 		return struct{}{}, nil
 	})
@@ -309,7 +325,7 @@ func (h *handler) ReadOrPark(
 	}
 	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Reader: reader.Run, Limits: limits}
 	if t.nested {
-		resp, err := update(ctx, t, newNestedStream,
+		resp, err := update(ctx, t, newNestedStream, nil,
 			func(s *Stream, mctx chasm.MutableContext) (*streamservice.ReadRecordsResponse, error) {
 				return s.ReadOrPark(mctx, in)
 			})
@@ -342,7 +358,7 @@ func (h *handler) CancelRead(ctx context.Context, namespaceName string, ref *str
 	if err != nil {
 		return err
 	}
-	_, err = update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
+	_, err = update(ctx, t, nil, nil, func(s *Stream, mctx chasm.MutableContext) (struct{}, error) {
 		return struct{}{}, s.CancelRead(mctx, requestID, limits)
 	})
 	return err
@@ -476,7 +492,7 @@ func (h *handler) page(
 	if floorRun == nil {
 		return read(ctx, t, view)
 	}
-	return update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (pagedRead, error) {
+	return update(ctx, t, nil, nil, func(s *Stream, mctx chasm.MutableContext) (pagedRead, error) {
 		if err := s.AddReader(mctx, *floorRun, s.floorStart(req, from), limits); err != nil {
 			return pagedRead{}, err
 		}

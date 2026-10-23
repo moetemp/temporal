@@ -118,8 +118,8 @@ type StreamState struct {
 	Retention *durationpb.Duration `protobuf:"bytes,2,opt,name=retention,proto3" json:"retention,omitempty"`
 	// Unset when the Stream never closes on its own.
 	AutoClose *durationpb.Duration `protobuf:"bytes,3,opt,name=auto_close,json=autoClose,proto3" json:"auto_close,omitempty"`
-	// A Workflow created the Stream, so an open Stream lives for the safety TTL after its last
-	// write, not for one Retention.
+	// A Workflow or a Standalone Activity created the Stream, so an open Stream lives for the
+	// safety TTL after its last write, not for one Retention. Its owner closes it.
 	WorkflowOwned bool                   `protobuf:"varint,4,opt,name=workflow_owned,json=workflowOwned,proto3" json:"workflow_owned,omitempty"`
 	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
 	// The auto close and the TTL of an open Stream count from it. The create sets it too.

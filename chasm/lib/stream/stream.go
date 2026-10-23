@@ -160,7 +160,7 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 		if autoClose > 0 {
 			s.AutoClose = durationpb.New(autoClose)
 		}
-		s.WorkflowOwned = in.Request.GetOwner().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW
+		s.WorkflowOwned = owned(in.Request.GetOwner())
 		s.CreateTime = now
 		s.LastWriteTime = now
 		s.Owner = in.Request.GetOwner()
@@ -174,7 +174,7 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 				"The Stream exists with the Retention %v and the auto close %v",
 				s.GetRetention().AsDuration(), s.GetAutoClose().AsDuration())
 		}
-		if in.Request.GetOwner().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
+		if owned(in.Request.GetOwner()) {
 			s.WorkflowOwned = true
 		}
 		s.withdrawOnCreate(ctx, in.Request)
@@ -187,6 +187,14 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 		s.finish(ctx, in.Limits)
 		return CreateOutput{Status: s.Status()}, nil
 	}
+}
+
+// owned says whether a create's owner keeps the Stream open past one Retention with no write: a
+// Workflow, or a Standalone Activity, which closes the Stream when it ends.
+func owned(owner *streamservice.Producer) bool {
+	kind := owner.GetKind()
+	return kind == streamservice.PRODUCER_KIND_WORKFLOW ||
+		kind == streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY
 }
 
 // AppendInput is a batch of one Producer.
