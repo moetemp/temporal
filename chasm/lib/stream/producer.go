@@ -2,10 +2,12 @@ package stream
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
 	"go.temporal.io/api/streamservice/v1"
+	"go.temporal.io/server/chasm"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -135,6 +137,37 @@ func (s *Stream) settleOrphans(producer *streamservice.Producer, split taskSplit
 		run.OpenLocal = append(run.OpenLocal, task)
 	}
 	run.Withdrawn = append(run.Withdrawn, split.withdrawn...)
+}
+
+// withdrawRunTail withdraws a closed run's tasks after its last completed Workflow Task. No such
+// task completes any more, and no later write of the run comes to withdraw it.
+func (s *Stream) withdrawRunTail(ctx chasm.MutableContext, end RunEnd) {
+	run := s.Runs[end.RunID]
+	if run == nil || s.runFenced(end.RunID) {
+		return
+	}
+	var completed *streamservice.WorkflowTaskEpoch
+	if end.LastCompleted > 0 {
+		completed = &streamservice.WorkflowTaskEpoch{StartedEventId: end.LastCompleted}
+	}
+	past := &streamservice.WorkflowTaskEpoch{StartedEventId: math.MaxInt64}
+	index := withdrawTasks(run.GetIndex(), past, completed, nil)
+	local := withdrawTasks(run.GetOpenLocal(), past, completed, nil)
+	if len(index.withdrawn) == 0 && len(local.withdrawn) == 0 {
+		return
+	}
+	s.write(ctx, []*streamservice.StreamRecord{{
+		Kind: streamservice.STREAM_RECORD_KIND_SUPERSEDED,
+		Supersession: &streamservice.Supersession{
+			ProducerKind:          streamservice.PRODUCER_KIND_WORKFLOW,
+			ProducerId:            "wf:" + encodePart(end.RunID),
+			Epoch:                 &streamservice.ProducerEpoch{TaskStartedEventId: past.GetStartedEventId()},
+			PreviousCompletedTask: completed,
+			RunId:                 end.RunID,
+		},
+	}})
+	run.Index, run.OpenLocal = index.kept, local.kept
+	run.Withdrawn = append(append(run.Withdrawn, index.withdrawn...), local.withdrawn...)
 }
 
 // completedTask is the run's last completed task of a write, or nil before the first.

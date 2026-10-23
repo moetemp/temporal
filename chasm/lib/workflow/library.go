@@ -4,6 +4,7 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/server/chasm"
+	"go.temporal.io/server/chasm/lib/stream"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/searchattribute"
 )
@@ -57,6 +58,8 @@ type workflowContext struct {
 	registry *Registry
 	// Whether the Stream service is on for a namespace. Nil when the library has no config.
 	streamsEnabled func(string) bool
+	// The Stream limits of a namespace, for the close of a run's own Streams.
+	streamLimits func(string) stream.Limits
 }
 
 type ctxKeyWorkflowContextType struct{}
@@ -77,7 +80,11 @@ func (l *library) Components() []*chasm.RegistrableComponent {
 			chasm.WorkflowComponentName,
 			chasm.WithExecutionType(enumspb.EXECUTION_TYPE_WORKFLOW),
 			chasm.WithContextValues(map[any]any{
-				ctxKeyWorkflowContext: &workflowContext{registry: l.registry, streamsEnabled: l.config.streamsEnabled},
+				ctxKeyWorkflowContext: &workflowContext{
+					registry:       l.registry,
+					streamsEnabled: l.config.streamsEnabled,
+					streamLimits:   l.config.streamLimits,
+				},
 			}),
 		),
 		chasm.NewRegistrableComponent[*WorkflowUpdate]("update"),
