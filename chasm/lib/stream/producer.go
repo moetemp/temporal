@@ -8,6 +8,7 @@ import (
 
 	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/server/chasm"
+	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -46,15 +47,21 @@ func (s *Stream) admit(
 		).withdrawn) > 0)) {
 			return false, NewError(ReasonFenced, "A Superseded Record withdrew the Workflow Task of the call")
 		}
-		return s.withdrawsRun(ctx, w.WithdrawRun), nil
+		return newEpoch(producer, known) || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	case streamservice.PRODUCER_KIND_WORKFLOW:
 		flagged := !w.Defer && len(withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks).withdrawn) > 0
 		return flagged || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	default:
-		flagged := withdrawsEpochs(producer.GetKind()) && known != nil && known.GetHolds() != nil &&
-			CompareEpochs(known.GetHolds(), producer.GetEpoch()) < 0
-		return flagged || s.withdrawsRun(ctx, w.WithdrawRun), nil
+		return newEpoch(producer, known) || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	}
+}
+
+// newEpoch says whether a write is the first of a higher epoch of a Producer whose lower epoch
+// wrote Records, so its Superseded Record withdraws them, as the crate's append script does. A
+// Local Activity's next attempt in the same Workflow Task redoes the call.
+func newEpoch(producer *streamservice.Producer, known *streampb.ProducerState) bool {
+	return withdrawsEpochs(producer.GetKind()) && known != nil && known.GetHolds() != nil &&
+		CompareEpochs(known.GetHolds(), producer.GetEpoch()) < 0
 }
 
 // settle keeps the facts of a write that went in: the epoch, the task index and the run.
@@ -94,18 +101,18 @@ func (s *Stream) withdrawn(ctx chasm.Context, record *streamservice.StreamRecord
 	if s.runFenced(producer.GetRunId()) {
 		return true
 	}
-	switch producer.GetKind() {
-	case streamservice.PRODUCER_KIND_WORKFLOW, streamservice.PRODUCER_KIND_LOCAL_ACTIVITY:
+	if ofRun(producer.GetKind()) {
 		task := taskOf(producer.GetEpoch())
 		withdrawn := s.run(ctx, producer.GetRunId()).GetWithdrawn()
-		return slices.ContainsFunc(withdrawn, func(t *streamservice.WorkflowTaskEpoch) bool {
+		if slices.ContainsFunc(withdrawn, func(t *streamservice.WorkflowTaskEpoch) bool {
 			return compareTasks(t, task) == 0
-		})
-	default:
-		known := s.producer(ctx, producerKey(producer))
-		return withdrawsEpochs(producer.GetKind()) && known != nil &&
-			CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0
+		}) {
+			return true
+		}
 	}
+	known := s.producer(ctx, producerKey(producer))
+	return withdrawsEpochs(producer.GetKind()) && known != nil &&
+		CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0
 }
 
 // withdrawsEpochs says whether a higher epoch of a Producer outside Workflow code withdraws the
