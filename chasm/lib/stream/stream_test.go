@@ -685,3 +685,84 @@ func TestCallerCantCloseAsTerminated(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, streamservice.CLOSE_STATUS_COMPLETED, read.GetRecords()[0].GetCloseStatus())
 }
+
+// A wake_only read parks for hours, so an idle Workflow reader adds no History each minute. Any
+// other parked read still answers an empty page after 60 s.
+func TestWakeParksPastTheLongPollCap(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	for id, wakeOnly := range map[string]bool{"wake": true, "page": false} {
+		resp, err := h.readOrPark(id, &streamservice.ReadRecordsRequest{
+			WakeOnly: wakeOnly, Wait: durationpb.New(2 * time.Hour),
+		})
+		require.NoError(t, err)
+		require.Nil(t, resp)
+	}
+
+	h.advance(2 * time.Minute)
+	require.False(t, h.parked("wake").GetResolved())
+	require.True(t, h.parked("page").GetResolved())
+
+	_, err = h.append(activityProducer(1), 1, "a")
+	require.NoError(t, err)
+	require.True(t, h.parked("wake").GetResolved())
+	require.Empty(t, h.parked("wake").GetResponse().GetRecords())
+}
+
+// A page stops before the Record that would take it past max_bytes, and a larger Record comes
+// alone, so a reader with a small cap still moves on.
+func TestPageStopsAtMaxBytes(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{
+		Producer: activityProducer(1), Sequence: 1, Records: []*streamservice.AppendRecord{
+			{Topic: "a", Body: &commonpb.Payload{Data: make([]byte, 100)}},
+			{Topic: "b", Body: &commonpb.Payload{Data: make([]byte, 100)}},
+			{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 1000)}},
+		},
+	})
+	require.NoError(t, err)
+
+	first, err := h.read(&streamservice.ReadRecordsRequest{MaxBytes: 300})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, topics(first))
+	second, err := h.read(&streamservice.ReadRecordsRequest{
+		FromOffset: first.GetNextOffset(), MaxBytes: 300,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"big"}, topics(second))
+}
+
+// A last read gives the newest Records that pass the filter, oldest first, and leaves out the
+// Records of a withdrawn Workflow Task.
+func TestLastReadsTheNewestRecords(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(activityProducer(1), 1, "turns", "tools", "turns")
+	require.NoError(t, err)
+	_, err = h.append(workflowProducer(3), 1, "turns")
+	require.NoError(t, err)
+	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{
+		Producer: workflowProducer(7), Sequence: 1, Records: records("tools"),
+		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: 2, Attempt: 1},
+		FailedTasks:           []int64{3},
+	})
+	require.NoError(t, err)
+
+	last := func(req *streamservice.ReadRecordsRequest) []string {
+		resp, err := chasm.ReadComponent(h.ctx, h.ref(), (*Stream).Last, req)
+		require.NoError(t, err)
+		return topics(resp)
+	}
+	require.Equal(t, []string{"turns", "tools"}, last(&streamservice.ReadRecordsRequest{Last: 2}))
+	turns := &streamservice.ReadRecordsRequest{Last: 3, Topics: []string{"turns"}}
+	require.Equal(t, []string{"turns", "turns"}, last(turns))
+
+	require.NoError(t, h.close("done"))
+	require.Equal(t, []string{"tools", "close"}, last(&streamservice.ReadRecordsRequest{Last: 1}))
+	wake := &streamservice.ReadRecordsRequest{Last: 1, WakeOnly: true}
+	require.ErrorContains(t, checkLast(wake, false), ReasonInvalid)
+}

@@ -1,6 +1,8 @@
 package stream
 
 import (
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	callbackspb "go.temporal.io/server/chasm/lib/callback/gen/callbackpb/v1"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
 	"go.temporal.io/server/common"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -87,10 +90,8 @@ func (s *Stream) scan(
 	}
 	resp := &streamservice.ReadRecordsResponse{NextOffset: from}
 	scanned := 0
-	for _, info := range s.Index {
-		if info.GetLastOffset() < start {
-			continue
-		}
+	var size int64
+	for _, info := range s.Index[s.firstBatchAt(start):] {
 		for _, entry := range s.Batches[info.GetFirstOffset()].Get(ctx).GetRecords() {
 			if entry.GetOffset() < start {
 				continue
@@ -101,6 +102,9 @@ func (s *Stream) scan(
 			if resp.Done || len(resp.Records) >= limit || scanned >= maxScan {
 				return resp, nil
 			}
+			if entry.GetOffset() >= retained && overBytes(req, resp, entry, size) {
+				return resp, nil
+			}
 			scanned++
 			resp.NextOffset = entry.GetOffset() + 1
 			if entry.GetOffset() < retained {
@@ -109,10 +113,110 @@ func (s *Stream) scan(
 				}
 				continue
 			}
+			taken := len(resp.Records)
 			s.take(ctx, req, resp, entry)
+			if len(resp.Records) > taken {
+				size += int64(proto.Size(entry))
+			}
 		}
 	}
 	return resp, nil
+}
+
+// firstBatchAt is the index of the first batch with an entry at or past offset, so a look of a
+// parked read reads only the batches that came since its last look.
+func (s *Stream) firstBatchAt(offset int64) int {
+	return sort.Search(len(s.Index), func(i int) bool {
+		return s.Index[i].GetLastOffset() >= offset
+	})
+}
+
+// overBytes says whether entry would take a page past its max_bytes. A page takes its first
+// Record at any size, so a read always moves on.
+func overBytes(
+	req *streamservice.ReadRecordsRequest,
+	resp *streamservice.ReadRecordsResponse,
+	entry *streamservice.StreamRecord,
+	size int64,
+) bool {
+	limit := req.GetMaxBytes()
+	if limit <= 0 || len(resp.GetRecords()) == 0 {
+		return false
+	}
+	if entry.GetKind() == streamservice.STREAM_RECORD_KIND_DATA && !passes(req, entry.GetTopic()) {
+		return false
+	}
+	return size+int64(proto.Size(entry)) > limit
+}
+
+// Last reads the newest last Records that pass the filter, oldest first. A Record that the Stream
+// knows a Superseded Record withdrew doesn't count. A page of a closed Stream ends with the close.
+func (s *Stream) Last(
+	ctx chasm.Context,
+	req *streamservice.ReadRecordsRequest,
+) (*streamservice.ReadRecordsResponse, error) {
+	if !s.Exists() {
+		return nil, notFound()
+	}
+	if s.Phase == streampb.STREAM_PHASE_EXPIRED {
+		return nil, NewError(ReasonExpired, "The Stream expired")
+	}
+	want := min(int(req.GetLast()), MaxRecords)
+	retained := s.retainedFrom(ctx.Now(s))
+	var picked []*streamservice.StreamRecord
+	var size int64
+	scanned := 0
+	collect := func() {
+		for i := len(s.Index) - 1; i >= 0; i-- {
+			entries := s.Batches[s.Index[i].GetFirstOffset()].Get(ctx).GetRecords()
+			for j := len(entries) - 1; j >= 0; j-- {
+				entry := entries[j]
+				if entry.GetOffset() < retained || len(picked) >= want || scanned >= maxScan {
+					return
+				}
+				scanned++
+				if entry.GetKind() != streamservice.STREAM_RECORD_KIND_DATA ||
+					!passes(req, entry.GetTopic()) || s.withdrawn(entry) {
+					continue
+				}
+				entrySize := int64(proto.Size(entry))
+				if limit := req.GetMaxBytes(); limit > 0 && len(picked) > 0 &&
+					size+entrySize > limit {
+					return
+				}
+				picked = append(picked, common.CloneProto(entry))
+				size += entrySize
+			}
+		}
+	}
+	collect()
+	slices.Reverse(picked)
+	resp := &streamservice.ReadRecordsResponse{Records: picked, NextOffset: s.NewestOffset + 1}
+	if s.Phase == streampb.STREAM_PHASE_CLOSED {
+		resp.Records = append(resp.Records, s.closeRecord(ctx))
+		resp.Done = true
+	}
+	return resp, nil
+}
+
+// checkLast refuses a last read where it can't work. A wake_only read answers no Records, and a
+// Workflow's replay needs a fixed range, which the newest Records are not.
+func checkLast(req *streamservice.ReadRecordsRequest, workflow bool) error {
+	switch {
+	case req.GetLast() == 0:
+		return nil
+	case req.GetLast() < 0:
+		return invalid("last is below zero")
+	case req.GetWakeOnly():
+		return invalid("A wake_only read can't read the last Records")
+	case workflow:
+		return invalid("Workflow code can't read the last Records")
+	case req.GetFromOffset() != 0 || req.GetToOffset() != 0 ||
+		req.GetStart() == streamservice.READ_START_END:
+		return invalid("A read of the last Records takes no start offset")
+	default:
+		return nil
+	}
 }
 
 // take adds one entry to a page. A Superseded item passes every Topic filter, and the close
@@ -167,8 +271,8 @@ func (s *Stream) wakeAnswer(start int64) *streamservice.ReadRecordsResponse {
 func (s *Stream) afterClose(ctx chasm.Context, from, end int64) ([]*streamservice.StreamRecord, int64) {
 	var records []*streamservice.StreamRecord
 	var after int64
-	for _, info := range s.Index {
-		if info.GetLastOffset() < from || info.GetLastOffset() <= s.CloseOffset {
+	for _, info := range s.Index[s.firstBatchAt(from):] {
+		if info.GetLastOffset() <= s.CloseOffset {
 			continue
 		}
 		for _, entry := range s.Batches[info.GetFirstOffset()].Get(ctx).GetRecords() {
@@ -244,11 +348,14 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 			StartTime: timestamppb.New(now),
 		},
 	}
-	if wait, _ := ReadTimeout(in.Request); wait > 0 {
+	if in.Reader != nil {
+		read.ReaderRunId = in.Reader.RunID
+	}
+	wait, createWait := parkWaits(in.Request, in.Limits)
+	if wait > 0 {
 		read.WaitDeadline = timestamppb.New(now.Add(wait))
 	}
 	if s.Phase == streampb.STREAM_PHASE_PENDING {
-		createWait := min(in.Request.GetCreateWait().AsDuration(), MaxWait)
 		if createWait <= 0 || in.Callback == nil {
 			return nil, notFound()
 		}
@@ -268,8 +375,9 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 		if found || in.Callback == nil {
 			s.finish(ctx, in.Limits)
 			if in.Request.GetWakeOnly() {
-				return s.wakeAnswer(from), nil
+				resp = s.wakeAnswer(from)
 			}
+			resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(read.GetReaderRunId(), in.Limits)
 			return resp, nil
 		}
 		read.StartOffset = from
@@ -310,7 +418,11 @@ type readOutcome struct {
 
 // wake answers a parked read when the Stream can. A look that finds only other Topics moves
 // the read's offset on, so the next look starts after it.
-func (s *Stream) wake(ctx chasm.MutableContext, read *ParkedRead) (readOutcome, bool) {
+func (s *Stream) wake(
+	ctx chasm.MutableContext,
+	read *ParkedRead,
+	limits Limits,
+) (readOutcome, bool) {
 	if read.GetCreateDeadline() != nil {
 		from, err := s.StartOffset(read.GetRequest())
 		if err != nil {
@@ -320,14 +432,19 @@ func (s *Stream) wake(ctx chasm.MutableContext, read *ParkedRead) (readOutcome, 
 		read.StartOffset = from
 		read.ScanOffset = from
 	}
+	// Nothing came since the read's last look, so every parked read doesn't rescan on each write.
+	if s.Phase == streampb.STREAM_PHASE_OPEN && read.GetScanOffset() > s.NewestOffset {
+		return readOutcome{}, false
+	}
 	resp, found, err := s.Page(ctx, read.GetRequest(), read.GetScanOffset())
 	if err != nil {
 		return readOutcome{err: err}, true
 	}
 	if found && read.GetRequest().GetWakeOnly() {
-		return readOutcome{resp: s.wakeAnswer(read.GetStartOffset())}, true
+		resp = s.wakeAnswer(read.GetStartOffset())
 	}
 	if found {
+		resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(read.GetReaderRunId(), limits)
 		return readOutcome{resp: resp}, true
 	}
 	read.ScanOffset = max(read.GetScanOffset(), resp.GetNextOffset())
@@ -378,6 +495,19 @@ func (s *Stream) pruneReads(ctx chasm.MutableContext) {
 	}
 }
 
+// parkWaits are the waits of a parked read. A wake_only read may wait for days, since it adds
+// nothing to History while it waits. Any other read waits as a long poll does.
+func parkWaits(
+	req *streamservice.ReadRecordsRequest,
+	limits Limits,
+) (wait time.Duration, createWait time.Duration) {
+	if !req.GetWakeOnly() || limits.MaxWakeWait <= 0 {
+		return ReadTimeout(req)
+	}
+	return min(max(req.GetWait().AsDuration(), 0), limits.MaxWakeWait),
+		min(max(req.GetCreateWait().AsDuration(), 0), limits.MaxWakeWait)
+}
+
 // ReadTimeout is how long a frontend read waits, bounded by the crate's limit.
 func ReadTimeout(req *streamservice.ReadRecordsRequest) (wait time.Duration, createWait time.Duration) {
 	return min(max(req.GetWait().AsDuration(), 0), MaxWait), min(max(req.GetCreateWait().AsDuration(), 0), MaxWait)
@@ -389,5 +519,5 @@ func (s *Stream) keepWakeFloor(ctx chasm.MutableContext, in ReadInput, from int6
 	if in.Reader == nil || !in.Request.GetWakeOnly() {
 		return nil
 	}
-	return s.AddReader(ctx, *in.Reader, from, in.Limits)
+	return s.AddReader(ctx, *in.Reader, s.floorStart(in.Request, from), in.Limits)
 }

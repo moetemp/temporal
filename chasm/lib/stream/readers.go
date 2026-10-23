@@ -8,6 +8,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/streamservice/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/chasm"
 	streampb "go.temporal.io/server/chasm/lib/stream/gen/streampb/v1"
@@ -51,6 +52,31 @@ func (s *Stream) readerFloor(runID string, from int64) (int64, bool) {
 		return 0, false
 	}
 	return from, true
+}
+
+// floorStart is where a run's floor starts for a read from start. A reset run copied the reads of
+// the old run into its History, and its first live read names the lowest of them in floor_from,
+// so the floor covers what its replay reads again.
+func (s *Stream) floorStart(req *streamservice.ReadRecordsRequest, start int64) int64 {
+	floorFrom := req.GetFloorFrom()
+	if floorFrom <= 0 || start == 0 || floorFrom >= start {
+		return start
+	}
+	return max(floorFrom, s.TrimmedOffset+1)
+}
+
+// suggestsContinueAsNew says whether a run's floor keeps more than half of the byte cap. The
+// writer fails when the cap fills, and only the run's continue-as-new frees what its floor keeps.
+func (s *Stream) suggestsContinueAsNew(runID string, limits Limits) bool {
+	reader, ok := s.Readers[runID]
+	if runID == "" || !ok || limits.MaxStoredBytes <= 0 {
+		return false
+	}
+	var kept int64
+	for _, info := range s.Index[s.firstBatchAt(reader.GetOffset()):] {
+		kept += info.GetBytes()
+	}
+	return 2*kept > limits.MaxStoredBytes
 }
 
 // AddReader keeps the floor of a Workflow run that reads from from, in the transaction that

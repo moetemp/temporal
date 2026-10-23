@@ -68,6 +68,14 @@ reader past the cap fails with a retryable error, so the caller backs off.`,
 floor of a closed run goes at the next check.`,
 	)
 
+	MaxWakeWait = dynamicconfig.NewNamespaceDurationSetting(
+		"stream.maxWakeWait",
+		7*24*time.Hour,
+		`The longest wait of a Workflow's wake_only read, and of its wait for the create. A parked
+read adds nothing to History while it waits, so an idle reader costs nothing. Other reads wait
+at most 60 s.`,
+	)
+
 	MaxProducers = dynamicconfig.NewNamespaceIntSetting(
 		"stream.maxProducers",
 		1000,
@@ -88,6 +96,7 @@ type Config struct {
 	MaxProducers          dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxWorkflowReaders    dynamicconfig.IntPropertyFnWithNamespaceFilter
 	ReaderCheckInterval   dynamicconfig.DurationPropertyFnWithNamespaceFilter
+	MaxWakeWait           dynamicconfig.DurationPropertyFnWithNamespaceFilter
 }
 
 func ConfigProvider(dc *dynamicconfig.Collection) *Config {
@@ -103,6 +112,7 @@ func ConfigProvider(dc *dynamicconfig.Collection) *Config {
 		MaxProducers:          MaxProducers.Get(dc),
 		MaxWorkflowReaders:    MaxWorkflowReaders.Get(dc),
 		ReaderCheckInterval:   ReaderCheckInterval.Get(dc),
+		MaxWakeWait:           MaxWakeWait.Get(dc),
 	}
 }
 
@@ -116,6 +126,7 @@ type Limits struct {
 	MaxProducers     int
 	MaxReaders       int
 	ReaderCheck      time.Duration
+	MaxWakeWait      time.Duration
 	// Set for a Workflow Stream only.
 	MaxWorkflowStateBytes int64
 }
@@ -131,5 +142,6 @@ func (c *Config) LimitsFor(namespaceName string) Limits {
 		MaxProducers:     c.MaxProducers(namespaceName),
 		MaxReaders:       c.MaxWorkflowReaders(namespaceName),
 		ReaderCheck:      c.ReaderCheckInterval(namespaceName),
+		MaxWakeWait:      c.MaxWakeWait(namespaceName),
 	}
 }

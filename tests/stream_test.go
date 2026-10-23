@@ -1024,3 +1024,64 @@ func (s *StreamTestSuite) TestDirectReadPastTheReaderCapIsResourceExhausted() {
 	s.ErrorAs(err, &exhausted)
 	s.Contains(exhausted.Error(), "most Workflow readers")
 }
+
+// readerLink names a Workflow run as the reader of a direct page.
+func readerLink(env *testcore.TestEnv, run client.WorkflowRun) *commonpb.Link {
+	return &commonpb.Link{Variant: &commonpb.Link_WorkflowEvent_{
+		WorkflowEvent: &commonpb.Link_WorkflowEvent{
+			Namespace: env.Namespace().String(), WorkflowId: run.GetID(), RunId: run.GetRunID(),
+		},
+	}}
+}
+
+// A reader whose floor keeps more than half of the cap gets continue_as_new_suggested, since the
+// writer fails when the cap fills and only the reader's continue-as-new frees it.
+func (s *StreamTestSuite) TestReaderThatKeepsHalfTheCapIsToldToContinueAsNew() {
+	env := s.newEnv(testcore.WithDynamicConfig(stream.MaxStoredBytes, 4096))
+	sc := s.streamClient(env)
+	owned, _ := s.createWithRetention(sc, env, s.newCaller(env))
+	reader := readerLink(env, s.newCaller(env).run)
+
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned}, reader)
+	s.Nil(failure)
+	s.False(page.GetContinueAsNewSuggested())
+
+	_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned, Producer: clientProducer(), Sequence: 2,
+		Records: []*streamservice.AppendRecord{
+			{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 2500)}},
+		},
+	})
+	s.NoError(err)
+	next := &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: page.GetNextOffset()}
+	page, failure = s.directRead(env, next, reader)
+	s.Nil(failure)
+	s.True(page.GetContinueAsNewSuggested())
+}
+
+// A reset run's first live page names the lowest offset its copied reads read, so its floor
+// keeps them and its replay finds them past the Retention.
+func (s *StreamTestSuite) TestFloorFromKeepsTheReadsOfAResetRun() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	owned, first := s.createWithRetention(sc, env, s.newCaller(env))
+	second, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned, Producer: clientProducer(), Sequence: 2,
+		Records: records("b"),
+	})
+	s.NoError(err)
+
+	reader := readerLink(env, s.newCaller(env).run)
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: owned, FromOffset: second.GetFirstOffset(), FloorFrom: first.GetFirstOffset(),
+	}, reader)
+	s.Nil(failure)
+	s.Equal([]string{"b"}, kindsAndTopics(page))
+
+	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention runs on real time.
+	copied, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: owned, FromOffset: first.GetFirstOffset(), ToOffset: second.GetFirstOffset(),
+	})
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(copied))
+}

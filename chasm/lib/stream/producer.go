@@ -86,6 +86,26 @@ func (s *Stream) settle(producer *streamservice.Producer, w Withdrawal, wroteRec
 	}
 }
 
+// withdrawn says whether the Stream knows that a Superseded Record withdrew the Record: its run
+// is fenced, its Workflow Task was withdrawn, or a higher epoch of its Producer wrote.
+func (s *Stream) withdrawn(record *streamservice.StreamRecord) bool {
+	producer := record.GetProducer()
+	if s.runFenced(producer.GetRunId()) {
+		return true
+	}
+	switch producer.GetKind() {
+	case streamservice.PRODUCER_KIND_WORKFLOW, streamservice.PRODUCER_KIND_LOCAL_ACTIVITY:
+		task := taskOf(producer.GetEpoch())
+		withdrawn := s.Runs[producer.GetRunId()].GetWithdrawn()
+		return slices.ContainsFunc(withdrawn, func(t *streamservice.WorkflowTaskEpoch) bool {
+			return compareTasks(t, task) == 0
+		})
+	default:
+		known := s.Producers[producerKey(producer)]
+		return known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0
+	}
+}
+
 func (s *Stream) runFenced(run string) bool {
 	return run != "" && slices.Contains(s.FencedRuns, run)
 }
