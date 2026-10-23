@@ -1,6 +1,11 @@
 package stream
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -198,8 +203,13 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 		return nil, NewError(ReasonExpired, "The Stream expired")
 	}
 	key := producerKey(producer)
+	digest := BatchDigest(req.GetRecords())
 	if known := s.Producers[key]; known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) == 0 {
 		if req.GetSequence() == known.GetSequence() {
+			if len(known.GetDigest()) > 0 && !bytes.Equal(known.GetDigest(), digest) {
+				return nil, NewError(ReasonSeqDivergent,
+					"The sequence %d has other content than its batch", req.GetSequence())
+			}
 			return &streamservice.AppendRecordsResponse{FirstOffset: known.GetFirstOffset(), LastOffset: known.GetLastOffset()}, nil
 		}
 		if req.GetSequence() < known.GetSequence() {
@@ -230,7 +240,11 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	}
 
 	first, last := s.write(ctx, entries)
-	if len(orphaned.withdrawn) > 0 && len(entries) > 1 {
+	// The answer gives the batch's own Records, which have offsets one after another, so a caller
+	// that merged writes counts each one's offset from the first.
+	if n := len(req.GetRecords()); n > 0 {
+		first = entries[len(entries)-n].GetOffset()
+	} else if len(orphaned.withdrawn) > 0 && len(entries) > 1 {
 		first = entries[1].GetOffset()
 	}
 	wrote := len(req.GetRecords()) > 0
@@ -247,8 +261,9 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 		FirstOffset: first,
 		LastOffset:  last,
 		Holds:       s.Producers[key].GetHolds(),
+		Digest:      digest,
 	}
-	if producer.GetKind() != streamservice.PRODUCER_KIND_WORKFLOW {
+	if withdrawsEpochs(producer.GetKind()) {
 		if wrote {
 			state.Holds = producer.GetEpoch()
 		} else if flagged {
@@ -262,6 +277,35 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	s.limitProducers(in.Limits.MaxProducers)
 	s.finish(ctx, in.Limits)
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
+}
+
+// BatchDigest is the SHA-256 of a batch's content, as the crate and the memory Store compute it.
+// Each Record gives its Topic, its metadata count, its metadata sorted by key, and its data, each
+// part with a big-endian u64 length first. A resend with the same sequence must have the same
+// digest.
+func BatchDigest(records []*streamservice.AppendRecord) []byte {
+	h := sha256.New()
+	writeLen := func(n int) {
+		var b [8]byte
+		binary.BigEndian.PutUint64(b[:], uint64(n))
+		_, _ = h.Write(b[:])
+	}
+	writeBytes := func(b []byte) {
+		writeLen(len(b))
+		_, _ = h.Write(b)
+	}
+	for _, record := range records {
+		writeBytes([]byte(record.GetTopic()))
+		metadata := record.GetBody().GetMetadata()
+		keys := slices.Sorted(maps.Keys(metadata))
+		writeLen(len(keys))
+		for _, key := range keys {
+			writeBytes([]byte(key))
+			writeBytes(metadata[key])
+		}
+		writeBytes(record.GetBody().GetData())
+	}
+	return h.Sum(nil)
 }
 
 // batchEntries are the entries of one write: the orphans' Superseded Record, the batch's own
@@ -326,6 +370,9 @@ func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.
 		return &streamservice.CloseStreamResponse{}, nil
 	}
 	if err := s.writable(); err != nil {
+		return nil, err
+	}
+	if err := s.checkCloser(producer); err != nil {
 		return nil, err
 	}
 	w := Withdrawal{PreviousCompleted: req.GetPreviousCompletedTask(), FailedTasks: req.GetFailedTasks(), WithdrawRun: req.GetWithdrawRun()}

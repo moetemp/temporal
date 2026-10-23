@@ -2,6 +2,9 @@ package stream
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -84,7 +87,7 @@ func (h *harness) appendRequest(req *streamservice.AppendRecordsRequest) (*strea
 func (h *harness) close(result string) error {
 	_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
 		Request: &streamservice.CloseStreamRequest{
-			Producer: activityProducer(1),
+			Producer: clientProducer(),
 			Result:   &commonpb.Payload{Data: []byte(result)},
 		},
 		Limits: h.limits,
@@ -148,6 +151,14 @@ func (h *harness) advance(d time.Duration) {
 	h.clock.Update(h.clock.Now().Add(d))
 	_, err := h.engine.FirePureTasks(h.ref(), h.clock.Now())
 	require.NoError(h.t, err)
+}
+
+func clientProducer() *streamservice.Producer {
+	return &streamservice.Producer{
+		Kind:  streamservice.PRODUCER_KIND_CLIENT,
+		Id:    "client:test:1",
+		Epoch: &streamservice.ProducerEpoch{Attempt: 1},
+	}
 }
 
 func activityProducer(attempt int32) *streamservice.Producer {
@@ -769,6 +780,57 @@ func TestLastReadsTheNewestRecords(t *testing.T) {
 	require.ErrorContains(t, checkLast(wake, false), ReasonInvalid)
 }
 
+// A resend with the last sequence and other content is not a duplicate. Dropping it would lose
+// the batch with no error, so it fails as seq_divergent. The same content answers its offsets.
+func TestResendWithOtherContentIsDivergent(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	first, err := h.append(clientProducer(), 1, "a")
+	require.NoError(t, err)
+
+	again, err := h.append(clientProducer(), 1, "a")
+	require.NoError(t, err)
+	require.Equal(t, first.GetFirstOffset(), again.GetFirstOffset())
+	_, err = h.append(clientProducer(), 1, "b")
+	require.ErrorContains(t, err, ReasonSeqDivergent)
+}
+
+// The digest is the crate's. testdata/digests.json is a copy of the crate's shared vectors, at
+// moetemp/sdk-streams crates/streams/testdata/digests.json, so the server and the Stores agree.
+func TestBatchDigestMatchesTheCrateVectors(t *testing.T) {
+	data, err := os.ReadFile("testdata/digests.json")
+	require.NoError(t, err)
+	var vectors []struct {
+		Name    string `json:"name"`
+		Records []struct {
+			Topic    string            `json:"topic"`
+			Metadata map[string]string `json:"metadata"`
+			Data     string            `json:"data"`
+		} `json:"records"`
+		Digest string `json:"digest"`
+	}
+	require.NoError(t, json.Unmarshal(data, &vectors))
+	require.NotEmpty(t, vectors)
+	for _, vector := range vectors {
+		var records []*streamservice.AppendRecord
+		for _, record := range vector.Records {
+			appended := &streamservice.AppendRecord{Topic: record.Topic}
+			if record.Data != "" || len(record.Metadata) > 0 {
+				appended.Body = &commonpb.Payload{Metadata: map[string][]byte{}}
+				for key, value := range record.Metadata {
+					appended.Body.Metadata[key], err = hex.DecodeString(value)
+					require.NoError(t, err)
+				}
+				appended.Body.Data, err = hex.DecodeString(record.Data)
+				require.NoError(t, err)
+			}
+			records = append(records, appended)
+		}
+		require.Equal(t, vector.Digest, hex.EncodeToString(BatchDigest(records)), vector.Name)
+	}
+}
+
 // A reader that resumes past the close gets the close Record. Its replay reads the same range
 // with to_offset at that page's next offset, and must get the close Record again.
 func TestReplayOfAPagePastTheCloseGetsTheClose(t *testing.T) {
@@ -791,4 +853,71 @@ func TestReplayOfAPagePastTheCloseGetsTheClose(t *testing.T) {
 	require.Equal(t, live.GetRecords(), replay.GetRecords())
 	require.Equal(t, live.GetNextOffset(), replay.GetNextOffset())
 	require.True(t, replay.GetDone())
+}
+
+// A client's higher epoch fences its lower epochs but withdraws none of their Records, since a
+// client process writes on and doesn't redo the work.
+func TestClientEpochFencesButWithdrawsNothing(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(clientProducer(), 1, "a")
+	require.NoError(t, err)
+	next := clientProducer()
+	next.Epoch = &streamservice.ProducerEpoch{Attempt: 2}
+	_, err = h.append(next, 1, "b")
+	require.NoError(t, err)
+
+	_, err = h.append(clientProducer(), 2, "late")
+	require.ErrorContains(t, err, ReasonFenced)
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, topics(read))
+	last, err := chasm.ReadComponent(h.ctx, h.ref(), (*Stream).Last,
+		&streamservice.ReadRecordsRequest{Last: 2})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, topics(last))
+}
+
+// The Records of one append get offsets one after another, from the answer's first offset, also
+// when a Superseded Record goes before them. A caller that merged writes counts on it.
+func TestRecordsOfOneAppendHaveConsecutiveOffsets(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(activityProducer(1), 1, "a")
+	require.NoError(t, err)
+	resp, err := h.append(activityProducer(2), 1, "b", "c", "d")
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "superseded", "b", "c", "d"}, topics(read))
+	for i, record := range read.GetRecords()[2:] {
+		require.Equal(t, resp.GetFirstOffset()+int64(i), record.GetOffset())
+	}
+	require.Equal(t, resp.GetFirstOffset()+2, resp.GetLastOffset())
+}
+
+// A Local Activity's next attempt in the same Workflow Task redoes the call, so its first batch
+// withdraws the earlier attempt's Records, as the crate's append script does.
+func TestLocalActivityRetryWithdrawsTheEarlierAttempt(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(localActivityProducer(3), 1, "x")
+	require.NoError(t, err)
+	retry := localActivityProducer(3)
+	retry.Epoch.Attempt = 2
+	_, err = h.append(retry, 1, "y")
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"x", "superseded", "y"}, topics(read))
+	require.Equal(t, int32(2), read.GetRecords()[1].GetSupersession().GetEpoch().GetAttempt())
+	last, err := chasm.ReadComponent(h.ctx, h.ref(), (*Stream).Last,
+		&streamservice.ReadRecordsRequest{Last: 2})
+	require.NoError(t, err)
+	require.Equal(t, []string{"y"}, topics(last))
 }

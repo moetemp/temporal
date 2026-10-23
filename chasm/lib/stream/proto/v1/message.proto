@@ -100,6 +100,9 @@ message ProducerState {
   // The epoch of the newest batch with Records, outside Workflow code. The first batch of a
   // higher epoch withdraws them.
   temporal.api.streamservice.v1.ProducerEpoch holds = 6;
+  // The digest of the last batch, so a resend with its sequence and other content fails and is
+  // not dropped as a duplicate.
+  bytes digest = 7;
 }
 
 // The Workflow Task facts of one run, as the crate's task index keeps them.

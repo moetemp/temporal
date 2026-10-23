@@ -459,7 +459,10 @@ type ProducerState struct {
 	LastOffset  int64 `protobuf:"varint,4,opt,name=last_offset,json=lastOffset,proto3" json:"last_offset,omitempty"`
 	// The epoch of the newest batch with Records, outside Workflow code. The first batch of a
 	// higher epoch withdraws them.
-	Holds         *v1.ProducerEpoch `protobuf:"bytes,6,opt,name=holds,proto3" json:"holds,omitempty"`
+	Holds *v1.ProducerEpoch `protobuf:"bytes,6,opt,name=holds,proto3" json:"holds,omitempty"`
+	// The digest of the last batch, so a resend with its sequence and other content fails and is
+	// not dropped as a duplicate.
+	Digest        []byte `protobuf:"bytes,7,opt,name=digest,proto3" json:"digest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -525,6 +528,13 @@ func (x *ProducerState) GetLastOffset() int64 {
 func (x *ProducerState) GetHolds() *v1.ProducerEpoch {
 	if x != nil {
 		return x.Holds
+	}
+	return nil
+}
+
+func (x *ProducerState) GetDigest() []byte {
+	if x != nil {
+		return x.Digest
 	}
 	return nil
 }
@@ -864,14 +874,15 @@ const file_temporal_server_chasm_lib_stream_proto_v1_message_proto_rawDesc = "" 
 	"\ffirst_offset\x18\x01 \x01(\x03R\vfirstOffset\x12\x1f\n" +
 	"\vlast_offset\x18\x02 \x01(\x03R\n" +
 	"lastOffset\x12\x14\n" +
-	"\x05bytes\x18\x03 \x01(\x03R\x05bytes\"\xfd\x01\n" +
+	"\x05bytes\x18\x03 \x01(\x03R\x05bytes\"\x95\x02\n" +
 	"\rProducerState\x12B\n" +
 	"\x05epoch\x18\x01 \x01(\v2,.temporal.api.streamservice.v1.ProducerEpochR\x05epoch\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12!\n" +
 	"\ffirst_offset\x18\x03 \x01(\x03R\vfirstOffset\x12\x1f\n" +
 	"\vlast_offset\x18\x04 \x01(\x03R\n" +
 	"lastOffset\x12B\n" +
-	"\x05holds\x18\x06 \x01(\v2,.temporal.api.streamservice.v1.ProducerEpochR\x05holdsJ\x04\b\x05\x10\x06\"\xd2\x03\n" +
+	"\x05holds\x18\x06 \x01(\v2,.temporal.api.streamservice.v1.ProducerEpochR\x05holds\x12\x16\n" +
+	"\x06digest\x18\a \x01(\fR\x06digestJ\x04\b\x05\x10\x06\"\xd2\x03\n" +
 	"\bRunTasks\x12F\n" +
 	"\x05index\x18\x01 \x03(\v20.temporal.api.streamservice.v1.WorkflowTaskEpochR\x05index\x12N\n" +
 	"\twithdrawn\x18\x02 \x03(\v20.temporal.api.streamservice.v1.WorkflowTaskEpochR\twithdrawn\x12M\n" +

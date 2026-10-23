@@ -61,6 +61,27 @@ var producerPrefixes = map[streamservice.ProducerKind]string{
 	streamservice.PRODUCER_KIND_CLIENT:              "client:",
 }
 
+// checkWriter runs the Producer checks of an append or a close, the cheap ones first.
+func (h *handler) checkWriter(
+	ctx context.Context,
+	t target,
+	namespaceName string,
+	producer *streamservice.Producer,
+	token []byte,
+	withdrawRun string,
+) error {
+	if err := checkProducer(producer); err != nil {
+		return err
+	}
+	if err := checkRunID(producer); err != nil {
+		return err
+	}
+	if err := h.checkActivity(ctx, namespaceName, t.key.NamespaceID, producer, token); err != nil {
+		return err
+	}
+	return h.checkChain(ctx, t, producer, withdrawRun)
+}
+
 // CheckStreamID refuses an empty or too long Stream id.
 func CheckStreamID(id string) error {
 	if id == "" {
@@ -144,9 +165,18 @@ func (h *handler) CreateStream(
 		if err := checkProducer(owner); err != nil {
 			return nil, err
 		}
+		if err := checkRunID(owner); err != nil {
+			return nil, err
+		}
+	}
+	if err := checkOwner(req.GetOwner(), t.nested); err != nil {
+		return nil, err
 	}
 	if req.GetCloseWithRun() && (!t.nested || req.GetOwner().GetKind() != streamservice.PRODUCER_KIND_WORKFLOW) {
 		return nil, invalid("close_with_run needs a Workflow owner and a ref with workflow_id and first_execution_run_id")
+	}
+	if err := h.checkChain(ctx, t, req.GetOwner(), req.GetWithdrawRun()); err != nil {
+		return nil, err
 	}
 	in := CreateInput{Request: req, Limits: limits}
 	var out CreateOutput
@@ -199,7 +229,9 @@ func (h *handler) AppendRecords(
 	if err != nil {
 		return nil, err
 	}
-	if err := checkProducer(req.GetProducer()); err != nil {
+	err = h.checkWriter(ctx, t, req.GetNamespace(), req.GetProducer(), req.GetTaskToken(),
+		req.GetWithdrawRun())
+	if err != nil {
 		return nil, err
 	}
 	resp, err := update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (*streamservice.AppendRecordsResponse, error) {
@@ -217,7 +249,9 @@ func (h *handler) CloseStream(
 	if err != nil {
 		return nil, err
 	}
-	if err := checkProducer(req.GetProducer()); err != nil {
+	err = h.checkWriter(ctx, t, req.GetNamespace(), req.GetProducer(), req.GetTaskToken(),
+		req.GetWithdrawRun())
+	if err != nil {
 		return nil, err
 	}
 	resp, err := update(ctx, t, nil, func(s *Stream, mctx chasm.MutableContext) (*streamservice.CloseStreamResponse, error) {
