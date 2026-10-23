@@ -1025,7 +1025,7 @@ func (s *StreamTestSuite) TestDirectReadPastTheReaderCapIsResourceExhausted() {
 	s.Contains(exhausted.Error(), "most Workflow readers")
 }
 
-// readerLink names a Workflow run as the reader of a direct page.
+// readerLink gives a Workflow run as the reader of a direct page.
 func readerLink(env *testcore.TestEnv, run client.WorkflowRun) *commonpb.Link {
 	return &commonpb.Link{Variant: &commonpb.Link_WorkflowEvent_{
 		WorkflowEvent: &commonpb.Link_WorkflowEvent{
@@ -1059,7 +1059,7 @@ func (s *StreamTestSuite) TestReaderThatKeepsHalfTheCapIsToldToContinueAsNew() {
 	s.True(page.GetContinueAsNewSuggested())
 }
 
-// A reset run's first live page names the lowest offset its copied reads read, so its floor
+// A reset run's first live page gives the lowest offset its copied reads read, so its floor
 // keeps them and its replay finds them past the Retention.
 func (s *StreamTestSuite) TestFloorFromKeepsTheReadsOfAResetRun() {
 	env := s.newEnv()
