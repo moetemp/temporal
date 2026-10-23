@@ -804,3 +804,27 @@ func TestBatchDigestVector(t *testing.T) {
 	require.Equal(t, "817ca6adadba99bd9a23764d62be9b40d78f1be310682bb85f208699f9c1f621",
 		hex.EncodeToString(digest))
 }
+
+// A reader that resumes past the close gets the close Record. Its replay reads the same range
+// with to_offset at that page's next offset, and must get the close Record again.
+func TestReplayOfAPagePastTheCloseGetsTheClose(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(activityProducer(1), 1, "a")
+	require.NoError(t, err)
+	require.NoError(t, h.close("done"))
+	all, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+
+	live, err := h.read(&streamservice.ReadRecordsRequest{FromOffset: all.GetNextOffset()})
+	require.NoError(t, err)
+	require.Equal(t, []string{"close"}, topics(live))
+	replay, err := h.read(&streamservice.ReadRecordsRequest{
+		FromOffset: all.GetNextOffset(), ToOffset: live.GetNextOffset(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, live.GetRecords(), replay.GetRecords())
+	require.Equal(t, live.GetNextOffset(), replay.GetNextOffset())
+	require.True(t, replay.GetDone())
+}
