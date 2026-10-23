@@ -426,7 +426,7 @@ func (ni *NamespaceValidatorInterceptor) extractNamespaceFromTaskToken(req any) 
 }
 
 // optionalTaskToken says whether a request carries a task token only from some callers. A Stream
-// write carries one only from an Activity, and other callers name the namespace.
+// write carries one only from an Activity, and other callers set the namespace.
 func optionalTaskToken(req any) bool {
 	switch req.(type) {
 	case *streamservice.CreateStreamRequest,
