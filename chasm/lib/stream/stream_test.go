@@ -3,6 +3,8 @@ package stream
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -792,17 +794,39 @@ func TestResendWithOtherContentIsDivergent(t *testing.T) {
 	require.ErrorContains(t, err, ReasonSeqDivergent)
 }
 
-// The digest is the crate's, so the shared test vectors cover the server too.
-func TestBatchDigestVector(t *testing.T) {
-	digest := BatchDigest([]*streamservice.AppendRecord{{
-		Topic: "a",
-		Body: &commonpb.Payload{
-			Metadata: map[string][]byte{"encoding": []byte("json/plain")},
-			Data:     []byte(`"x"`),
-		},
-	}})
-	require.Equal(t, "817ca6adadba99bd9a23764d62be9b40d78f1be310682bb85f208699f9c1f621",
-		hex.EncodeToString(digest))
+// The digest is the crate's. testdata/digests.json is a copy of the crate's shared vectors, at
+// moetemp/sdk-streams crates/streams/testdata/digests.json, so the server and the Stores agree.
+func TestBatchDigestMatchesTheCrateVectors(t *testing.T) {
+	data, err := os.ReadFile("testdata/digests.json")
+	require.NoError(t, err)
+	var vectors []struct {
+		Name    string `json:"name"`
+		Records []struct {
+			Topic    string            `json:"topic"`
+			Metadata map[string]string `json:"metadata"`
+			Data     string            `json:"data"`
+		} `json:"records"`
+		Digest string `json:"digest"`
+	}
+	require.NoError(t, json.Unmarshal(data, &vectors))
+	require.NotEmpty(t, vectors)
+	for _, vector := range vectors {
+		var records []*streamservice.AppendRecord
+		for _, record := range vector.Records {
+			appended := &streamservice.AppendRecord{Topic: record.Topic}
+			if record.Data != "" || len(record.Metadata) > 0 {
+				appended.Body = &commonpb.Payload{Metadata: map[string][]byte{}}
+				for key, value := range record.Metadata {
+					appended.Body.Metadata[key], err = hex.DecodeString(value)
+					require.NoError(t, err)
+				}
+				appended.Body.Data, err = hex.DecodeString(record.Data)
+				require.NoError(t, err)
+			}
+			records = append(records, appended)
+		}
+		require.Equal(t, vector.Digest, hex.EncodeToString(BatchDigest(records)), vector.Name)
+	}
 }
 
 // A reader that resumes past the close gets the close Record. Its replay reads the same range
@@ -827,4 +851,48 @@ func TestReplayOfAPagePastTheCloseGetsTheClose(t *testing.T) {
 	require.Equal(t, live.GetRecords(), replay.GetRecords())
 	require.Equal(t, live.GetNextOffset(), replay.GetNextOffset())
 	require.True(t, replay.GetDone())
+}
+
+// A client's higher epoch fences its lower epochs but withdraws none of their Records, since a
+// client process writes on and doesn't redo the work.
+func TestClientEpochFencesButWithdrawsNothing(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(clientProducer(), 1, "a")
+	require.NoError(t, err)
+	next := clientProducer()
+	next.Epoch = &streamservice.ProducerEpoch{Attempt: 2}
+	_, err = h.append(next, 1, "b")
+	require.NoError(t, err)
+
+	_, err = h.append(clientProducer(), 2, "late")
+	require.ErrorContains(t, err, ReasonFenced)
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, topics(read))
+	last, err := chasm.ReadComponent(h.ctx, h.ref(), (*Stream).Last,
+		&streamservice.ReadRecordsRequest{Last: 2})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, topics(last))
+}
+
+// The Records of one append get offsets one after another, from the answer's first offset, also
+// when a Superseded Record goes before them. A caller that merged writes counts on it.
+func TestRecordsOfOneAppendHaveConsecutiveOffsets(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(activityProducer(1), 1, "a")
+	require.NoError(t, err)
+	resp, err := h.append(activityProducer(2), 1, "b", "c", "d")
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "superseded", "b", "c", "d"}, topics(read))
+	for i, record := range read.GetRecords()[2:] {
+		require.Equal(t, resp.GetFirstOffset()+int64(i), record.GetOffset())
+	}
+	require.Equal(t, resp.GetFirstOffset()+2, resp.GetLastOffset())
 }

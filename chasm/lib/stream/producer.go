@@ -48,7 +48,7 @@ func (s *Stream) admit(producer *streamservice.Producer, w Withdrawal) (bool, er
 		flagged := !w.Defer && len(withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks).withdrawn) > 0
 		return flagged || s.withdrawsRun(w.WithdrawRun), nil
 	default:
-		flagged := known != nil && known.GetHolds() != nil &&
+		flagged := withdrawsEpochs(producer.GetKind()) && known != nil && known.GetHolds() != nil &&
 			CompareEpochs(known.GetHolds(), producer.GetEpoch()) < 0
 		return flagged || s.withdrawsRun(w.WithdrawRun), nil
 	}
@@ -102,8 +102,17 @@ func (s *Stream) withdrawn(record *streamservice.StreamRecord) bool {
 		})
 	default:
 		known := s.Producers[producerKey(producer)]
-		return known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0
+		return withdrawsEpochs(producer.GetKind()) && known != nil &&
+			CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0
 	}
+}
+
+// withdrawsEpochs says whether a higher epoch of a Producer outside Workflow code withdraws the
+// Records of its lower epochs. An Activity's retry redoes the attempt's work. A client's higher
+// epoch only fences the lower ones, since a client process writes on and doesn't redo.
+func withdrawsEpochs(kind streamservice.ProducerKind) bool {
+	return kind != streamservice.PRODUCER_KIND_WORKFLOW &&
+		kind != streamservice.PRODUCER_KIND_CLIENT
 }
 
 func (s *Stream) runFenced(run string) bool {

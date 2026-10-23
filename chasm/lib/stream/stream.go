@@ -240,7 +240,11 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	}
 
 	first, last := s.write(ctx, entries)
-	if len(orphaned.withdrawn) > 0 && len(entries) > 1 {
+	// The answer gives the batch's own Records, which have offsets one after another, so a caller
+	// that merged writes counts each one's offset from the first.
+	if n := len(req.GetRecords()); n > 0 {
+		first = entries[len(entries)-n].GetOffset()
+	} else if len(orphaned.withdrawn) > 0 && len(entries) > 1 {
 		first = entries[1].GetOffset()
 	}
 	wrote := len(req.GetRecords()) > 0
@@ -259,7 +263,7 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 		Holds:       s.Producers[key].GetHolds(),
 		Digest:      digest,
 	}
-	if producer.GetKind() != streamservice.PRODUCER_KIND_WORKFLOW {
+	if withdrawsEpochs(producer.GetKind()) {
 		if wrote {
 			state.Holds = producer.GetEpoch()
 		} else if flagged {
@@ -275,9 +279,10 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
 }
 
-// BatchDigest is the SHA-256 of a batch's content, as the crate and the memory Store compute it:
-// the Record count, then each Record's Topic, its metadata sorted by key, and its data, each with
-// a big-endian u64 length first. A resend with the same sequence must have the same digest.
+// BatchDigest is the SHA-256 of a batch's content, as the crate and the memory Store compute it.
+// Each Record gives its Topic, its metadata count, its metadata sorted by key, and its data, each
+// part with a big-endian u64 length first. A resend with the same sequence must have the same
+// digest.
 func BatchDigest(records []*streamservice.AppendRecord) []byte {
 	h := sha256.New()
 	writeLen := func(n int) {
@@ -289,7 +294,6 @@ func BatchDigest(records []*streamservice.AppendRecord) []byte {
 		writeLen(len(b))
 		_, _ = h.Write(b)
 	}
-	writeLen(len(records))
 	for _, record := range records {
 		writeBytes([]byte(record.GetTopic()))
 		metadata := record.GetBody().GetMetadata()
