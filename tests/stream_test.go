@@ -526,7 +526,9 @@ func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 	}, "stream-caller")
 	s.NoError(err)
 	c.run = run
-	s.T().Cleanup(func() { _ = env.SdkClient().TerminateWorkflow(s.Context(), run.GetID(), "", "test cleanup") })
+	s.T().Cleanup(func() {
+		_ = env.SdkClient().TerminateWorkflow(s.Context(), run.GetID(), "", "test cleanup")
+	})
 	c.poll()
 	owned := s.closeWithRun(sc, env, c)
 
@@ -534,7 +536,8 @@ func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 	c.respond(&commandpb.Command{
 		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
 		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
-			CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{},
+			CompleteWorkflowExecutionCommandAttributes: &commandpb.
+				CompleteWorkflowExecutionCommandAttributes{},
 		},
 	})
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
@@ -545,8 +548,8 @@ func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 
 	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), run.GetID(), "", "stop"))
 	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{
-		Namespace: env.Namespace().String(), Stream: owned, FromOffset: appended.GetLastOffset() + 1,
-		Wait: durationpb.New(20 * time.Second),
+		Namespace: env.Namespace().String(), Stream: owned,
+		FromOffset: appended.GetLastOffset() + 1, Wait: durationpb.New(20 * time.Second),
 	})
 	s.NoError(err)
 	s.Equal([]string{"close"}, kindsAndTopics(page))

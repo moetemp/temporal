@@ -642,24 +642,28 @@ func TestFailedTaskBeforeTheLastCompletedOneIsWithdrawnByItsID(t *testing.T) {
 // run's Records of tasks after its last completed one, before the close, so a reader drops them.
 func TestChainEndWithdrawsTheTasksThatNeverCompleted(t *testing.T) {
 	h := newHarness(t)
-	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1), CloseWithRun: true})
+	_, err := h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: workflowProducer(1), CloseWithRun: true,
+	})
 	require.NoError(t, err)
 	_, err = h.appendRequest(localActivityWrite("call-1", 3, 0, "kept"))
 	require.NoError(t, err)
 	_, err = h.appendRequest(localActivityWrite("call-2", 7, 3, "open"))
 	require.NoError(t, err)
 
-	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-		end := RunEnd{RunID: "run", LastCompleted: 3, Status: streamservice.CLOSE_STATUS_TERMINATED}
-		s.EndChain(mctx, end, h.limits)
-		return struct{}{}, nil
-	}, struct{}{})
+	end := RunEnd{RunID: "run", LastCompleted: 3, Status: streamservice.CLOSE_STATUS_TERMINATED}
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(),
+		func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			s.EndChain(mctx, end, h.limits)
+			return struct{}{}, nil
+		}, struct{}{})
 	require.NoError(t, err)
 
 	read, err := h.read(&streamservice.ReadRecordsRequest{})
 	require.NoError(t, err)
 	require.Equal(t, []string{"kept", "open", "superseded", "close"}, topics(read))
-	require.Equal(t, int64(3), read.GetRecords()[2].GetSupersession().GetPreviousCompletedTask().GetStartedEventId())
+	completed := read.GetRecords()[2].GetSupersession().GetPreviousCompletedTask()
+	require.Equal(t, int64(3), completed.GetStartedEventId())
 	require.Equal(t, streamservice.CLOSE_STATUS_TERMINATED, read.GetRecords()[3].GetCloseStatus())
 }
 
@@ -669,8 +673,10 @@ func TestCallerCantCloseAsTerminated(t *testing.T) {
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
 	require.NoError(t, err)
 	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
-		Request: &streamservice.CloseStreamRequest{Producer: activityProducer(1), Status: streamservice.CLOSE_STATUS_TERMINATED},
-		Limits:  h.limits,
+		Request: &streamservice.CloseStreamRequest{
+			Producer: activityProducer(1), Status: streamservice.CLOSE_STATUS_TERMINATED,
+		},
+		Limits: h.limits,
 	})
 	require.ErrorContains(t, err, ReasonInvalid)
 

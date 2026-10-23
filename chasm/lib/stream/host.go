@@ -275,7 +275,8 @@ func RunEndOfEvent(event *historypb.HistoryEvent) RunEnd {
 	switch event.GetEventType() {
 	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
 		end := RunEnd{Status: streamservice.CLOSE_STATUS_COMPLETED}
-		if results := event.GetWorkflowExecutionCompletedEventAttributes().GetResult().GetPayloads(); len(results) > 0 {
+		attrs := event.GetWorkflowExecutionCompletedEventAttributes()
+		if results := attrs.GetResult().GetPayloads(); len(results) > 0 {
 			end.Result = results[0]
 		}
 		return end
@@ -285,21 +286,26 @@ func RunEndOfEvent(event *historypb.HistoryEvent) RunEnd {
 			Failure: event.GetWorkflowExecutionFailedEventAttributes().GetFailure(),
 		}
 	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED:
+		details := event.GetWorkflowExecutionCanceledEventAttributes().GetDetails()
 		return RunEnd{Status: streamservice.CLOSE_STATUS_CANCELED, Failure: &failurepb.Failure{
 			Message: "operation canceled",
-			FailureInfo: &failurepb.Failure_CanceledFailureInfo{CanceledFailureInfo: &failurepb.CanceledFailureInfo{
-				Details: event.GetWorkflowExecutionCanceledEventAttributes().GetDetails(),
-			}},
+			FailureInfo: &failurepb.Failure_CanceledFailureInfo{
+				CanceledFailureInfo: &failurepb.CanceledFailureInfo{Details: details},
+			},
 		}}
 	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED:
 		return RunEnd{Status: streamservice.CLOSE_STATUS_TERMINATED, Failure: &failurepb.Failure{
-			Message:     "operation terminated",
-			FailureInfo: &failurepb.Failure_TerminatedFailureInfo{TerminatedFailureInfo: &failurepb.TerminatedFailureInfo{}},
+			Message: "operation terminated",
+			FailureInfo: &failurepb.Failure_TerminatedFailureInfo{
+				TerminatedFailureInfo: &failurepb.TerminatedFailureInfo{},
+			},
 		}}
 	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
 		return RunEnd{Status: streamservice.CLOSE_STATUS_TIMED_OUT, Failure: &failurepb.Failure{
-			Message:     "operation exceeded internal timeout",
-			FailureInfo: &failurepb.Failure_TimeoutFailureInfo{TimeoutFailureInfo: &failurepb.TimeoutFailureInfo{}},
+			Message: "operation exceeded internal timeout",
+			FailureInfo: &failurepb.Failure_TimeoutFailureInfo{
+				TimeoutFailureInfo: &failurepb.TimeoutFailureInfo{},
+			},
 		}}
 	default:
 		return RunEnd{Status: streamservice.CLOSE_STATUS_COMPLETED}

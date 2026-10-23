@@ -161,7 +161,7 @@ func (s *Stream) withdrawRunTail(ctx chasm.MutableContext, end RunEnd) {
 		Supersession: &streamservice.Supersession{
 			ProducerKind:          streamservice.PRODUCER_KIND_WORKFLOW,
 			ProducerId:            "wf:" + encodePart(end.RunID),
-			Epoch:                 &streamservice.ProducerEpoch{TaskStartedEventId: past.GetStartedEventId()},
+			Epoch:                 &streamservice.ProducerEpoch{TaskStartedEventId: math.MaxInt64},
 			PreviousCompletedTask: completed,
 			RunId:                 end.RunID,
 		},

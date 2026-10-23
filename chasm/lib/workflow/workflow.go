@@ -133,7 +133,11 @@ func (w *Workflow) HoldsStreams(ctx chasm.Context) bool {
 // EndChainStreams closes the chain's close-with-run Streams with this run's close event. The
 // Streams of this run close in its own transaction. Those of the chain's first run close through
 // a task on this run, which writes the first run on the same shard.
-func (w *Workflow) EndChainStreams(ctx chasm.MutableContext, firstRunID string, closeEvent *historypb.HistoryEvent) {
+func (w *Workflow) EndChainStreams(
+	ctx chasm.MutableContext,
+	firstRunID string,
+	closeEvent *historypb.HistoryEvent,
+) {
 	if len(w.Streams) > 0 {
 		end := stream.RunEndOfEvent(closeEvent)
 		end.RunID = ctx.ExecutionKey().RunID
@@ -144,7 +148,8 @@ func (w *Workflow) EndChainStreams(ctx chasm.MutableContext, firstRunID string, 
 		}
 	}
 	if firstRunID != "" && firstRunID != ctx.ExecutionKey().RunID {
-		ctx.AddTask(w, chasm.TaskAttributes{}, &streampb.StreamCloseChainTask{FirstRunId: firstRunID})
+		task := &streampb.StreamCloseChainTask{FirstRunId: firstRunID}
+		ctx.AddTask(w, chasm.TaskAttributes{}, task)
 	}
 }
 

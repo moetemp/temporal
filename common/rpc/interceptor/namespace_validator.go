@@ -429,7 +429,9 @@ func (ni *NamespaceValidatorInterceptor) extractNamespaceFromTaskToken(req any) 
 // write carries one only from an Activity, and other callers name the namespace.
 func optionalTaskToken(req any) bool {
 	switch req.(type) {
-	case *streamservice.CreateStreamRequest, *streamservice.AppendRecordsRequest, *streamservice.CloseStreamRequest:
+	case *streamservice.CreateStreamRequest,
+		*streamservice.AppendRecordsRequest,
+		*streamservice.CloseStreamRequest:
 		return true
 	default:
 		return false

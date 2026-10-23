@@ -7510,7 +7510,8 @@ func (ms *MutableStateImpl) processCloseCallbacksChasm(closeEvent *historypb.His
 
 	firstRunID := ms.GetExecutionInfo().GetFirstExecutionRunId()
 	// A cron run's end isn't the chain's end. The next run writes on to the chain's Streams.
-	hasStreams := ms.executionInfo.NewExecutionRunId == "" && wf.HasChainStreams(readCtx, firstRunID)
+	chainEnds := ms.executionInfo.NewExecutionRunId == ""
+	hasStreams := chainEnds && wf.HasChainStreams(readCtx, firstRunID)
 
 	// Return early if there are no chasm callbacks to process.
 	if len(wf.Callbacks) == 0 && len(wf.Updates) == 0 && !hasStreams {
