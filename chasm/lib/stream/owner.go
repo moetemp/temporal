@@ -52,8 +52,8 @@ func checkOwner(owner *streamservice.Producer, t target) error {
 }
 
 // checkCloser refuses a close that the Stream's owner doesn't allow. A Workflow Stream closes
-// only from its run chain, and a client's Stream only from a client. The server's own close, with
-// the run chain or by the auto close, comes from no caller.
+// only from its run chain, and a client's Stream only from a client. The server's own close with
+// the run chain comes from no caller.
 func (s *Stream) checkCloser(producer *streamservice.Producer) error {
 	kind := producer.GetKind()
 	owner := ownerKind(s.GetOwner())
