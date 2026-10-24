@@ -286,28 +286,6 @@ func TestCloseEndsEveryRead(t *testing.T) {
 	require.Equal(t, CreateOutput{Status: streamservice.STREAM_STATUS_CLOSED}, out)
 }
 
-func TestAutoCloseAfterNoAppend(t *testing.T) {
-	h := newHarness(t)
-	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", AutoClose: durationpb.New(time.Minute)})
-	require.NoError(t, err)
-	h.advance(40 * time.Second)
-	_, err = h.append(activityProducer(1), 1, "a")
-	require.NoError(t, err)
-	h.advance(40 * time.Second)
-
-	open, err := h.read(&streamservice.ReadRecordsRequest{})
-	require.NoError(t, err)
-	require.Equal(t, []string{"a"}, topics(open))
-
-	h.advance(30 * time.Second)
-	closed, err := h.read(&streamservice.ReadRecordsRequest{})
-	require.NoError(t, err)
-	require.Equal(t, []string{"a", "close"}, topics(closed))
-	require.Nil(t, closed.GetRecords()[1].GetCloseResult())
-	// A Producer with no id fails a client's decode of the Record.
-	require.Nil(t, closed.GetRecords()[1].GetProducer())
-}
-
 func TestRetentionDropsOldRecordsAndExpiresTheStream(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Retention: durationpb.New(time.Hour)})

@@ -262,18 +262,21 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
 	s.Equal([]string{"turns"}, kindsAndTopics(&page))
 }
 
-func (s *StreamTestSuite) TestWorkflowReadEndsOnAutoClose() {
+func (s *StreamTestSuite) TestWorkflowReadEndsOnClose() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
+	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
-		Namespace: env.Namespace().String(), StreamId: id, AutoClose: durationpb.New(2 * time.Second),
-	})
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0]
+	_, err = sc.CloseStream(s.Context(), &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: clientProducer()})
 	s.NoError(err)
 
 	var page streamservice.ReadRecordsResponse
-	failure, started := c.outcome(c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0], &page)
+	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
 	s.Equal([]string{"close"}, kindsAndTopics(&page))
@@ -411,25 +414,6 @@ func (s *StreamTestSuite) TestClientReadWaitsForTheCreate() {
 	_, err = sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
 	s.NoError(err)
 	s.NoError(<-done)
-}
-
-func (s *StreamTestSuite) TestClientReadEndsOnAutoClose() {
-	env := s.newEnv()
-	sc := s.streamClient(env)
-	ctx := s.Context()
-	ns := env.Namespace().String()
-	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id, AutoClose: durationpb.New(time.Second)})
-	s.NoError(err)
-
-	page, err := sc.ReadRecords(ctx, &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id), Wait: durationpb.New(30 * time.Second)})
-	s.NoError(err)
-	s.Equal([]string{"close"}, kindsAndTopics(page))
-	s.True(page.GetDone())
-
-	described, err := sc.DescribeStream(ctx, &streamservice.DescribeStreamRequest{Namespace: ns, Stream: ref(id)})
-	s.NoError(err)
-	s.Equal(streamservice.STREAM_STATUS_CLOSED, described.GetStatus())
 }
 
 func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {

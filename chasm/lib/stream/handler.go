@@ -294,8 +294,8 @@ func (h *handler) DescribeStream(
 	return resp, streamError(ctx, t, err)
 }
 
-// applyDue runs a write step when a deadline such as the auto close passed, so that a read
-// never sees the Stream open after it.
+// applyDue runs a write step when a deadline such as the TTL passed, so that a read never sees
+// the Stream open after it expired.
 func (h *handler) applyDue(ctx context.Context, t target, limits Limits) error {
 	due, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (bool, error) { return s.Due(cctx, limits) })
 	if err != nil || !due {
@@ -527,7 +527,7 @@ func (h *handler) waitForCreate(ctx context.Context, t target, until time.Time) 
 }
 
 // waitForChange waits until the Stream has an entry at or past cursor, or is no longer open, or
-// the deadline passes. The auto close and the expiry are timer tasks, so they end the wait too.
+// the deadline passes. The expiry is a timer task, so it ends the wait too.
 func (h *handler) waitForChange(ctx context.Context, t target, cursor int64, deadline time.Time) error {
 	pollCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()

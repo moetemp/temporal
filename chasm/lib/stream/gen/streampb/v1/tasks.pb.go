@@ -23,9 +23,9 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Fires at the earliest deadline of a Stream. That is the auto close, the TTL, the Retention of
-// the oldest batch, or the create wait of a parked read. Each transition arms one for the next
-// deadline, so a task whose deadline is not the armed one does nothing.
+// Fires at the earliest deadline of a Stream. That is the TTL, the Retention of the oldest batch,
+// or the create wait of a parked read. Each transition arms one for the next deadline, so a task
+// whose deadline is not the armed one does nothing.
 type StreamTimerTask struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Deadline      *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=deadline,proto3" json:"deadline,omitempty"`

@@ -143,23 +143,18 @@ func StartStream(ctx chasm.MutableContext, in CreateInput) (*Stream, error) {
 	return s, nil
 }
 
-// Create opens the Stream, idempotently for one Retention and one auto close.
+// Create opens the Stream, idempotently for one Retention.
 func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput, error) {
 	s.applyDue(ctx, in.Limits)
 	retention := in.Request.GetRetention().AsDuration()
 	if retention <= 0 {
 		retention = in.Limits.DefaultRetention
 	}
-	autoClose := in.Request.GetAutoClose().AsDuration()
 	switch s.Phase {
 	case streampb.STREAM_PHASE_PENDING, streampb.STREAM_PHASE_UNSPECIFIED:
 		now := timestamppb.New(ctx.Now(s))
 		s.Phase = streampb.STREAM_PHASE_OPEN
 		s.Retention = durationpb.New(retention)
-		s.AutoClose = nil
-		if autoClose > 0 {
-			s.AutoClose = durationpb.New(autoClose)
-		}
 		s.WorkflowOwned = owned(in.Request.GetOwner())
 		s.CreateTime = now
 		s.LastWriteTime = now
@@ -169,10 +164,9 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 		s.finish(ctx, in.Limits)
 		return CreateOutput{Created: true, Status: s.Status()}, nil
 	case streampb.STREAM_PHASE_OPEN:
-		if s.GetRetention().AsDuration() != retention || s.GetAutoClose().AsDuration() != autoClose {
+		if s.GetRetention().AsDuration() != retention {
 			return CreateOutput{}, NewError(ReasonAlreadyExists,
-				"The Stream exists with the Retention %v and the auto close %v",
-				s.GetRetention().AsDuration(), s.GetAutoClose().AsDuration())
+				"The Stream exists with the Retention %v", s.GetRetention().AsDuration())
 		}
 		if owned(in.Request.GetOwner()) {
 			s.WorkflowOwned = true
@@ -429,12 +423,11 @@ func (s *Stream) Describe() (*streamservice.DescribeStreamResponse, error) {
 		Status:     s.Status(),
 		LastOffset: s.NewestOffset,
 		Retention:  s.Retention,
-		AutoClose:  s.AutoClose,
 	}, nil
 }
 
-// Due says whether a deadline passed that a write step applies, such as the auto close. A read
-// step writes nothing, so the caller runs an update first.
+// Due says whether a deadline passed that a write step applies, such as the TTL. A read step
+// writes nothing, so the caller runs an update first.
 func (s *Stream) Due(ctx chasm.Context, limits Limits) (bool, error) {
 	deadline, ok := s.nextDeadline(ctx, limits)
 	return ok && !deadline.After(ctx.Now(s)), nil
@@ -610,11 +603,7 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 		})
 		return
 	case streampb.STREAM_PHASE_OPEN:
-		if at, ok := s.autoCloseAt(); ok && !at.After(now) {
-			s.LastWriteTime = timestamppb.New(at)
-			// No Producer made this close, so its Record has none, as the crate's auto close.
-			s.close(ctx, nil, nil, nil, streamservice.CLOSE_STATUS_COMPLETED)
-		} else if !s.ttlAt(limits).After(now) && len(s.Readers) == 0 {
+		if !s.ttlAt(limits).After(now) && len(s.Readers) == 0 {
 			s.expire(ctx)
 			return
 		}
@@ -644,14 +633,6 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 			s.trimTo((cutMs << seqBits) - 1)
 		}
 	}
-}
-
-func (s *Stream) autoCloseAt() (time.Time, bool) {
-	autoClose := s.GetAutoClose().AsDuration()
-	if s.Phase != streampb.STREAM_PHASE_OPEN || autoClose <= 0 {
-		return time.Time{}, false
-	}
-	return s.GetLastWriteTime().AsTime().Add(autoClose), true
 }
 
 // ttlAt is when an open Stream expires with no write. A Workflow's Stream lives for the safety
@@ -687,9 +668,6 @@ func (s *Stream) nextDeadline(ctx chasm.Context, limits Limits) (time.Time, bool
 		}
 		return deadline, found
 	case streampb.STREAM_PHASE_OPEN:
-		if at, ok := s.autoCloseAt(); ok {
-			consider(at)
-		}
 		if len(s.Readers) == 0 {
 			consider(s.ttlAt(limits))
 		}
