@@ -363,6 +363,10 @@ func (s *Stream) checkSize(ctx chasm.MutableContext, size int64, limits Limits) 
 type CloseInput struct {
 	Request *streamservice.CloseStreamRequest
 	Limits  Limits
+	// Command is a Workflow run's System Nexus close, which the server runs once the Workflow
+	// Task that issued it commits. Its Producer has no epoch, so it fences nothing and withdraws
+	// nothing.
+	Command bool
 }
 
 // Close writes the close Record, with the Producer checks and the withdrawal of a batch. A
@@ -384,15 +388,21 @@ func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.
 	if err := s.checkCloser(producer); err != nil {
 		return nil, err
 	}
-	w := Withdrawal{PreviousCompleted: req.GetPreviousCompletedTask(), FailedTasks: req.GetFailedTasks(), WithdrawRun: req.GetWithdrawRun()}
-	flagged, err := s.admit(ctx, producer, w)
-	if err != nil {
-		return nil, err
+	if in.Command {
+		if s.runFenced(producer.GetRunId()) {
+			return nil, NewError(ReasonFenced, "A Workflow retry withdrew the run of the Producer")
+		}
+	} else {
+		w := Withdrawal{PreviousCompleted: req.GetPreviousCompletedTask(), FailedTasks: req.GetFailedTasks(), WithdrawRun: req.GetWithdrawRun()}
+		flagged, err := s.admit(ctx, producer, w)
+		if err != nil {
+			return nil, err
+		}
+		if flagged {
+			s.write(ctx, []*streamservice.StreamRecord{supersededRecord(producer, w)})
+		}
+		s.settle(ctx, producer, w, false)
 	}
-	if flagged {
-		s.write(ctx, []*streamservice.StreamRecord{supersededRecord(producer, w)})
-	}
-	s.settle(ctx, producer, w, false)
 	s.close(ctx, producer, req.GetResult(), req.GetFailure(), status)
 	s.finish(ctx, in.Limits)
 	return &streamservice.CloseStreamResponse{}, nil

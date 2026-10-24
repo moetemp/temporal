@@ -92,17 +92,7 @@ func (c *streamCaller) schedule(ops ...streamOp) []int64 {
 	last := c.history[len(c.history)-1].GetEventId()
 	commands := make([]*commandpb.Command, 0, len(ops))
 	for _, op := range ops {
-		commands = append(commands, &commandpb.Command{
-			CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
-			Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
-				ScheduleNexusOperationCommandAttributes: &commandpb.ScheduleNexusOperationCommandAttributes{
-					Endpoint:  commonnexus.SystemEndpoint,
-					Service:   stream.ServiceName,
-					Operation: op.name,
-					Input:     payloads.MustEncodeSingle(op.request),
-				},
-			},
-		})
+		commands = append(commands, nexusCommand(op))
 	}
 	c.respond(commands...)
 	var ids []int64
@@ -155,6 +145,21 @@ func (c *streamCaller) call(op streamOp, result proto.Message) *failurepb.Failur
 type streamOp struct {
 	name    string
 	request proto.Message
+}
+
+// nexusCommand schedules op as a System Nexus operation.
+func nexusCommand(op streamOp) *commandpb.Command {
+	return &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
+		Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
+			ScheduleNexusOperationCommandAttributes: &commandpb.ScheduleNexusOperationCommandAttributes{
+				Endpoint:  commonnexus.SystemEndpoint,
+				Service:   stream.ServiceName,
+				Operation: op.name,
+				Input:     payloads.MustEncodeSingle(op.request),
+			},
+		},
+	}
 }
 
 func ref(id string) *streamservice.StreamRef {
@@ -500,6 +505,81 @@ func (s *StreamTestSuite) TestStreamClosesWithATerminatedOwner() {
 	closed := s.readClose(sc, env, owned)
 	s.NotNil(closed.GetCloseFailure().GetTerminatedFailureInfo())
 	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, closed.GetCloseStatus())
+}
+
+// closeOp closes a Workflow Stream through System Nexus, as the calling run.
+func closeOp(owned *streamservice.StreamRef, result string) streamOp {
+	return streamOp{"CloseStream", &streamservice.CloseStreamRequest{Stream: owned, Result: payload.EncodeString(result)}}
+}
+
+func (s *StreamTestSuite) TestWorkflowCloseCommandClosesItsStream() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	s.Nil(c.call(closeOp(owned, "answer"), &streamservice.CloseStreamResponse{}))
+
+	closed := s.readClose(sc, env, owned)
+	s.Equal(payload.EncodeString("answer").GetData(), closed.GetCloseResult().GetData())
+	s.Equal(streamservice.CLOSE_STATUS_COMPLETED, closed.GetCloseStatus())
+	s.Equal("wf:"+stream.EncodeIDPart(c.run.GetRunID()), closed.GetProducer().GetId())
+}
+
+// A run of another chain can't close the Stream, and neither can a call with no link to its run.
+func (s *StreamTestSuite) TestCloseCommandOfAnotherChainIsRefused() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	ns := env.Namespace().String()
+	owned := s.closeWithRun(sc, env, s.newCaller(env))
+
+	failure := s.newCaller(env).call(closeOp(owned, "answer"), &streamservice.CloseStreamResponse{})
+	s.Equal(stream.ReasonNotOwner, causeType(failure))
+
+	resp, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
+		Namespace: ns,
+		Endpoint:  commonnexus.SystemEndpoint,
+		Service:   stream.ServiceName,
+		Operation: "CloseStream",
+		Input:     payloads.MustEncodeSingle(closeOp(owned, "answer").request),
+	})
+	s.NoError(err)
+	s.Equal(stream.ReasonNotOwner, causeType(resp.GetOperationFailure().GetFailure()))
+
+	described, err := sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+}
+
+// A bad command fails the Workflow Task, so the server drops the close command that came with it.
+// The retried task's close command closes the Stream once.
+func (s *StreamTestSuite) TestCloseCommandOfAFailedWorkflowTaskIsDropped() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	_, err := env.FrontendClient().RespondWorkflowTaskCompleted(s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
+		Identity:  "test",
+		TaskToken: c.token,
+		Commands: []*commandpb.Command{
+			nexusCommand(closeOp(owned, "failed task")),
+			{
+				CommandType: enumspb.COMMAND_TYPE_SCHEDULE_ACTIVITY_TASK,
+				Attributes: &commandpb.Command_ScheduleActivityTaskCommandAttributes{
+					ScheduleActivityTaskCommandAttributes: &commandpb.ScheduleActivityTaskCommandAttributes{},
+				},
+			},
+		},
+	})
+	s.Error(err)
+	c.poll()
+
+	s.Nil(c.call(closeOp(owned, "retried task"), &streamservice.CloseStreamResponse{}))
+	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned})
+	s.NoError(err)
+	s.Equal([]string{"close"}, kindsAndTopics(page))
+	s.Equal(payload.EncodeString("retried task").GetData(), page.GetRecords()[0].GetCloseResult().GetData())
 }
 
 // A cron run's end isn't the chain's end, so the next cron run writes on. The terminate of a later

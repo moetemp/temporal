@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/server/common/clock"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/testing/protorequire"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -91,6 +92,19 @@ func (h *harness) close(result string) error {
 			Result:   &commonpb.Payload{Data: []byte(result)},
 		},
 		Limits: h.limits,
+	})
+	return err
+}
+
+// commandClose closes the Stream with the System Nexus command of run.
+func (h *harness) commandClose(run, result string) error {
+	_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
+		Request: &streamservice.CloseStreamRequest{
+			Producer: &streamservice.Producer{Kind: streamservice.PRODUCER_KIND_WORKFLOW, Id: "wf:" + run, RunId: run},
+			Result:   &commonpb.Payload{Data: []byte(result)},
+		},
+		Limits:  h.limits,
+		Command: true,
 	})
 	return err
 }
@@ -284,6 +298,40 @@ func TestCloseEndsEveryRead(t *testing.T) {
 	out, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
 	require.NoError(t, err)
 	require.Equal(t, CreateOutput{Status: streamservice.STREAM_STATUS_CLOSED}, out)
+}
+
+// A command close has no epoch, so the epoch of the run's earlier writes doesn't fence it.
+func TestCommandCloseOfTheOwnerRun(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1)})
+	require.NoError(t, err)
+	_, err = h.append(workflowProducer(3), 1, "a")
+	require.NoError(t, err)
+	require.NoError(t, h.commandClose("run", "done"))
+	require.NoError(t, h.commandClose("run", "again"))
+
+	all, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "close"}, topics(all))
+	closed := all.GetRecords()[1]
+	require.Equal(t, "done", string(closed.GetCloseResult().GetData()))
+	protorequire.ProtoEqual(t, &streamservice.Producer{
+		Kind:  streamservice.PRODUCER_KIND_WORKFLOW,
+		Id:    "wf:run",
+		RunId: "run",
+	}, closed.GetProducer())
+}
+
+func TestCommandCloseOfAWithdrawnRunIsFenced(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1)})
+	require.NoError(t, err)
+	retry := workflowProducer(3)
+	retry.Id, retry.RunId = "wf:retry", "retry"
+	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{Producer: retry, Sequence: 1, Records: records("a"), WithdrawRun: "run"})
+	require.NoError(t, err)
+
+	require.ErrorContains(t, h.commandClose("run", "done"), ReasonFenced)
 }
 
 func TestRetentionDropsOldRecordsAndExpiresTheStream(t *testing.T) {

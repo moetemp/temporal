@@ -50,14 +50,20 @@ func nexusError(err error) error {
 	return err
 }
 
-// newNexusService serves the reads to Workflow code. Workflow writes go over the frontend from
-// the Core extension, which knows the Workflow Task facts of each write.
+// newNexusService serves the reads and the close to Workflow code. The close is a command, so the
+// server runs it only when the Workflow Task that issued it commits. Workflow writes go over the
+// frontend from the Core extension, which knows the Workflow Task facts of each write.
 func newNexusService(h *handler) *nexus.Service {
 	service := nexus.NewService(ServiceName)
 	service.MustRegister(
 		nexus.NewSyncOperation("DescribeStream",
 			func(ctx context.Context, req *streamservice.DescribeStreamRequest, _ nexus.StartOperationOptions) (*streamservice.DescribeStreamResponse, error) {
 				resp, err := h.DescribeStream(ctx, req)
+				return resp, nexusError(err)
+			}),
+		nexus.NewSyncOperation("CloseStream",
+			func(ctx context.Context, req *streamservice.CloseStreamRequest, options nexus.StartOperationOptions) (*streamservice.CloseStreamResponse, error) {
+				resp, err := h.CloseFromRun(ctx, req, readerRunOf(options.Links))
 				return resp, nexusError(err)
 			}),
 		&readRecordsOperation{handler: h},
@@ -221,6 +227,10 @@ func newNexusServiceProcessor(config *Config) *chasm.NexusServiceProcessor {
 	sp.MustRegisterOperation("DescribeStream", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.DescribeStreamRequest]{
 		config:       config,
 		setNamespace: func(r *streamservice.DescribeStreamRequest, ns string) { r.Namespace = ns },
+	}))
+	sp.MustRegisterOperation("CloseStream", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.CloseStreamRequest]{
+		config:       config,
+		setNamespace: func(r *streamservice.CloseStreamRequest, ns string) { r.Namespace = ns },
 	}))
 	return sp
 }

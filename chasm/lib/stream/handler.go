@@ -276,6 +276,47 @@ func (h *handler) CloseStream(
 	return resp, streamError(ctx, t, err)
 }
 
+// CloseFromRun closes a Workflow Stream for the System Nexus command of run, the calling run
+// from the link that the server's Nexus call adds. Run must be an open run of the Stream's chain,
+// and the close goes in as run's Workflow Producer. Only the result, the failure and the status
+// come from the request.
+func (h *handler) CloseFromRun(
+	ctx context.Context,
+	req *streamservice.CloseStreamRequest,
+	run *ReaderRun,
+) (*streamservice.CloseStreamResponse, error) {
+	t, limits, err := h.target(req.GetNamespace(), req.GetStream().GetId(), req.GetStream())
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, notOwner("A CloseStream through System Nexus needs the link of its calling run")
+	}
+	if !t.workflow() {
+		return nil, notOwner("Only a Workflow Stream closes through System Nexus")
+	}
+	command := &streamservice.CloseStreamRequest{
+		Namespace: req.GetNamespace(),
+		Stream:    req.GetStream(),
+		Producer: &streamservice.Producer{
+			Kind:  streamservice.PRODUCER_KIND_WORKFLOW,
+			Id:    "wf:" + encodePart(run.RunID),
+			RunId: run.RunID,
+		},
+		Result:  req.GetResult(),
+		Failure: req.GetFailure(),
+		Status:  req.GetStatus(),
+	}
+	if err := h.checkChain(ctx, t, command.GetProducer(), ""); err != nil {
+		return nil, err
+	}
+	resp, err := update(ctx, t, nil, nil,
+		func(s *Stream, mctx chasm.MutableContext) (*streamservice.CloseStreamResponse, error) {
+			return s.Close(mctx, CloseInput{Request: command, Limits: limits, Command: true})
+		})
+	return resp, streamError(ctx, t, err)
+}
+
 // DescribeStream answers the state of a Stream.
 func (h *handler) DescribeStream(
 	ctx context.Context,

@@ -46,6 +46,13 @@ func TestProcessorRoutesByStreamID(t *testing.T) {
 	require.NoError(t, payloads.Decode(&commonpb.Payloads{Payloads: []*commonpb.Payload{result.ReserializedInputPayload}}, &routed))
 	require.Equal(t, "ns", routed.GetNamespace())
 
+	// A Workflow Stream is on its Workflow's shard.
+	result, err = sp.ProcessInput(ctx, "CloseStream", payloads.MustEncodeSingle(&streamservice.CloseStreamRequest{
+		Stream: &streamservice.StreamRef{Id: "chat-1", WorkflowId: "wf", FirstExecutionRunId: "first"},
+	}))
+	require.NoError(t, err)
+	require.Equal(t, chasm.NexusOperationRoutingKeyExecution{NamespaceID: "ns-id", BusinessID: "wf"}, result.RoutingKey)
+
 	_, err = sp.ProcessInput(ctx, "ReadRecords", payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{}))
 	require.ErrorContains(t, err, ReasonInvalid)
 	_, err = sp.ProcessInput(ctx, "ReadRecords", payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{
