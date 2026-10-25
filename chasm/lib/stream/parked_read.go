@@ -17,8 +17,8 @@ import (
 
 var errCanceled = errors.New("the read was canceled")
 
-// ParkedRead is a Workflow read that found no Record. It holds the completion callback of the
-// read's Nexus operation, and the Stream completes it when the read can answer.
+// ParkedRead is a Workflow's wake_only read that found no Record. It holds the completion
+// callback of the read's Nexus operation, and the Stream completes it when the read can answer.
 type ParkedRead struct {
 	chasm.UnimplementedComponent
 

@@ -349,9 +349,8 @@ func (h *handler) applyDue(ctx context.Context, t target, limits Limits) error {
 	return err
 }
 
-// ReadOrPark answers a Workflow read at once when the Stream has Records for it or ends.
-// Otherwise it parks the read and answers nil, and the Stream completes the read's Nexus
-// operation later.
+// ReadOrPark answers a Workflow read at once, but parks a wake_only read with no Record for it
+// and answers nil. The Stream completes the wake's Nexus operation later.
 func (h *handler) ReadOrPark(
 	ctx context.Context,
 	req *streamservice.ReadRecordsRequest,

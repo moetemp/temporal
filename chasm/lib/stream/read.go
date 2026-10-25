@@ -329,8 +329,9 @@ func StartForRead(ctx chasm.MutableContext, in ReadInput) (*Stream, error) {
 	return s, nil
 }
 
-// ReadOrPark answers a read that has Records or ends, and parks any other read until the
-// Stream can answer it. It answers nil for a parked read.
+// ReadOrPark answers a read at once, but parks a wake_only read that finds no Record until the
+// Stream can answer it. It answers nil for a parked read. A wake's answer has no Records, so a
+// parked read keeps no page, though one append wakes every parked read in one transaction.
 func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamservice.ReadRecordsResponse, error) {
 	s.applyDue(ctx, in.Limits)
 	if field, ok := s.Reads[in.RequestID]; ok {
@@ -354,12 +355,13 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 	if in.Reader != nil {
 		read.ReaderRunId = in.Reader.RunID
 	}
+	parks := in.Callback != nil && in.Request.GetWakeOnly()
 	wait, createWait := parkWaits(in.Request, in.Limits)
 	if wait > 0 {
 		read.WaitDeadline = timestamppb.New(now.Add(wait))
 	}
 	if s.Phase == streampb.STREAM_PHASE_PENDING {
-		if createWait <= 0 || in.Callback == nil {
+		if createWait <= 0 || !parks {
 			return nil, notFound()
 		}
 		read.CreateDeadline = timestamppb.New(now.Add(createWait))
@@ -375,7 +377,7 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 		if err != nil {
 			return nil, err
 		}
-		if found || in.Callback == nil {
+		if found || !parks {
 			s.finish(ctx, in.Limits)
 			if in.Request.GetWakeOnly() {
 				resp = s.wakeAnswer(from)
@@ -499,13 +501,13 @@ func (s *Stream) pruneReads(ctx chasm.MutableContext) {
 	}
 }
 
-// parkWaits are the waits of a parked read. A wake_only read may wait for days, since it adds
-// nothing to History while it waits. Any other read waits as a long poll does.
+// parkWaits are the waits of a parked read, which is a wake_only read. It may wait for days,
+// since it adds nothing to History while it waits.
 func parkWaits(
 	req *streamservice.ReadRecordsRequest,
 	limits Limits,
 ) (wait time.Duration, createWait time.Duration) {
-	if !req.GetWakeOnly() || limits.MaxWakeWait <= 0 {
+	if limits.MaxWakeWait <= 0 {
 		return ReadTimeout(req)
 	}
 	return min(max(req.GetWait().AsDuration(), 0), limits.MaxWakeWait),

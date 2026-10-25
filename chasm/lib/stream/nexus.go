@@ -76,9 +76,9 @@ func newNexusService(h *handler) *nexus.Service {
 	return service
 }
 
-// readRecordsOperation answers a read at once when the Stream has Records for it or ends. Any
-// other read is an async operation that the Stream completes when Records come or the Stream
-// closes, so a Workflow waits on the server with no timer.
+// readRecordsOperation answers a read at once. A wake_only read with no Record for it is an
+// async operation that the Stream completes when Records come or the Stream closes, so a
+// Workflow waits on the server with no timer.
 type readRecordsOperation struct {
 	nexus.UnimplementedOperation[*streamservice.ReadRecordsRequest, *streamservice.ReadRecordsResponse]
 

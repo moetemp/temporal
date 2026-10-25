@@ -468,12 +468,14 @@ func TestRetentionDropsOldRecordsAndExpiresTheStream(t *testing.T) {
 	require.Equal(t, CreateOutput{}, out)
 }
 
+// A wake answers with no Records once one passes its filter, and the reader reads the page.
 func TestParkedReadWakesOnAppend(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
 	require.NoError(t, err)
 
-	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{Topics: []string{"turns"}})
+	wake := &streamservice.ReadRecordsRequest{Topics: []string{"turns"}, WakeOnly: true}
+	resp, err := h.readOrPark("read-1", wake)
 	require.NoError(t, err)
 	require.Nil(t, resp)
 	require.False(t, h.parked("read-1").GetResolved())
@@ -486,19 +488,20 @@ func TestParkedReadWakesOnAppend(t *testing.T) {
 	require.NoError(t, err)
 	read := h.parked("read-1")
 	require.True(t, read.GetResolved())
-	require.Equal(t, []string{"turns"}, topics(read.GetResponse()))
+	require.Empty(t, read.GetResponse().GetRecords())
 	require.Equal(t, []callbackspb.CallbackStatus{callbackspb.CALLBACK_STATUS_SCHEDULED}, read.callbacks)
 
-	again, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{Topics: []string{"turns"}})
+	again, err := h.readOrPark("read-1", wake)
 	require.NoError(t, err)
-	require.Equal(t, []string{"turns"}, topics(again))
+	require.Empty(t, again.GetRecords())
+	require.Equal(t, int64(0), again.GetNextOffset())
 }
 
 func TestParkedReadWakesOnClose(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
 	require.NoError(t, err)
-	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{})
+	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{WakeOnly: true})
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
@@ -523,10 +526,12 @@ func TestReadWithRecordsAnswersAtOnce(t *testing.T) {
 
 func TestReadWaitsForTheCreate(t *testing.T) {
 	h := newHarness(t)
-	_, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{})
+	_, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{WakeOnly: true})
 	require.ErrorContains(t, err, ReasonNotFound)
 
-	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{CreateWait: durationpb.New(30 * time.Second)})
+	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{
+		WakeOnly: true, CreateWait: durationpb.New(30 * time.Second),
+	})
 	require.NoError(t, err)
 	require.Nil(t, resp)
 	_, err = h.append(activityProducer(1), 1, "a")
@@ -539,12 +544,14 @@ func TestReadWaitsForTheCreate(t *testing.T) {
 
 	_, err = h.append(activityProducer(1), 1, "a")
 	require.NoError(t, err)
-	require.Equal(t, []string{"a"}, topics(h.parked("read-1").GetResponse()))
+	require.True(t, h.parked("read-1").GetResolved())
 }
 
 func TestReadForTheCreateTimesOut(t *testing.T) {
 	h := newHarness(t)
-	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{CreateWait: durationpb.New(30 * time.Second)})
+	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{
+		WakeOnly: true, CreateWait: durationpb.New(30 * time.Second),
+	})
 	require.NoError(t, err)
 	require.Nil(t, resp)
 
@@ -834,28 +841,44 @@ func TestCallerCantCloseAsTerminated(t *testing.T) {
 	require.Equal(t, streamservice.CLOSE_STATUS_COMPLETED, read.GetRecords()[0].GetCloseStatus())
 }
 
-// A wake_only read parks for hours, so an idle Workflow reader adds no History each minute. Any
-// other parked read still answers an empty page after 60 s.
+// A wake_only read parks for hours, so an idle Workflow reader adds no History each minute.
 func TestWakeParksPastTheLongPollCap(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
 	require.NoError(t, err)
-	for id, wakeOnly := range map[string]bool{"wake": true, "page": false} {
-		resp, err := h.readOrPark(id, &streamservice.ReadRecordsRequest{
-			WakeOnly: wakeOnly, Wait: durationpb.New(2 * time.Hour),
-		})
-		require.NoError(t, err)
-		require.Nil(t, resp)
-	}
+	resp, err := h.readOrPark("wake", &streamservice.ReadRecordsRequest{
+		WakeOnly: true, Wait: durationpb.New(2 * time.Hour),
+	})
+	require.NoError(t, err)
+	require.Nil(t, resp)
 
 	h.advance(2 * time.Minute)
 	require.False(t, h.parked("wake").GetResolved())
-	require.True(t, h.parked("page").GetResolved())
 
 	_, err = h.append(activityProducer(1), 1, "a")
 	require.NoError(t, err)
 	require.True(t, h.parked("wake").GetResolved())
 	require.Empty(t, h.parked("wake").GetResponse().GetRecords())
+}
+
+// Only a wake parks. Any other read answers what the Stream has at once, so no parked read
+// keeps a page, and one append that wakes many reads doesn't copy its batch into each.
+func TestOnlyAWakeParks(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.readOrPark("pending", &streamservice.ReadRecordsRequest{
+		CreateWait: durationpb.New(time.Minute),
+	})
+	require.ErrorContains(t, err, ReasonNotFound)
+
+	_, err = h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	resp, err := h.readOrPark("page", &streamservice.ReadRecordsRequest{
+		Start: streamservice.READ_START_END, Wait: durationpb.New(time.Minute),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Empty(t, resp.GetRecords())
+	require.Nil(t, h.parked("page"))
 }
 
 // A page stops before the Record that would take it past max_bytes, and a larger Record comes

@@ -243,7 +243,8 @@ func (s *StreamTestSuite) TestWorkflowReadAndDescribe() {
 	s.True(last.GetDone())
 }
 
-func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
+// A Workflow's wake parks until a Record passes its filter, and answers with no Records.
+func (s *StreamTestSuite) TestWorkflowWakeWaitsForAnAppend() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
@@ -252,7 +253,9 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
 	s.NoError(err)
 
-	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id), Topics: []string{"turns"}}})[0]
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: ref(id), Topics: []string{"turns"}, WakeOnly: true,
+	}})[0]
 	for i, topic := range []string{"other", "turns"} {
 		_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: int64(i + 1), Records: records(topic),
@@ -264,10 +267,11 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
+	s.False(page.GetDone())
 }
 
-func (s *StreamTestSuite) TestWorkflowReadEndsOnClose() {
+func (s *StreamTestSuite) TestWorkflowWakeEndsOnClose() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
@@ -276,7 +280,9 @@ func (s *StreamTestSuite) TestWorkflowReadEndsOnClose() {
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
 	s.NoError(err)
 
-	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0]
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: ref(id), WakeOnly: true,
+	}})[0]
 	_, err = sc.CloseStream(s.Context(), &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: clientProducer()})
 	s.NoError(err)
 
@@ -284,7 +290,7 @@ func (s *StreamTestSuite) TestWorkflowReadEndsOnClose() {
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"close"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
 	s.True(page.GetDone())
 }
 
@@ -421,7 +427,7 @@ func (s *StreamTestSuite) TestClientReadWaitsForTheCreate() {
 	s.NoError(<-done)
 }
 
-func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
+func (s *StreamTestSuite) TestWorkflowWakeWaitsForTheCreate() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
@@ -430,6 +436,7 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 
 	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
 		Stream:     ref(id),
+		WakeOnly:   true,
 		CreateWait: durationpb.New(30 * time.Second),
 	}})[0]
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
@@ -443,7 +450,7 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
 }
 
 // closeWithRun creates a Stream that closes with the caller's run chain.
@@ -667,7 +674,9 @@ func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
 	s.Equal([]int64{3}, page.GetRecords()[1].GetSupersession().GetFailedTasks())
 }
 
-func (s *StreamTestSuite) TestWorkflowReadEndsAtItsWait() {
+// A Workflow read that isn't a wake never parks. It answers what the Stream has at once, an
+// empty page here, so no parked read keeps a page.
+func (s *StreamTestSuite) TestWorkflowReadThatIsNotAWakeAnswersAtOnce() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
@@ -682,13 +691,46 @@ func (s *StreamTestSuite) TestWorkflowReadEndsAtItsWait() {
 
 	var page streamservice.ReadRecordsResponse
 	failure, started := c.outcome(c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
-		Stream: ref(id), Topics: []string{"turns"}, Wait: durationpb.New(time.Second),
+		Stream: ref(id), Topics: []string{"turns"}, Wait: durationpb.New(time.Minute),
 	}})[0], &page)
 	s.Nil(failure)
-	s.True(started)
+	s.False(started)
 	s.Empty(page.GetRecords())
 	s.False(page.GetDone())
 	s.Equal(appended.GetLastOffset()+1, page.GetNextOffset())
+}
+
+// One large append must not copy its batch into every waiting read, which would push the
+// execution past the mutable state limit and expire the Stream.
+func (s *StreamTestSuite) TestLargeAppendWithManyReadersStaysUnderTheStateLimit() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+
+	ops := make([]streamOp, 0, 5)
+	for range 5 {
+		ops = append(ops, streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+			Stream: ref(id), Start: streamservice.READ_START_END, Wait: durationpb.New(time.Minute),
+		}})
+	}
+	c.schedule(ops...)
+
+	big := make([]byte, 1800*1024)
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1,
+		Records: []*streamservice.AppendRecord{{Topic: "big", Body: &commonpb.Payload{Data: big}}},
+	})
+	s.NoError(err)
+	// The size check runs in the next transition, such as a wake's callback task.
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The callback tasks run on real time.
+	described, err := sc.DescribeStream(s.Context(),
+		&streamservice.DescribeStreamRequest{Namespace: ns, Stream: ref(id)})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
 }
 
 // An append to a Workflow Stream completes the Workflow's parked read in the Workflow's
@@ -699,7 +741,9 @@ func (s *StreamTestSuite) TestNestedStreamWakesItsWorkflow() {
 	c := s.newCaller(env)
 	owned := s.closeWithRun(sc, env, c)
 
-	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: owned}})[0]
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true,
+	}})[0]
 	_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned,
 		Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: 1, Records: records("turns"),
@@ -710,7 +754,7 @@ func (s *StreamTestSuite) TestNestedStreamWakesItsWorkflow() {
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
 
 	// The Stream id names no execution of its own.
 	_, err = sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{Namespace: env.Namespace().String(), Stream: ref(owned.GetId())})
