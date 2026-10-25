@@ -25,7 +25,7 @@ type ReaderRun struct {
 }
 
 // readerRunOf finds the reading run in the links of a direct call. A call with no Workflow link,
-// such as a replay's read again, keeps no floor.
+// such as a read that a replay repeats, keeps no floor.
 func readerRunOf(links []nexus.Link) *ReaderRun {
 	for _, link := range links {
 		if event, err := commonnexus.ConvertNexusLinkToLinkWorkflowEvent(link); err == nil &&
@@ -36,12 +36,9 @@ func readerRunOf(links []nexus.Link) *ReaderRun {
 	return nil
 }
 
-// readerFloor is the floor that a read from from sets for the run. It is false when the Stream
-// keeps no floors, when the run's floor is already that low, or when the read fails anyway.
+// readerFloor is the floor that a read at from sets for the run. It's false when the run's floor
+// is as low already, or when the read fails anyway.
 func (s *Stream) readerFloor(ctx chasm.Context, runID string, from int64) (int64, bool) {
-	if !s.Nested {
-		return 0, false
-	}
 	if from == 0 {
 		from = s.TrimmedOffset + 1
 	}
@@ -54,9 +51,8 @@ func (s *Stream) readerFloor(ctx chasm.Context, runID string, from int64) (int64
 	return from, true
 }
 
-// floorStart is where a run's floor starts for a read from start. A reset run copied the reads of
-// the old run into its History, and its first live read gives the lowest of them in floor_from,
-// so the floor covers what its replay reads again.
+// floorStart is where a run's floor starts for a read at start. A reset run's first live read
+// gives the lowest offset of its copied reads in floor_from, so the floor covers its replay.
 func (s *Stream) floorStart(req *streamservice.ReadRecordsRequest, start int64) int64 {
 	floorFrom := req.GetFloorFrom()
 	if floorFrom <= 0 || start == 0 || floorFrom >= start {
@@ -82,9 +78,14 @@ func (s *Stream) suggestsContinueAsNew(ctx chasm.Context, runID string, limits L
 	return 2*kept > limits.MaxStoredBytes
 }
 
-// AddReader keeps the floor of a Workflow run that reads from from, in the transaction that
+// AddReader keeps the floor of a Workflow run that reads at from, in the transaction that
 // answers the read. No trim passes the floor while the run is open.
-func (s *Stream) AddReader(ctx chasm.MutableContext, run ReaderRun, from int64, limits Limits) error {
+func (s *Stream) AddReader(
+	ctx chasm.MutableContext,
+	run ReaderRun,
+	from int64,
+	limits Limits,
+) error {
 	floor, ok := s.readerFloor(ctx, run.RunID, from)
 	if !ok {
 		return nil
@@ -113,8 +114,8 @@ func (s *Stream) armReadersCheck(ctx chasm.MutableContext, limits Limits) {
 		&streampb.StreamReadersCheckTask{Deadline: s.ReadersCheckTime})
 }
 
-// readersCheckTaskHandler drops the floors of the reader runs that closed. A run that continued
-// as new is closed too, since the new run's History has none of its reads.
+// readersCheckTaskHandler drops the floors and the waiting reads of the reader runs that closed.
+// A run that continued as new is closed too, since the new run's History has none of its reads.
 type readersCheckTaskHandler struct {
 	chasm.SideEffectTaskHandlerBase[*streampb.StreamReadersCheckTask]
 
@@ -128,7 +129,11 @@ func newReadersCheckTaskHandler(
 	namespaceRegistry namespace.Registry,
 	historyClient resource.HistoryClient,
 ) *readersCheckTaskHandler {
-	return &readersCheckTaskHandler{config: config, namespaceRegistry: namespaceRegistry, historyClient: historyClient}
+	return &readersCheckTaskHandler{
+		config:            config,
+		namespaceRegistry: namespaceRegistry,
+		historyClient:     historyClient,
+	}
 }
 
 func (h *readersCheckTaskHandler) Validate(
@@ -137,7 +142,8 @@ func (h *readersCheckTaskHandler) Validate(
 	_ chasm.TaskInvocation,
 	task *streampb.StreamReadersCheckTask,
 ) (bool, error) {
-	return s.GetReadersCheckTime() != nil && s.GetReadersCheckTime().AsTime().Equal(task.GetDeadline().AsTime()), nil
+	return s.GetReadersCheckTime() != nil &&
+		s.GetReadersCheckTime().AsTime().Equal(task.GetDeadline().AsTime()), nil
 }
 
 func (h *readersCheckTaskHandler) Execute(
@@ -159,7 +165,12 @@ func (h *readersCheckTaskHandler) Execute(
 	}
 	var closed []string
 	for runID, workflowID := range readers {
-		open, err := runOpen(ctx, h.historyClient, ref.NamespaceID, ReaderRun{WorkflowID: workflowID, RunID: runID})
+		open, err := runOpen(
+			ctx,
+			h.historyClient,
+			ref.NamespaceID,
+			ReaderRun{WorkflowID: workflowID, RunID: runID},
+		)
 		if err != nil {
 			return err
 		}
@@ -183,9 +194,14 @@ func (h *readersCheckTaskHandler) Execute(
 	return err
 }
 
-// runOpen says whether a Workflow run is still open. A deleted or unknown run is closed. The run may be on
-// another shard, so it goes through the history client.
-func runOpen(ctx context.Context, historyClient resource.HistoryClient, namespaceID string, run ReaderRun) (bool, error) {
+// runOpen says whether a Workflow run is still open. A deleted or unknown run is closed. The run
+// may be on another shard, so the check calls the history client.
+func runOpen(
+	ctx context.Context,
+	historyClient resource.HistoryClient,
+	namespaceID string,
+	run ReaderRun,
+) (bool, error) {
 	resp, err := historyClient.GetMutableState(ctx, &historyservice.GetMutableStateRequest{
 		NamespaceId: namespaceID,
 		Execution:   &commonpb.WorkflowExecution{WorkflowId: run.WorkflowID, RunId: run.RunID},

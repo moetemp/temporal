@@ -14,8 +14,7 @@ import (
 	"go.temporal.io/server/common/tasktoken"
 )
 
-// The checks of a Stream's owner and of the Producers that claim a Workflow run or an Activity
-// attempt. A caller with write access could otherwise close any Stream, write as a Workflow,
+// Without these checks, a caller with write access could close any Stream, write as a Workflow,
 // fence a run, or put a Stream into a Workflow's first run, which then outlives its retention.
 
 func notOwner(format string, args ...any) error {
@@ -30,9 +29,8 @@ func ownerKind(owner *streamservice.Producer) streamservice.ProducerKind {
 	return streamservice.PRODUCER_KIND_CLIENT
 }
 
-// checkOwner refuses a create whose owner can't own a Stream. A Workflow Stream nests in its
-// chain's first run, so only that chain creates one. A Standalone Activity's Stream nests in the
-// Activity, so only the Activity creates one, and its host checks the task token.
+// checkOwner refuses a create whose owner can't own a Stream. A nested Stream is a child of its
+// host, so only the host creates it. An Activity host checks the task token as well.
 func checkOwner(owner *streamservice.Producer, t target) error {
 	switch kind := ownerKind(owner); {
 	case t.workflow() && kind != streamservice.PRODUCER_KIND_WORKFLOW:
@@ -41,6 +39,9 @@ func checkOwner(owner *streamservice.Producer, t target) error {
 		return notOwner("Only the Standalone Activity creates its Stream")
 	case kind == streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY && !t.activity():
 		return invalid("A Standalone Activity owns only a Stream in its ref")
+	// Outside a chain the Stream would get the safety TTL with no chain check and no close.
+	case kind == streamservice.PRODUCER_KIND_WORKFLOW && !t.workflow():
+		return invalid("A Workflow owns only a Stream in its ref")
 	case kind == streamservice.PRODUCER_KIND_WORKFLOW ||
 		kind == streamservice.PRODUCER_KIND_CLIENT ||
 		kind == streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY:
@@ -51,15 +52,16 @@ func checkOwner(owner *streamservice.Producer, t target) error {
 	}
 }
 
-// checkCloser refuses a close that the Stream's owner doesn't allow. A Workflow Stream closes
-// only from its run chain, and a client's Stream only from a client. The server's own close with
-// the run chain comes from no caller.
+// checkCloser refuses a close by a Producer of another kind than the Stream's owner. The close
+// with the run chain comes from the server, so it doesn't go through this check.
 func (s *Stream) checkCloser(producer *streamservice.Producer) error {
 	kind := producer.GetKind()
 	owner := ownerKind(s.GetOwner())
 	switch owner {
 	case streamservice.PRODUCER_KIND_WORKFLOW:
-		if ofRun(kind) {
+		// A Local Activity writes before its Workflow Task commits, and a failed task can't
+		// take a close back, so only the run's close Activity or command closes.
+		if kind == streamservice.PRODUCER_KIND_WORKFLOW {
 			return nil
 		}
 	case streamservice.PRODUCER_KIND_CLIENT:
@@ -83,8 +85,8 @@ func ofRun(kind streamservice.ProducerKind) bool {
 		kind == streamservice.PRODUCER_KIND_LOCAL_ACTIVITY
 }
 
-// checkRunID refuses a Producer whose id doesn't carry its run, so a write can't claim a run in
-// one field and show another in its id.
+// checkRunID refuses a Producer whose id doesn't contain its run id, so a write can't claim one
+// run in run_id and another in its id.
 func checkRunID(producer *streamservice.Producer) error {
 	run := encodePart(producer.GetRunId())
 	id := producer.GetId()
@@ -124,7 +126,7 @@ func (h *handler) chainRun(ctx context.Context, t target, runID string) (bool, e
 		resp.GetWorkflowStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
 }
 
-// nextRun says whether next is the run that follows run in the chain, so only a retry run
+// nextRun says whether next is the run after run in the chain, so only a retry run
 // withdraws its previous run.
 func (h *handler) nextRun(ctx context.Context, t target, run, next string) (bool, error) {
 	req := &historyservice.DescribeMutableStateRequest{
@@ -182,8 +184,7 @@ func (h *handler) checkChain(
 }
 
 // checkActivity refuses an Activity's write whose task token isn't the Activity's current
-// attempt. The epoch stays the Producer's, (attempt scheduled time, attempt), and its attempt
-// must be the token's.
+// attempt. The Producer's run, id and epoch attempt must match the token.
 func (h *handler) checkActivity(
 	ctx context.Context,
 	namespaceName string,

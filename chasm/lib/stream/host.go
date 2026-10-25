@@ -17,16 +17,16 @@ import (
 	"go.temporal.io/server/common/nexus/nexusrpc"
 )
 
-// Host is a component that nests Streams: the Workflow, for the Streams of its run chain, or a
-// Standalone Activity, for its own. A nested Stream commits in its host's transaction, so an
-// append and the wake of its readers go together.
+// Host is a component that nests Streams. A Workflow hosts the Streams of its run chain, and a
+// Standalone Activity hosts its own. A nested Stream commits in its host's transaction, so an
+// append and the wake of its readers commit together.
 type Host interface {
 	chasm.Component
 	NestedStreams() chasm.Map[string, *Stream]
-	// CheckOwner refuses a create whose owner the host doesn't prove, with the task token of its
-	// current attempt. A Workflow's chain is checked before the transaction.
+	// CheckOwner refuses a create whose owner isn't the host. A Standalone Activity checks the
+	// task token of its current attempt.
 	CheckOwner(ctx chasm.Context, owner *streamservice.Producer, token []byte) error
-	// CheckWriter refuses a write that claims the host's own Producer with no proof.
+	// CheckWriter refuses a write as the host's own Producer from any other caller.
 	CheckWriter(ctx chasm.Context, producer *streamservice.Producer, token []byte) error
 }
 
@@ -37,8 +37,8 @@ type ChainHost interface {
 	RunEnd(ctx chasm.Context) (RunEnd, error)
 }
 
-// ActivityArchetypeID is the archetype of the Activity library's component, which hosts a
-// Standalone Activity's Streams. The activity library imports this one, so the id is made here.
+// ActivityArchetypeID is the archetype of the Activity library's component. The activity library
+// imports this package, so this package can't take the id from there.
 var ActivityArchetypeID = chasm.GenerateTypeID(chasm.FullyQualifiedName("activity", "activity"))
 
 // RunEnd is how the run that ends a chain ended. The chain's close-with-run Streams close with it.
@@ -64,8 +64,20 @@ func (s *Stream) EndChain(ctx chasm.MutableContext, end RunEnd, limits Limits) {
 	s.finish(ctx, limits)
 }
 
+// HoldsStreams says whether a Stream of a closed host is still readable, so the host must outlive
+// the namespace retention that would delete it.
+func HoldsStreams(ctx chasm.Context, streams chasm.Map[string, *Stream]) bool {
+	for _, field := range streams {
+		if s, ok := field.TryGet(ctx); ok && s.Phase != streampb.STREAM_PHASE_EXPIRED &&
+			s.Phase != streampb.STREAM_PHASE_ABANDONED {
+			return true
+		}
+	}
+	return false
+}
+
 // EndOwner closes a Standalone Activity's Stream with the Activity's end, in the transition that
-// ends it. A retry doesn't end the Activity, so the Stream goes on across attempts.
+// ends it. A retry doesn't end the Activity, so the Stream stays open across attempts.
 func (s *Stream) EndOwner(ctx chasm.MutableContext, end RunEnd, limits Limits) {
 	if s.Phase == streampb.STREAM_PHASE_OPEN {
 		s.close(ctx, s.GetOwner(), end.Result, end.Failure, end.Status)
@@ -73,8 +85,8 @@ func (s *Stream) EndOwner(ctx chasm.MutableContext, end RunEnd, limits Limits) {
 	s.finish(ctx, limits)
 }
 
-// target is where a Stream lives: its own execution keyed by the Stream id, or a child of its
-// host, the Workflow component of its chain's first run or a Standalone Activity.
+// target is where a Stream lives. That's its own execution keyed by the Stream id, or a child of
+// its host, which is the Workflow component of its chain's first run or a Standalone Activity.
 type target struct {
 	key    chasm.ExecutionKey
 	id     string
@@ -93,7 +105,7 @@ func (t target) activity() bool {
 }
 
 // targetOf finds the Stream that a ref names. A Workflow Stream nests in the first run of its
-// chain, since a run's CHASM tree doesn't move to the next run.
+// chain, since each run of a chain has its own CHASM tree.
 func targetOf(namespaceID, streamID string, ref *streamservice.StreamRef) (target, error) {
 	if ref.GetWorkflowId() != "" && ref.GetActivityId() != "" {
 		return target{}, invalid("A Stream ref has a Workflow or an Activity, not both")
@@ -112,7 +124,10 @@ func targetOf(namespaceID, streamID string, ref *streamservice.StreamRef) (targe
 		}, nil
 	}
 	if ref.GetWorkflowId() == "" {
-		return target{key: chasm.ExecutionKey{NamespaceID: namespaceID, BusinessID: streamID}, id: streamID}, nil
+		return target{
+			key: chasm.ExecutionKey{NamespaceID: namespaceID, BusinessID: streamID},
+			id:  streamID,
+		}, nil
 	}
 	if ref.GetFirstExecutionRunId() == "" {
 		return target{}, invalid("A Workflow Stream ref needs first_execution_run_id")
@@ -129,7 +144,8 @@ func targetOf(namespaceID, streamID string, ref *streamservice.StreamRef) (targe
 	}, nil
 }
 
-// newNestedStream makes a nested Stream, whose Workflow readers keep their floors.
+// newNestedStream makes a nested Stream. Its reads see every Record it stores, also past the
+// Retention.
 func newNestedStream(ctx chasm.MutableContext) (*Stream, error) {
 	s := NewStream(ctx, streampb.STREAM_PHASE_PENDING)
 	s.Nested = true
@@ -155,7 +171,9 @@ func update[O any](
 	}
 	if !t.nested {
 		out, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
-			func(s *Stream, mctx chasm.MutableContext, _ struct{}) (O, error) { return fn(s, mctx) }, struct{}{})
+			func(s *Stream, mctx chasm.MutableContext, _ struct{}) (O, error) {
+				return fn(s, mctx)
+			}, struct{}{})
 		return out, uncarry(err)
 	}
 	out, _, err := chasm.UpdateComponent(ctx, t.hostRef(),
@@ -181,21 +199,31 @@ func update[O any](
 			if err != nil {
 				return zero, err
 			}
-			streams[t.id] = chasm.NewComponentField(mctx, s)
+			// A Stream outlives its host's close, as in a chain's first run or an ended Activity,
+			// so its timers, wakes and reader checks must run under a closed host.
+			streams[t.id] = chasm.NewComponentField(mctx, s, chasm.ComponentFieldDetached())
 			return out, nil
 		}, struct{}{})
 	return out, uncarry(err)
 }
 
 // read runs fn on the Stream with no write.
-func read[O any](ctx context.Context, t target, view func(*Stream, chasm.Context) (O, error)) (O, error) {
+func read[O any](
+	ctx context.Context,
+	t target,
+	view func(*Stream, chasm.Context) (O, error),
+) (O, error) {
 	fn := func(s *Stream, cctx chasm.Context) (O, error) {
 		out, err := view(s, cctx)
 		return out, carry(err)
 	}
 	if !t.nested {
-		out, err := chasm.ReadComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
-			func(s *Stream, cctx chasm.Context, _ struct{}) (O, error) { return fn(s, cctx) }, struct{}{})
+		out, err := chasm.ReadComponent(
+			ctx,
+			chasm.NewComponentRef[*Stream](t.key),
+			func(s *Stream, cctx chasm.Context, _ struct{}) (O, error) { return fn(s, cctx) },
+			struct{}{},
+		)
 		return out, uncarry(err)
 	}
 	out, err := chasm.ReadComponent(ctx, t.hostRef(),
@@ -234,9 +262,14 @@ func uncarry(err error) error {
 func poll(ctx context.Context, t target, done func(*Stream) bool) error {
 	var err error
 	if !t.nested {
-		_, _, err = chasm.PollComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
-			func(s *Stream, _ chasm.Context, _ struct{}) (struct{}, bool, error) { return struct{}{}, done(s), nil },
-			struct{}{})
+		_, _, err = chasm.PollComponent(
+			ctx,
+			chasm.NewComponentRef[*Stream](t.key),
+			func(s *Stream, _ chasm.Context, _ struct{}) (struct{}, bool, error) {
+				return struct{}{}, done(s), nil
+			},
+			struct{}{},
+		)
 	} else {
 		_, _, err = chasm.PollComponent(ctx, t.hostRef(),
 			func(h Host, cctx chasm.Context, _ struct{}) (struct{}, bool, error) {
@@ -256,7 +289,10 @@ type closeChainTaskHandler struct {
 	namespaceRegistry namespace.Registry
 }
 
-func newCloseChainTaskHandler(config *Config, namespaceRegistry namespace.Registry) *closeChainTaskHandler {
+func newCloseChainTaskHandler(
+	config *Config,
+	namespaceRegistry namespace.Registry,
+) *closeChainTaskHandler {
 	return &closeChainTaskHandler{config: config, namespaceRegistry: namespaceRegistry}
 }
 
@@ -288,9 +324,25 @@ func (h *closeChainTaskHandler) Execute(
 	}
 	limits := h.config.LimitsFor(ns.Name().String())
 	first := target{
-		key:    chasm.ExecutionKey{NamespaceID: ref.NamespaceID, BusinessID: ref.BusinessID, RunID: task.GetFirstRunId()},
+		key: chasm.ExecutionKey{
+			NamespaceID: ref.NamespaceID,
+			BusinessID:  ref.BusinessID,
+			RunID:       task.GetFirstRunId(),
+		},
 		nested: true,
 		host:   chasm.WorkflowArchetypeID,
+	}
+	// A later run can't tell whether the first run has Streams, so every chain end comes here. A
+	// read first spares the first run a write when it has none.
+	nests, err := chasm.ReadComponent(ctx, first.hostRef(),
+		func(h Host, _ chasm.Context, _ struct{}) (bool, error) {
+			return len(h.NestedStreams()) > 0, nil
+		}, struct{}{})
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return nil
+	}
+	if err != nil || !nests {
+		return err
 	}
 	_, _, err = chasm.UpdateComponent(ctx, first.hostRef(),
 		func(h Host, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {

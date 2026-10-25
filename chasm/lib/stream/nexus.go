@@ -22,17 +22,18 @@ const ServiceName = "temporal.api.streamservice.v1.StreamService"
 func readerOf(options nexus.StartOperationOptions) Reader {
 	reader := Reader{RequestID: options.RequestID, Run: readerRunOf(options.Links)}
 	if options.CallbackURL != "" {
-		reader.Callback = &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
-			Url:    options.CallbackURL,
-			Header: options.CallbackHeader,
-		}}}
+		reader.Callback = &commonpb.Callback{
+			Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
+				Url:    options.CallbackURL,
+				Header: options.CallbackHeader,
+			}},
+		}
 	}
 	return reader
 }
 
-// nexusError gives the Nexus form of a Stream error. A Stream error fails the operation with
-// an application failure whose type is the reason token, so the Workflow sees the same error
-// class as a client. Any other error stays a handler error, which the caller retries.
+// nexusError converts a Stream error to an application failure whose type is the reason token, so
+// a Workflow sees the same error class as a client. Other errors stay handler errors for retry.
 func nexusError(err error) error {
 	if err == nil {
 		return nil
@@ -50,26 +51,51 @@ func nexusError(err error) error {
 	return err
 }
 
-// newNexusService serves the reads to Workflow code. Workflow writes go over the frontend from
-// the Core extension, which knows the Workflow Task facts of each write.
+// newNexusService serves the reads and the close to Workflow code. The close is a command, so the
+// server runs it only when the Workflow Task that issued it commits.
 func newNexusService(h *handler) *nexus.Service {
 	service := nexus.NewService(ServiceName)
 	service.MustRegister(
-		nexus.NewSyncOperation("DescribeStream",
-			func(ctx context.Context, req *streamservice.DescribeStreamRequest, _ nexus.StartOperationOptions) (*streamservice.DescribeStreamResponse, error) {
+		nexus.NewSyncOperation(
+			"DescribeStream",
+			func(
+				ctx context.Context,
+				req *streamservice.DescribeStreamRequest,
+				_ nexus.StartOperationOptions,
+			) (*streamservice.DescribeStreamResponse, error) {
 				resp, err := h.DescribeStream(ctx, req)
 				return resp, nexusError(err)
-			}),
+			},
+		),
+		nexus.NewSyncOperation(
+			"CloseStream",
+			func(
+				ctx context.Context,
+				req *streamservice.CloseStreamRequest,
+				options nexus.StartOperationOptions,
+			) (*streamservice.CloseStreamResponse, error) {
+				// A command's start always has the system callback, and a direct call never has
+				// one. A direct call waits for no Workflow Task to commit, so it can't close.
+				if options.CallbackURL == "" {
+					return nil, nexusError(invalid("A direct System Nexus call can't close a " +
+						"Stream, so use the gRPC CloseStream"))
+				}
+				resp, err := h.CloseFromRun(ctx, req, readerRunOf(options.Links))
+				return resp, nexusError(err)
+			},
+		),
 		&readRecordsOperation{handler: h},
 	)
 	return service
 }
 
-// readRecordsOperation answers a read at once when the Stream has Records for it or ends. Any
-// other read is an async operation that the Stream completes when Records come or the Stream
-// closes, so a Workflow waits on the server with no timer.
+// readRecordsOperation answers a read at once, but a wake_only read with no Record is async. The
+// Stream completes it on a Record or the close, so a Workflow waits on the server with no timer.
 type readRecordsOperation struct {
-	nexus.UnimplementedOperation[*streamservice.ReadRecordsRequest, *streamservice.ReadRecordsResponse]
+	nexus.UnimplementedOperation[
+		*streamservice.ReadRecordsRequest,
+		*streamservice.ReadRecordsResponse,
+	]
 
 	handler *handler
 }
@@ -94,7 +120,9 @@ func (o *readRecordsOperation) Start(
 		if err != nil {
 			return nil, nexusError(err)
 		}
-		return &nexus.HandlerStartOperationResultSync[*streamservice.ReadRecordsResponse]{Value: resp}, nil
+		return &nexus.HandlerStartOperationResultSync[*streamservice.ReadRecordsResponse]{
+			Value: resp,
+		}, nil
 	}
 	resp, err := o.handler.ReadOrPark(ctx, req, readerOf(options))
 	if err != nil {
@@ -115,10 +143,16 @@ func (o *readRecordsOperation) Start(
 		}
 		return &nexus.HandlerStartOperationResultAsync{OperationToken: string(token)}, nil
 	}
-	return &nexus.HandlerStartOperationResultSync[*streamservice.ReadRecordsResponse]{Value: resp}, nil
+	return &nexus.HandlerStartOperationResultSync[*streamservice.ReadRecordsResponse]{
+		Value: resp,
+	}, nil
 }
 
-func (o *readRecordsOperation) Cancel(ctx context.Context, token string, _ nexus.CancelOperationOptions) error {
+func (o *readRecordsOperation) Cancel(
+	ctx context.Context,
+	token string,
+	_ nexus.CancelOperationOptions,
+) error {
 	var t readToken
 	if err := json.Unmarshal([]byte(token), &t); err != nil {
 		return nexus.NewHandlerErrorf(nexus.HandlerErrorTypeBadRequest, "invalid operation token")
@@ -195,7 +229,11 @@ func (p processor[R]) ProcessInput(
 		p.setNamespace(req, name)
 	case name:
 	default:
-		return nil, serviceerror.NewInvalidArgumentf("Namespace in request %q does not match namespace in context %q", req.GetNamespace(), name)
+		return nil, serviceerror.NewInvalidArgumentf(
+			"Namespace in request %q does not match namespace in context %q",
+			req.GetNamespace(),
+			name,
+		)
 	}
 	businessID := ref.GetWorkflowId()
 	if businessID == "" {
@@ -214,13 +252,30 @@ func (p processor[R]) ProcessInput(
 
 func newNexusServiceProcessor(config *Config) *chasm.NexusServiceProcessor {
 	sp := chasm.NewNexusServiceProcessor(ServiceName)
-	sp.MustRegisterOperation("ReadRecords", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.ReadRecordsRequest]{
-		config:       config,
-		setNamespace: func(r *streamservice.ReadRecordsRequest, ns string) { r.Namespace = ns },
-	}))
-	sp.MustRegisterOperation("DescribeStream", chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.DescribeStreamRequest]{
-		config:       config,
-		setNamespace: func(r *streamservice.DescribeStreamRequest, ns string) { r.Namespace = ns },
-	}))
+	sp.MustRegisterOperation(
+		"ReadRecords",
+		chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.ReadRecordsRequest]{
+			config:       config,
+			setNamespace: func(r *streamservice.ReadRecordsRequest, ns string) { r.Namespace = ns },
+		}),
+	)
+	sp.MustRegisterOperation(
+		"DescribeStream",
+		chasm.NewRegisterableNexusOperationProcessor(
+			processor[*streamservice.DescribeStreamRequest]{
+				config: config,
+				setNamespace: func(r *streamservice.DescribeStreamRequest, ns string) {
+					r.Namespace = ns
+				},
+			},
+		),
+	)
+	sp.MustRegisterOperation(
+		"CloseStream",
+		chasm.NewRegisterableNexusOperationProcessor(processor[*streamservice.CloseStreamRequest]{
+			config:       config,
+			setNamespace: func(r *streamservice.CloseStreamRequest, ns string) { r.Namespace = ns },
+		}),
+	)
 	return sp
 }

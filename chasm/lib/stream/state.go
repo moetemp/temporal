@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"slices"
 	"strings"
 
 	"go.temporal.io/api/streamservice/v1"
@@ -84,10 +85,16 @@ func (s *Stream) setReader(ctx chasm.MutableContext, run ReaderRun, offset int64
 	}
 }
 
-// dropReaders drops the floors of runs that closed, and finds the lowest floor of the rest.
+// dropReaders drops the floors and the waiting reads of runs that closed, and finds the lowest
+// floor of the rest. A closed run takes no answer, and its wake would hold a slot for days.
 func (s *Stream) dropReaders(ctx chasm.MutableContext, runIDs []string) {
 	for _, runID := range runIDs {
 		delete(s.Readers, runID)
+	}
+	if len(runIDs) > 0 {
+		s.resolveReads(ctx, func(read *ParkedRead) (readOutcome, bool) {
+			return readOutcome{err: errCanceled}, slices.Contains(runIDs, read.GetReaderRunId())
+		})
 	}
 	s.Floor = 0
 	for runID := range s.Readers {
@@ -98,8 +105,8 @@ func (s *Stream) dropReaders(ctx chasm.MutableContext, runIDs []string) {
 	}
 }
 
-// limitProducers drops Producers past the cap. A Local Activity call writes only while it runs,
-// so its entry goes first. Then the Producer with the oldest last batch goes, with its fence.
+// limitProducers drops Producers past the cap, each with its fence. A Local Activity call writes
+// only while it runs, so its entry is dropped first, then the one with the oldest last batch.
 func (s *Stream) limitProducers(ctx chasm.MutableContext, maxProducers int) {
 	localPrefix := streamservice.PRODUCER_KIND_LOCAL_ACTIVITY.String() + "|"
 	for maxProducers > 0 && len(s.Producers) > maxProducers {
@@ -127,8 +134,8 @@ func (s *Stream) oldestProducer(ctx chasm.MutableContext, match func(string) boo
 	return oldestKey
 }
 
-// DropActivityProducers drops the entries of an Activity of a run that closed. It never writes
-// again, so its fence and dedupe state can go.
+// DropActivityProducers drops the entries of an Activity of a run that closed. The Activity never
+// writes again, so its fence and dedupe state aren't needed.
 func (s *Stream) DropActivityProducers(runID, activityID string) {
 	prefix := streamservice.PRODUCER_KIND_ACTIVITY.String() + "|act:" + encodePart(runID) + ":" +
 		encodePart(activityID) + ":"

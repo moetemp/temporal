@@ -36,7 +36,14 @@ func newLibrary(
 	chain *closeChainTaskHandler,
 	readers *readersCheckTaskHandler,
 ) *library {
-	return &library{config: config, handler: handler, grpc: grpcHandler, timer: timer, chain: chain, readers: readers}
+	return &library{
+		config:  config,
+		handler: handler,
+		grpc:    grpcHandler,
+		timer:   timer,
+		chain:   chain,
+		readers: readers,
+	}
 }
 
 // NewNilLibrary creates a Library with nil handlers, for readers that only decode a Stream.

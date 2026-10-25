@@ -28,16 +28,26 @@ func NewFrontendHandler(
 	return &FrontendHandler{client: client, config: config, namespaceRegistry: namespaceRegistry}
 }
 
-// RedirectableMethods lists the StreamService methods that a cell forwards to the namespace's
-// active cell, with the response each one answers. The Stream is in the active cell's
-// mutable state, so a call served elsewhere would read a replica or write a copy.
+// RedirectableMethods maps each StreamService method that a cell forwards to the namespace's
+// active cell to a func that makes its empty response. The Stream is in the active cell's mutable
+// state, so a call served elsewhere would read a replica or write a copy.
 func RedirectableMethods() map[string]func() any {
 	return map[string]func() any{
-		streamservice.StreamService_CreateStream_FullMethodName:   func() any { return &streamservice.CreateStreamResponse{} },
-		streamservice.StreamService_AppendRecords_FullMethodName:  func() any { return &streamservice.AppendRecordsResponse{} },
-		streamservice.StreamService_CloseStream_FullMethodName:    func() any { return &streamservice.CloseStreamResponse{} },
-		streamservice.StreamService_ReadRecords_FullMethodName:    func() any { return &streamservice.ReadRecordsResponse{} },
-		streamservice.StreamService_DescribeStream_FullMethodName: func() any { return &streamservice.DescribeStreamResponse{} },
+		streamservice.StreamService_CreateStream_FullMethodName: func() any {
+			return &streamservice.CreateStreamResponse{}
+		},
+		streamservice.StreamService_AppendRecords_FullMethodName: func() any {
+			return &streamservice.AppendRecordsResponse{}
+		},
+		streamservice.StreamService_CloseStream_FullMethodName: func() any {
+			return &streamservice.CloseStreamResponse{}
+		},
+		streamservice.StreamService_ReadRecords_FullMethodName: func() any {
+			return &streamservice.ReadRecordsResponse{}
+		},
+		streamservice.StreamService_DescribeStream_FullMethodName: func() any {
+			return &streamservice.DescribeStreamResponse{}
+		},
 	}
 }
 
@@ -70,7 +80,10 @@ func (h *FrontendHandler) CreateStream(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := h.client.CreateStream(ctx, &streampb.CreateStreamRequest{NamespaceId: namespaceID, FrontendRequest: req})
+	resp, err := h.client.CreateStream(
+		ctx,
+		&streampb.CreateStreamRequest{NamespaceId: namespaceID, FrontendRequest: req},
+	)
 	return resp.GetFrontendResponse(), err
 }
 
@@ -82,7 +95,10 @@ func (h *FrontendHandler) AppendRecords(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := h.client.AppendRecords(ctx, &streampb.AppendRecordsRequest{NamespaceId: namespaceID, FrontendRequest: req})
+	resp, err := h.client.AppendRecords(
+		ctx,
+		&streampb.AppendRecordsRequest{NamespaceId: namespaceID, FrontendRequest: req},
+	)
 	return resp.GetFrontendResponse(), err
 }
 
@@ -94,7 +110,10 @@ func (h *FrontendHandler) CloseStream(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := h.client.CloseStream(ctx, &streampb.CloseStreamRequest{NamespaceId: namespaceID, FrontendRequest: req})
+	resp, err := h.client.CloseStream(
+		ctx,
+		&streampb.CloseStreamRequest{NamespaceId: namespaceID, FrontendRequest: req},
+	)
 	return resp.GetFrontendResponse(), err
 }
 
@@ -106,7 +125,10 @@ func (h *FrontendHandler) ReadRecords(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := h.client.ReadRecords(ctx, &streampb.ReadRecordsRequest{NamespaceId: namespaceID, FrontendRequest: req})
+	resp, err := h.client.ReadRecords(
+		ctx,
+		&streampb.ReadRecordsRequest{NamespaceId: namespaceID, FrontendRequest: req},
+	)
 	return resp.GetFrontendResponse(), err
 }
 
@@ -118,6 +140,9 @@ func (h *FrontendHandler) DescribeStream(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := h.client.DescribeStream(ctx, &streampb.DescribeStreamRequest{NamespaceId: namespaceID, FrontendRequest: req})
+	resp, err := h.client.DescribeStream(
+		ctx,
+		&streampb.DescribeStreamRequest{NamespaceId: namespaceID, FrontendRequest: req},
+	)
 	return resp.GetFrontendResponse(), err
 }

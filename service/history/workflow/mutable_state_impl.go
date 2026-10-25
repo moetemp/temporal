@@ -7528,8 +7528,9 @@ func (ms *MutableStateImpl) processCloseCallbacksChasm(closeEvent *historypb.His
 	}
 
 	firstRunID := ms.GetExecutionInfo().GetFirstExecutionRunId()
-	// A cron run's end isn't the chain's end. The next run writes on to the chain's Streams.
-	chainEnds := ms.executionInfo.NewExecutionRunId == ""
+	// A cron run's end isn't the chain's end, nor is the end of a run that a reset terminates. The
+	// next run or the reset run writes on to the chain's Streams.
+	chainEnds := ms.executionInfo.NewExecutionRunId == "" && !ms.executionInfo.GetWorkflowWasReset()
 	hasStreams := chainEnds && wf.HasChainStreams(readCtx, firstRunID)
 
 	// Return early if there are no chasm callbacks to process.

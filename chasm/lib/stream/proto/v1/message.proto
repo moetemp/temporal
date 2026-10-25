@@ -129,7 +129,7 @@ message ParkedReadState {
   temporal.api.streamservice.v1.ReadRecordsRequest request = 1;
   // The Nexus request id, so a retry of the start finds this read.
   string request_id = 2;
-  // Where the next look starts. A look that finds only other Topics moves it on.
+  // Where the next look starts. A look that finds only other Topics advances it.
   int64 scan_offset = 3;
   // Set while the read waits for the create.
   google.protobuf.Timestamp create_deadline = 4;

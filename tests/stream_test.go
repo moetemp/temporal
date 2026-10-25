@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/server/api/adminservice/v1"
+	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/stream"
 	"go.temporal.io/server/common/dynamicconfig"
 	commonnexus "go.temporal.io/server/common/nexus"
@@ -63,22 +66,28 @@ type streamCaller struct {
 
 func (s *StreamTestSuite) newCaller(env *testcore.TestEnv) *streamCaller {
 	c := &streamCaller{s: s, env: env, taskQueue: testcore.RandomizeStr(s.T().Name())}
-	run, err := env.SdkClient().ExecuteWorkflow(s.Context(), client.StartWorkflowOptions{TaskQueue: c.taskQueue}, "stream-caller")
+	options := client.StartWorkflowOptions{TaskQueue: c.taskQueue}
+	run, err := env.SdkClient().ExecuteWorkflow(s.Context(), options, "stream-caller")
 	s.NoError(err)
 	c.run = run
 	s.T().Cleanup(func() {
-		_ = env.SdkClient().TerminateWorkflow(s.Context(), run.GetID(), run.GetRunID(), "test cleanup")
+		_ = env.SdkClient().
+			TerminateWorkflow(s.Context(), run.GetID(), run.GetRunID(), "test cleanup")
 	})
 	c.poll()
 	return c
 }
 
 func (c *streamCaller) poll() {
-	resp, err := c.env.FrontendClient().PollWorkflowTaskQueue(c.s.Context(), &workflowservice.PollWorkflowTaskQueueRequest{
-		Namespace: c.env.Namespace().String(),
-		TaskQueue: &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
-		Identity:  "test",
-	})
+	resp, err := c.env.FrontendClient().
+		PollWorkflowTaskQueue(c.s.Context(), &workflowservice.PollWorkflowTaskQueueRequest{
+			Namespace: c.env.Namespace().String(),
+			TaskQueue: &taskqueuepb.TaskQueue{
+				Name: c.taskQueue,
+				Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
+			},
+			Identity: "test",
+		})
 	c.s.NoError(err)
 	c.s.NotEmpty(resp.GetTaskToken())
 	c.token = resp.GetTaskToken()
@@ -92,17 +101,7 @@ func (c *streamCaller) schedule(ops ...streamOp) []int64 {
 	last := c.history[len(c.history)-1].GetEventId()
 	commands := make([]*commandpb.Command, 0, len(ops))
 	for _, op := range ops {
-		commands = append(commands, &commandpb.Command{
-			CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
-			Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
-				ScheduleNexusOperationCommandAttributes: &commandpb.ScheduleNexusOperationCommandAttributes{
-					Endpoint:  commonnexus.SystemEndpoint,
-					Service:   stream.ServiceName,
-					Operation: op.name,
-					Input:     payloads.MustEncodeSingle(op.request),
-				},
-			},
-		})
+		commands = append(commands, nexusCommand(op))
 	}
 	c.respond(commands...)
 	var ids []int64
@@ -115,14 +114,47 @@ func (c *streamCaller) schedule(ops ...streamOp) []int64 {
 	return ids
 }
 
+// completeTask completes the open Workflow Task with commands. It polls no next task, since the
+// commands may end the run.
+func (c *streamCaller) completeTask(commands ...*commandpb.Command) error {
+	_, err := c.env.FrontendClient().RespondWorkflowTaskCompleted(c.s.Context(),
+		&workflowservice.RespondWorkflowTaskCompletedRequest{
+			Identity:  "test",
+			TaskToken: c.token,
+			Commands:  commands,
+		})
+	return err
+}
+
 func (c *streamCaller) respond(commands ...*commandpb.Command) {
-	_, err := c.env.FrontendClient().RespondWorkflowTaskCompleted(c.s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
-		Identity:  "test",
-		TaskToken: c.token,
-		Commands:  commands,
-	})
-	c.s.NoError(err)
+	c.s.NoError(c.completeTask(commands...))
 	c.poll()
+}
+
+// continueAsNew continues the run as new on the caller's task queue.
+func (c *streamCaller) continueAsNew() *commandpb.Command {
+	taskQueue := &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL}
+	attributes := &commandpb.ContinueAsNewWorkflowExecutionCommandAttributes{
+		WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
+		TaskQueue:    taskQueue,
+	}
+	return &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
+			ContinueAsNewWorkflowExecutionCommandAttributes: attributes,
+		},
+	}
+}
+
+// completeCommand completes the run with result.
+func completeCommand(result *commonpb.Payloads) *commandpb.Command {
+	attributes := &commandpb.CompleteWorkflowExecutionCommandAttributes{Result: result}
+	return &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
+			CompleteWorkflowExecutionCommandAttributes: attributes,
+		},
+	}
 }
 
 // outcome waits for the end of the operation that scheduledID scheduled. It answers whether the
@@ -131,15 +163,18 @@ func (c *streamCaller) outcome(scheduledID int64, result proto.Message) (*failur
 	for {
 		started := false
 		for _, event := range c.history {
-			if attrs := event.GetNexusOperationStartedEventAttributes(); attrs != nil && attrs.GetScheduledEventId() == scheduledID {
+			if attrs := event.GetNexusOperationStartedEventAttributes(); attrs != nil &&
+				attrs.GetScheduledEventId() == scheduledID {
 				started = true
 			}
-			if attrs := event.GetNexusOperationCompletedEventAttributes(); attrs != nil && attrs.GetScheduledEventId() == scheduledID {
+			if attrs := event.GetNexusOperationCompletedEventAttributes(); attrs != nil &&
+				attrs.GetScheduledEventId() == scheduledID {
 				c.s.NoError(sdkconverter.PreferProtoDataConverter.FromPayloads(
 					&commonpb.Payloads{Payloads: []*commonpb.Payload{attrs.GetResult()}}, result))
 				return nil, started
 			}
-			if attrs := event.GetNexusOperationFailedEventAttributes(); attrs != nil && attrs.GetScheduledEventId() == scheduledID {
+			if attrs := event.GetNexusOperationFailedEventAttributes(); attrs != nil &&
+				attrs.GetScheduledEventId() == scheduledID {
 				return attrs.GetFailure(), started
 			}
 		}
@@ -157,6 +192,22 @@ type streamOp struct {
 	request proto.Message
 }
 
+// nexusCommand schedules op as a System Nexus operation.
+func nexusCommand(op streamOp) *commandpb.Command {
+	attributes := &commandpb.ScheduleNexusOperationCommandAttributes{
+		Endpoint:  commonnexus.SystemEndpoint,
+		Service:   stream.ServiceName,
+		Operation: op.name,
+		Input:     payloads.MustEncodeSingle(op.request),
+	}
+	return &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_SCHEDULE_NEXUS_OPERATION,
+		Attributes: &commandpb.Command_ScheduleNexusOperationCommandAttributes{
+			ScheduleNexusOperationCommandAttributes: attributes,
+		},
+	}
+}
+
 func ref(id string) *streamservice.StreamRef {
 	return &streamservice.StreamRef{Id: id}
 }
@@ -164,7 +215,10 @@ func ref(id string) *streamservice.StreamRef {
 func records(topics ...string) []*streamservice.AppendRecord {
 	out := make([]*streamservice.AppendRecord, 0, len(topics))
 	for _, topic := range topics {
-		out = append(out, &streamservice.AppendRecord{Topic: topic, Body: payload.EncodeString(topic)})
+		out = append(
+			out,
+			&streamservice.AppendRecord{Topic: topic, Body: payload.EncodeString(topic)},
+		)
 	}
 	return out
 }
@@ -213,44 +267,79 @@ func (s *StreamTestSuite) TestWorkflowReadAndDescribe() {
 	id := testcore.RandomizeStr("chat")
 	writer := workflowWriter("run-1", 3)
 
-	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id, Owner: writer})
+	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
 	s.NoError(err)
 	appended, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: writer, Sequence: 1, Records: records("turns", "tools"),
+		Namespace: ns, Stream: ref(id), Producer: writer, Sequence: 1,
+		Records: records("turns", "tools"),
 	})
 	s.NoError(err)
 
 	var page streamservice.ReadRecordsResponse
-	failure, started := c.outcome(c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0], &page)
+	failure, started := c.outcome(
+		c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0],
+		&page,
+	)
 	s.Nil(failure)
 	s.False(started)
 	s.Equal([]string{"turns", "tools"}, kindsAndTopics(&page))
 
 	var described streamservice.DescribeStreamResponse
-	s.Nil(c.call(streamOp{"DescribeStream", &streamservice.DescribeStreamRequest{Stream: ref(id)}}, &described))
+	s.Nil(
+		c.call(
+			streamOp{"DescribeStream", &streamservice.DescribeStreamRequest{Stream: ref(id)}},
+			&described,
+		),
+	)
 	s.Equal(appended.GetLastOffset(), described.GetLastOffset())
 
-	_, err = sc.CloseStream(ctx, &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: writer, Result: payload.EncodeString("done")})
+	_, err = sc.CloseStream(
+		ctx,
+		&streamservice.CloseStreamRequest{
+			Namespace: ns,
+			Stream:    ref(id),
+			Producer:  clientProducer(),
+			Result:    payload.EncodeString("done"),
+		},
+	)
 	s.NoError(err)
 	var last streamservice.ReadRecordsResponse
-	s.Nil(c.call(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id), FromOffset: page.GetNextOffset()}}, &last))
+	s.Nil(
+		c.call(
+			streamOp{
+				"ReadRecords",
+				&streamservice.ReadRecordsRequest{
+					Stream:     ref(id),
+					FromOffset: page.GetNextOffset(),
+				},
+			},
+			&last,
+		),
+	)
 	s.Equal([]string{"close"}, kindsAndTopics(&last))
 	s.True(last.GetDone())
 }
 
-func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
+// A Workflow's wake parks until a Record passes its filter, and answers with no Records.
+func (s *StreamTestSuite) TestWorkflowWakeWaitsForAnAppend() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
 	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
 	s.NoError(err)
 
-	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id), Topics: []string{"turns"}}})[0]
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: ref(id), Topics: []string{"turns"}, WakeOnly: true,
+	}})[0]
 	for i, topic := range []string{"other", "turns"} {
 		_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: int64(i + 1), Records: records(topic),
+			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: int64(i + 1),
+			Records: records(topic),
 		})
 		s.NoError(err)
 	}
@@ -259,40 +348,61 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForAnAppend() {
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
+	s.False(page.GetDone())
 }
 
-func (s *StreamTestSuite) TestWorkflowReadEndsOnClose() {
+func (s *StreamTestSuite) TestWorkflowWakeEndsOnClose() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
 	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
 	s.NoError(err)
 
-	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id)}})[0]
-	_, err = sc.CloseStream(s.Context(), &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: clientProducer()})
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: ref(id), WakeOnly: true,
+	}})[0]
+	_, err = sc.CloseStream(
+		s.Context(),
+		&streamservice.CloseStreamRequest{
+			Namespace: ns,
+			Stream:    ref(id),
+			Producer:  clientProducer(),
+		},
+	)
 	s.NoError(err)
 
 	var page streamservice.ReadRecordsResponse
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"close"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
 	s.True(page.GetDone())
 }
 
 func (s *StreamTestSuite) TestWorkflowReadOfAMissingStreamFails() {
 	env := s.newEnv()
 	c := s.newCaller(env)
-	failure := c.call(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))}},
-		&streamservice.ReadRecordsResponse{})
+	failure := c.call(
+		streamOp{
+			"ReadRecords",
+			&streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))},
+		},
+		&streamservice.ReadRecordsResponse{},
+	)
 	s.Equal(stream.ReasonNotFound, causeType(failure))
 }
 
 func (s *StreamTestSuite) streamClient(env *testcore.TestEnv) streamservice.StreamServiceClient {
-	conn, err := grpc.NewClient(env.FrontendGRPCAddress(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(
+		env.FrontendGRPCAddress(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
 	s.NoError(err)
 	s.T().Cleanup(func() { _ = conn.Close() })
 	return streamservice.NewStreamServiceClient(conn)
@@ -313,7 +423,10 @@ func (s *StreamTestSuite) TestClientCreateAppendReadClose() {
 	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
 
-	created, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	created, err := sc.CreateStream(
+		ctx,
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
 	s.NoError(err)
 	s.True(created.GetCreated())
 	generated, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns})
@@ -321,34 +434,61 @@ func (s *StreamTestSuite) TestClientCreateAppendReadClose() {
 	s.NotEmpty(generated.GetStream().GetId())
 
 	appended, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("turns", "tool/search"),
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1,
+		Records: records("turns", "tool/search"),
 	})
 	s.NoError(err)
 	resent, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("turns", "tool/search"),
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1,
+		Records: records("turns", "tool/search"),
 	})
 	s.NoError(err)
 	s.Equal(appended.GetFirstOffset(), resent.GetFirstOffset())
 
-	page, err := sc.ReadRecords(ctx, &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id), TopicPrefixes: []string{"tool/"}})
+	page, err := sc.ReadRecords(
+		ctx,
+		&streamservice.ReadRecordsRequest{
+			Namespace:     ns,
+			Stream:        ref(id),
+			TopicPrefixes: []string{"tool/"},
+		},
+	)
 	s.NoError(err)
 	s.Equal([]string{"tool/search"}, kindsAndTopics(page))
 	s.Equal(appended.GetLastOffset()+1, page.GetNextOffset())
 
-	described, err := sc.DescribeStream(ctx, &streamservice.DescribeStreamRequest{Namespace: ns, Stream: ref(id)})
+	described, err := sc.DescribeStream(
+		ctx,
+		&streamservice.DescribeStreamRequest{Namespace: ns, Stream: ref(id)},
+	)
 	s.NoError(err)
 	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
 	s.Equal(appended.GetLastOffset(), described.GetLastOffset())
 
-	_, err = sc.CloseStream(ctx, &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: clientProducer()})
+	_, err = sc.CloseStream(
+		ctx,
+		&streamservice.CloseStreamRequest{
+			Namespace: ns,
+			Stream:    ref(id),
+			Producer:  clientProducer(),
+		},
+	)
 	s.NoError(err)
-	last, err := sc.ReadRecords(ctx, &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id), FromOffset: page.GetNextOffset()})
+	last, err := sc.ReadRecords(
+		ctx,
+		&streamservice.ReadRecordsRequest{
+			Namespace:  ns,
+			Stream:     ref(id),
+			FromOffset: page.GetNextOffset(),
+		},
+	)
 	s.NoError(err)
 	s.Equal([]string{"close"}, kindsAndTopics(last))
 	s.True(last.GetDone())
 
 	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 2, Records: records("late"),
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 2,
+		Records: records("late"),
 	})
 	st := status.Convert(err)
 	s.Equal(codes.FailedPrecondition, st.Code())
@@ -372,7 +512,8 @@ func (s *StreamTestSuite) TestClientReadWaitsForAnAppend() {
 	done := make(chan result, 1)
 	go func() {
 		resp, err := sc.ReadRecords(ctx, &streamservice.ReadRecordsRequest{
-			Namespace: ns, Stream: ref(id), Start: streamservice.READ_START_END, Wait: durationpb.New(30 * time.Second),
+			Namespace: ns, Stream: ref(id), Start: streamservice.READ_START_END,
+			Wait: durationpb.New(30 * time.Second),
 		})
 		done <- result{resp, err}
 	}()
@@ -381,7 +522,8 @@ func (s *StreamTestSuite) TestClientReadWaitsForAnAppend() {
 	s.Await(func(s *StreamTestSuite) {
 		sequence++
 		_, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
-			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: sequence, Records: records("turns"),
+			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: sequence,
+			Records: records("turns"),
 		})
 		s.NoError(err)
 		select {
@@ -416,7 +558,7 @@ func (s *StreamTestSuite) TestClientReadWaitsForTheCreate() {
 	s.NoError(<-done)
 }
 
-func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
+func (s *StreamTestSuite) TestWorkflowWakeWaitsForTheCreate() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
@@ -425,12 +567,17 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 
 	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
 		Stream:     ref(id),
+		WakeOnly:   true,
 		CreateWait: durationpb.New(30 * time.Second),
 	}})[0]
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
 	s.NoError(err)
 	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("turns"),
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1,
+		Records: records("turns"),
 	})
 	s.NoError(err)
 
@@ -438,24 +585,76 @@ func (s *StreamTestSuite) TestWorkflowReadWaitsForTheCreate() {
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
 }
 
-// closeWithRun creates a Stream that closes with the caller's run chain.
-func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env *testcore.TestEnv, c *streamCaller) *streamservice.StreamRef {
+// A wake whose create wait ends first leaves the Workflow Stream's node abandoned. A later wake
+// parks again and the create opens it, since the node has no execution of its own to replace.
+func (s *StreamTestSuite) TestAbandonedWorkflowStreamCanStillBeCreated() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
+	owned := &streamservice.StreamRef{
+		Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID(),
+	}
+
+	failure := c.call(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true,
+		CreateWait: durationpb.New(time.Second), Wait: durationpb.New(time.Hour),
+	}}, &streamservice.ReadRecordsResponse{})
+	s.Equal(stream.ReasonNotFound, causeType(failure))
+
+	wake := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true, CreateWait: durationpb.New(30 * time.Second),
+	}})[0]
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
-		Namespace:    env.Namespace().String(),
-		StreamId:     id,
-		Owner:        workflowWriter(c.run.GetRunID(), 3),
-		Ref:          &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()},
+		Namespace: ns, StreamId: id, Owner: workflowWriter(c.current, 3), Ref: owned,
 		CloseWithRun: true,
 	})
 	s.NoError(err)
-	return &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: clientProducer(), Sequence: 1,
+		Records: records("turns"),
+	})
+	s.NoError(err)
+	failure, started := c.outcome(wake, &streamservice.ReadRecordsResponse{})
+	s.Nil(failure)
+	s.True(started)
 }
 
-func (s *StreamTestSuite) readClose(sc streamservice.StreamServiceClient, env *testcore.TestEnv, owned *streamservice.StreamRef) *streamservice.StreamRecord {
+// closeWithRun creates a Stream that closes with the caller's run chain.
+func (s *StreamTestSuite) closeWithRun(
+	sc streamservice.StreamServiceClient,
+	env *testcore.TestEnv,
+	c *streamCaller,
+) *streamservice.StreamRef {
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
+		Namespace: env.Namespace().String(),
+		StreamId:  id,
+		Owner:     workflowWriter(c.run.GetRunID(), 3),
+		Ref: &streamservice.StreamRef{
+			Id:                  id,
+			WorkflowId:          c.run.GetID(),
+			FirstExecutionRunId: c.run.GetRunID(),
+		},
+		CloseWithRun: true,
+	})
+	s.NoError(err)
+	return &streamservice.StreamRef{
+		Id:                  id,
+		WorkflowId:          c.run.GetID(),
+		FirstExecutionRunId: c.run.GetRunID(),
+	}
+}
+
+func (s *StreamTestSuite) readClose(
+	sc streamservice.StreamServiceClient,
+	env *testcore.TestEnv,
+	owned *streamservice.StreamRef,
+) *streamservice.StreamRecord {
 	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned, Wait: durationpb.New(20 * time.Second),
 	})
@@ -470,19 +669,7 @@ func (s *StreamTestSuite) TestStreamClosesWithTheOwnerResult() {
 	c := s.newCaller(env)
 	owned := s.closeWithRun(sc, env, c)
 
-	_, err := env.FrontendClient().RespondWorkflowTaskCompleted(s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
-		Identity:  "test",
-		TaskToken: c.token,
-		Commands: []*commandpb.Command{{
-			CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
-			Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
-				CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{
-					Result: payloads.EncodeString("answer"),
-				},
-			},
-		}},
-	})
-	s.NoError(err)
+	s.NoError(c.completeTask(completeCommand(payloads.EncodeString("answer"))))
 
 	closed := s.readClose(sc, env, owned)
 	s.Equal(payload.EncodeString("answer").GetData(), closed.GetCloseResult().GetData())
@@ -495,15 +682,116 @@ func (s *StreamTestSuite) TestStreamClosesWithATerminatedOwner() {
 	c := s.newCaller(env)
 	owned := s.closeWithRun(sc, env, c)
 
-	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.run.GetRunID(), "stop"))
+	s.NoError(
+		env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.run.GetRunID(), "stop"),
+	)
 
 	closed := s.readClose(sc, env, owned)
 	s.NotNil(closed.GetCloseFailure().GetTerminatedFailureInfo())
 	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, closed.GetCloseStatus())
 }
 
-// A cron run's end isn't the chain's end, so the next cron run writes on. The terminate of a later
-// run ends the chain and closes the Stream with its status.
+// closeOp closes a Workflow Stream through System Nexus, as the calling run.
+func closeOp(owned *streamservice.StreamRef, result string) streamOp {
+	return streamOp{
+		"CloseStream",
+		&streamservice.CloseStreamRequest{Stream: owned, Result: payload.EncodeString(result)},
+	}
+}
+
+func (s *StreamTestSuite) TestWorkflowCloseCommandClosesItsStream() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	s.Nil(c.call(closeOp(owned, "answer"), &streamservice.CloseStreamResponse{}))
+
+	closed := s.readClose(sc, env, owned)
+	s.Equal(payload.EncodeString("answer").GetData(), closed.GetCloseResult().GetData())
+	s.Equal(streamservice.CLOSE_STATUS_COMPLETED, closed.GetCloseStatus())
+	s.Equal("wf:"+stream.EncodeIDPart(c.run.GetRunID()), closed.GetProducer().GetId())
+}
+
+func (s *StreamTestSuite) TestCloseCommandOfAnotherChainIsRefused() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	owned := s.closeWithRun(sc, env, s.newCaller(env))
+
+	failure := s.newCaller(env).call(closeOp(owned, "answer"), &streamservice.CloseStreamResponse{})
+	s.Equal(stream.ReasonNotOwner, causeType(failure))
+
+	described, err := sc.DescribeStream(
+		s.Context(),
+		&streamservice.DescribeStreamRequest{Namespace: env.Namespace().String(), Stream: owned},
+	)
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+}
+
+// A direct System Nexus call waits for no Workflow Task to commit, so it can't close the Stream,
+// even with the link of the owner run.
+func (s *StreamTestSuite) TestDirectCloseCallIsRefused() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	ns := env.Namespace().String()
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	resp, err := env.FrontendClient().
+		StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
+			Namespace: ns,
+			Endpoint:  commonnexus.SystemEndpoint,
+			Service:   stream.ServiceName,
+			Operation: "CloseStream",
+			Input:     payloads.MustEncodeSingle(closeOp(owned, "answer").request),
+			Links:     []*commonpb.Link{readerLink(env, c.run)},
+		})
+	s.NoError(err)
+	s.Equal(stream.ReasonInvalid, causeType(resp.GetOperationFailure().GetFailure()))
+
+	described, err := sc.DescribeStream(
+		s.Context(),
+		&streamservice.DescribeStreamRequest{Namespace: ns, Stream: owned},
+	)
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+}
+
+// A bad command fails the Workflow Task, so the server drops the close command that came with it.
+// The retried task's close command closes the Stream once.
+func (s *StreamTestSuite) TestCloseCommandOfAFailedWorkflowTaskIsDropped() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+
+	// An Activity with empty attributes is a bad command.
+	empty := &commandpb.ScheduleActivityTaskCommandAttributes{}
+	bad := &commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_SCHEDULE_ACTIVITY_TASK,
+		Attributes: &commandpb.Command_ScheduleActivityTaskCommandAttributes{
+			ScheduleActivityTaskCommandAttributes: empty,
+		},
+	}
+	s.Error(c.completeTask(nexusCommand(closeOp(owned, "failed task")), bad))
+	c.poll()
+
+	s.Nil(c.call(closeOp(owned, "retried task"), &streamservice.CloseStreamResponse{}))
+	page, err := sc.ReadRecords(
+		s.Context(),
+		&streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned},
+	)
+	s.NoError(err)
+	s.Equal([]string{"close"}, kindsAndTopics(page))
+	s.Equal(
+		payload.EncodeString("retried task").GetData(),
+		page.GetRecords()[0].GetCloseResult().GetData(),
+	)
+}
+
+// A cron run's end isn't the chain's end, so the next cron run still writes. The terminate of a
+// later run ends the chain and closes the Stream with its status.
 func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -520,13 +808,7 @@ func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 	owned := s.closeWithRun(sc, env, c)
 
 	// Run 1 completes and the next cron run starts.
-	c.respond(&commandpb.Command{
-		CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
-		Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
-			CompleteWorkflowExecutionCommandAttributes: &commandpb.
-				CompleteWorkflowExecutionCommandAttributes{},
-		},
-	})
+	c.respond(completeCommand(nil))
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned,
 		Producer: workflowWriter(c.current, 3), Sequence: 1, Records: records("next"),
@@ -561,41 +843,90 @@ func (s *StreamTestSuite) TestDeferredWorkflowBatchIsWithdrawnByAFailedTask() {
 	})
 	s.NoError(err)
 	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: workflowWriter("run-1", 7), Sequence: 1, Records: records("b"),
+		Namespace: ns, Stream: ref(id), Producer: workflowWriter("run-1", 7), Sequence: 1,
+		Records:               records("b"),
 		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: 2, Attempt: 1},
 		FailedTasks:           []int64{3},
 	})
 	s.NoError(err)
 
-	page, err := sc.ReadRecords(ctx, &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id)})
+	page, err := sc.ReadRecords(
+		ctx,
+		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id)},
+	)
 	s.NoError(err)
 	s.Equal([]string{"a", "", "b"}, kindsAndTopics(page))
 	s.Equal(streamservice.STREAM_RECORD_KIND_SUPERSEDED, page.GetRecords()[1].GetKind())
 	s.Equal([]int64{3}, page.GetRecords()[1].GetSupersession().GetFailedTasks())
 }
 
-func (s *StreamTestSuite) TestWorkflowReadEndsAtItsWait() {
+// A Workflow read that isn't a wake never parks. It answers what the Stream has at once, an
+// empty page here, so no parked read keeps a page.
+func (s *StreamTestSuite) TestWorkflowReadThatIsNotAWakeAnswersAtOnce() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
 	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
 	s.NoError(err)
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("other"),
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1,
+		Records: records("other"),
 	})
 	s.NoError(err)
 
 	var page streamservice.ReadRecordsResponse
-	failure, started := c.outcome(c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
-		Stream: ref(id), Topics: []string{"turns"}, Wait: durationpb.New(time.Second),
-	}})[0], &page)
+	failure, started := c.outcome(
+		c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+			Stream: ref(id), Topics: []string{"turns"}, Wait: durationpb.New(time.Minute),
+		}})[0],
+		&page,
+	)
 	s.Nil(failure)
-	s.True(started)
+	s.False(started)
 	s.Empty(page.GetRecords())
 	s.False(page.GetDone())
 	s.Equal(appended.GetLastOffset()+1, page.GetNextOffset())
+}
+
+// One large append must not copy its batch into every waiting read, which would push the
+// execution past the mutable state limit and expire the Stream.
+func (s *StreamTestSuite) TestLargeAppendWithManyReadersStaysUnderTheStateLimit() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
+	s.NoError(err)
+
+	ops := make([]streamOp, 0, 5)
+	for range 5 {
+		ops = append(ops, streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+			Stream: ref(id), Start: streamservice.READ_START_END, Wait: durationpb.New(time.Minute),
+		}})
+	}
+	c.schedule(ops...)
+
+	big := make([]byte, 1800*1024)
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1,
+		Records: []*streamservice.AppendRecord{{Topic: "big", Body: &commonpb.Payload{Data: big}}},
+	})
+	s.NoError(err)
+	// The size check runs in the next transition, such as a wake's callback task.
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The callback tasks run on real time.
+	described, err := sc.DescribeStream(s.Context(),
+		&streamservice.DescribeStreamRequest{Namespace: ns, Stream: ref(id)})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
 }
 
 // An append to a Workflow Stream completes the Workflow's parked read in the Workflow's
@@ -606,7 +937,9 @@ func (s *StreamTestSuite) TestNestedStreamWakesItsWorkflow() {
 	c := s.newCaller(env)
 	owned := s.closeWithRun(sc, env, c)
 
-	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: owned}})[0]
+	read := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true,
+	}})[0]
 	_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned,
 		Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: 1, Records: records("turns"),
@@ -617,10 +950,16 @@ func (s *StreamTestSuite) TestNestedStreamWakesItsWorkflow() {
 	failure, started := c.outcome(read, &page)
 	s.Nil(failure)
 	s.True(started)
-	s.Equal([]string{"turns"}, kindsAndTopics(&page))
+	s.Empty(page.GetRecords())
 
 	// The Stream id names no execution of its own.
-	_, err = sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{Namespace: env.Namespace().String(), Stream: ref(owned.GetId())})
+	_, err = sc.DescribeStream(
+		s.Context(),
+		&streamservice.DescribeStreamRequest{
+			Namespace: env.Namespace().String(),
+			Stream:    ref(owned.GetId()),
+		},
+	)
 	s.Equal(codes.NotFound, status.Code(err))
 }
 
@@ -631,15 +970,7 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 	owned := s.closeWithRun(sc, env, c)
 
 	// Run 1 continues as new. The Stream stays open in run 1's tree.
-	c.respond(&commandpb.Command{
-		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
-		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
-			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.ContinueAsNewWorkflowExecutionCommandAttributes{
-				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
-				TaskQueue:    &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
-			},
-		},
-	})
+	c.respond(c.continueAsNew())
 	described, err := sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{
 		Namespace: env.Namespace().String(), Stream: owned,
 	})
@@ -647,22 +978,77 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
 
 	// Run 2 completes, which ends the chain.
-	_, err = env.FrontendClient().RespondWorkflowTaskCompleted(s.Context(), &workflowservice.RespondWorkflowTaskCompletedRequest{
-		Identity:  "test",
-		TaskToken: c.token,
-		Commands: []*commandpb.Command{{
-			CommandType: enumspb.COMMAND_TYPE_COMPLETE_WORKFLOW_EXECUTION,
-			Attributes: &commandpb.Command_CompleteWorkflowExecutionCommandAttributes{
-				CompleteWorkflowExecutionCommandAttributes: &commandpb.CompleteWorkflowExecutionCommandAttributes{
-					Result: payloads.EncodeString("run-2"),
-				},
-			},
-		}},
-	})
-	s.NoError(err)
+	s.NoError(c.completeTask(completeCommand(payloads.EncodeString("run-2"))))
 	closed := s.readClose(sc, env, owned)
 	s.Equal(payload.EncodeString("run-2").GetData(), closed.GetCloseResult().GetData())
 	s.Equal(streamservice.CLOSE_STATUS_COMPLETED, closed.GetCloseStatus())
+}
+
+// A reset to an earlier run of a continued-as-new chain terminates the current run, but the
+// chain continues in the reset run, so its Streams stay open.
+func (s *StreamTestSuite) TestResetToAnEarlierRunKeepsTheStreamOpen() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	owned := s.closeWithRun(sc, env, c)
+	first := c.run.GetRunID()
+	c.respond(c.continueAsNew())
+	s.NotEqual(first, c.current)
+
+	reset, err := env.FrontendClient().ResetWorkflowExecution(s.Context(),
+		&workflowservice.ResetWorkflowExecutionRequest{
+			Namespace: ns,
+			WorkflowExecution: &commonpb.WorkflowExecution{
+				WorkflowId: c.run.GetID(),
+				RunId:      first,
+			},
+			Reason:                    "test",
+			WorkflowTaskFinishEventId: 4,
+			RequestId:                 uuid.NewString(),
+		})
+	s.NoError(err)
+	s.T().Cleanup(func() {
+		_ = env.SdkClient().
+			TerminateWorkflow(s.Context(), c.run.GetID(), reset.GetRunId(), "test cleanup")
+	})
+
+	// The chain's end would close the Stream through a task on the terminated run.
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The close task runs on real time.
+	described, err := sc.DescribeStream(s.Context(),
+		&streamservice.DescribeStreamRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+
+	// The reset run's end is the chain's end.
+	s.NoError(
+		env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), reset.GetRunId(), "stop"),
+	)
+	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, s.readClose(sc, env, owned).GetCloseStatus())
+}
+
+// A chain whose first run has no Stream ends with no write to that run.
+func (s *StreamTestSuite) TestChainEndLeavesAFirstRunWithNoStreamAlone() {
+	env := s.newEnv()
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	first := c.run.GetRunID()
+	c.respond(c.continueAsNew())
+	transitions := func() int64 {
+		resp, err := env.AdminClient().DescribeMutableState(s.Context(),
+			&adminservice.DescribeMutableStateRequest{
+				Namespace: ns,
+				Execution: &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: first},
+				Archetype: chasm.WorkflowArchetype,
+			})
+		s.NoError(err)
+		return resp.GetDatabaseMutableState().GetExecutionInfo().GetStateTransitionCount()
+	}
+	before := transitions()
+
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.current, "stop"))
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The chain's close task runs on real time.
+	s.Equal(before, transitions())
 }
 
 // directRead reads through the direct System Nexus call, which adds no History event.
@@ -672,29 +1058,38 @@ func (s *StreamTestSuite) directRead(
 	req *streamservice.ReadRecordsRequest,
 	links ...*commonpb.Link,
 ) (*streamservice.ReadRecordsResponse, *failurepb.Failure) {
-	resp, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
-		Namespace: env.Namespace().String(),
-		Endpoint:  commonnexus.SystemEndpoint,
-		Service:   stream.ServiceName,
-		Operation: "ReadRecords",
-		Input:     payloads.MustEncodeSingle(req),
-		Links:     links,
-	})
+	resp, err := env.FrontendClient().
+		StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
+			Namespace: env.Namespace().String(),
+			Endpoint:  commonnexus.SystemEndpoint,
+			Service:   stream.ServiceName,
+			Operation: "ReadRecords",
+			Input:     payloads.MustEncodeSingle(req),
+			Links:     links,
+		})
 	s.NoError(err)
 	if failure := resp.GetOperationFailure().GetFailure(); failure != nil {
 		return nil, failure
 	}
 	var page streamservice.ReadRecordsResponse
 	s.NoError(sdkconverter.PreferProtoDataConverter.FromPayloads(
-		&commonpb.Payloads{Payloads: []*commonpb.Payload{resp.GetSyncSuccess().GetPayload()}}, &page))
+		&commonpb.Payloads{
+			Payloads: []*commonpb.Payload{resp.GetSyncSuccess().GetPayload()},
+		},
+		&page,
+	))
 	return &page, nil
 }
 
 func (s *StreamTestSuite) historyLength(env *testcore.TestEnv, c *streamCaller) int {
-	resp, err := env.FrontendClient().GetWorkflowExecutionHistory(s.Context(), &workflowservice.GetWorkflowExecutionHistoryRequest{
-		Namespace: env.Namespace().String(),
-		Execution: &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: c.run.GetRunID()},
-	})
+	resp, err := env.FrontendClient().GetWorkflowExecutionHistory(s.Context(),
+		&workflowservice.GetWorkflowExecutionHistoryRequest{
+			Namespace: env.Namespace().String(),
+			Execution: &commonpb.WorkflowExecution{
+				WorkflowId: c.run.GetID(),
+				RunId:      c.run.GetRunID(),
+			},
+		})
 	s.NoError(err)
 	return len(resp.GetHistory().GetEvents())
 }
@@ -710,12 +1105,15 @@ func (s *StreamTestSuite) TestWorkflowReadsDirectlyWithNoRecordsInHistory() {
 	ns := env.Namespace().String()
 	appendTopics := func(sequence int64, topics ...string) {
 		_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-			Namespace: ns, Stream: owned, Producer: workflowWriter(c.run.GetRunID(), 3), Sequence: sequence, Records: records(topics...),
+			Namespace: ns, Stream: owned, Producer: workflowWriter(c.run.GetRunID(), 3),
+			Sequence: sequence, Records: records(topics...),
 		})
 		s.NoError(err)
 	}
 
-	wake := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: owned, WakeOnly: true}})[0]
+	wake := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true,
+	}})[0]
 	appendTopics(1, "a", "b")
 	var woke streamservice.ReadRecordsResponse
 	failure, started := c.outcome(wake, &woke)
@@ -725,31 +1123,65 @@ func (s *StreamTestSuite) TestWorkflowReadsDirectlyWithNoRecordsInHistory() {
 	s.Equal(int64(0), woke.GetNextOffset())
 
 	before := s.historyLength(env, c)
-	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: woke.GetNextOffset()})
+	page, failure := s.directRead(
+		env,
+		&streamservice.ReadRecordsRequest{Stream: owned, FromOffset: woke.GetNextOffset()},
+	)
 	s.Nil(failure)
 	s.Equal([]string{"a", "b"}, kindsAndTopics(page))
 	s.Equal(before, s.historyLength(env, c))
 
 	appendTopics(2, "c")
-	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, ToOffset: page.GetNextOffset()})
+	again, failure := s.directRead(
+		env,
+		&streamservice.ReadRecordsRequest{Stream: owned, ToOffset: page.GetNextOffset()},
+	)
 	s.Nil(failure)
 	s.Equal(page.GetRecords(), again.GetRecords())
 	s.Equal(page.GetNextOffset(), again.GetNextOffset())
 
 	// A direct read with wait long-polls, as the frontend read does.
 	waited, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
-		Stream: owned, Start: streamservice.READ_START_END, Wait: durationpb.New(500 * time.Millisecond),
+		Stream: owned, Start: streamservice.READ_START_END,
+		Wait: durationpb.New(500 * time.Millisecond),
 	})
 	s.Nil(failure)
 	s.Empty(waited.GetRecords())
 
-	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))})
+	_, failure = s.directRead(
+		env,
+		&streamservice.ReadRecordsRequest{Stream: ref(testcore.RandomizeStr("missing"))},
+	)
 	s.Equal(stream.ReasonNotFound, causeType(failure))
 }
 
 // The first run of a chain keeps the chain's Streams after it closes, so the namespace retention
 // can't delete them while a later run still writes.
 func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
+	env := s.retentionEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	c.respond(c.continueAsNew())
+	// Several retentions of the first run pass while run 2 is open.
+	<-time.After(4 * time.Second)
+
+	_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: env.Namespace().String(), Stream: owned,
+		Producer: workflowWriter(c.current, 3), Sequence: 1, Records: records("late"),
+	})
+	s.NoError(err)
+	page, err := sc.ReadRecords(
+		s.Context(),
+		&streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned},
+	)
+	s.NoError(err)
+	s.Equal([]string{"late"}, kindsAndTopics(page))
+}
+
+// retentionEnv is a cluster whose namespace retention is 1 s, so a retention delete shows in
+// seconds.
+func (s *StreamTestSuite) retentionEnv() *testcore.TestEnv {
 	env := testcore.NewEnv(s.T(),
 		testcore.WithDedicatedCluster(),
 		testcore.WithDynamicConfig(stream.Enabled, true),
@@ -757,37 +1189,201 @@ func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
 		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionLocal, time.Duration(0)),
 		testcore.WithDynamicConfig(dynamicconfig.RetentionTimerJitterDuration, time.Duration(0)),
 	)
-	_, err := env.FrontendClient().UpdateNamespace(s.Context(), &workflowservice.UpdateNamespaceRequest{
-		Namespace: env.Namespace().String(),
-		Config:    &namespacepb.NamespaceConfig{WorkflowExecutionRetentionTtl: durationpb.New(time.Second)},
-	})
+	_, err := env.FrontendClient().UpdateNamespace(s.Context(),
+		&workflowservice.UpdateNamespaceRequest{
+			Namespace: env.Namespace().String(),
+			Config: &namespacepb.NamespaceConfig{
+				WorkflowExecutionRetentionTtl: durationpb.New(time.Second),
+			},
+		})
 	s.NoError(err)
 	// Wait for the namespace cache to see the new retention.
 	<-time.After(2 * testcore.NamespaceCacheRefreshInterval)
+	return env
+}
 
+// activityStream is a Stream of a Standalone Activity's first attempt, with one Record.
+type activityStream struct {
+	ref  *streamservice.StreamRef
+	task *workflowservice.PollActivityTaskQueueResponse
+}
+
+func (s *StreamTestSuite) startActivityStream(
+	env *testcore.TestEnv,
+	retention *durationpb.Duration,
+) activityStream {
+	ctx := s.Context()
+	ns := env.Namespace().String()
+	activityID := "tool-" + uuid.NewString()
+	taskQueue := &taskqueuepb.TaskQueue{
+		Name: "tools-" + uuid.NewString(),
+		Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
+	}
+	started, err := env.FrontendClient().StartActivityExecution(ctx,
+		&workflowservice.StartActivityExecutionRequest{
+			Namespace:           ns,
+			ActivityId:          activityID,
+			ActivityType:        &commonpb.ActivityType{Name: "tool"},
+			Identity:            "test",
+			TaskQueue:           taskQueue,
+			StartToCloseTimeout: durationpb.New(time.Minute),
+		})
+	s.NoError(err)
+	task, err := env.FrontendClient().PollActivityTaskQueue(ctx,
+		&workflowservice.PollActivityTaskQueueRequest{
+			Namespace: ns, TaskQueue: taskQueue, Identity: "test",
+		})
+	s.NoError(err)
+	id := testcore.RandomizeStr("tokens")
+	owned := &streamservice.StreamRef{
+		Id: id, ActivityId: activityID, ActivityRunId: started.GetRunId(),
+	}
+	owner := &streamservice.Producer{
+		Kind: streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY,
+		Id:   "sa:" + activityID + ":" + started.GetRunId(),
+		Epoch: &streamservice.ProducerEpoch{
+			AttemptScheduledTime: task.GetCurrentAttemptScheduledTime(),
+			Attempt:              task.GetAttempt(),
+		},
+	}
+	sc := s.streamClient(env)
+	_, err = sc.CreateStream(ctx, &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Ref: owned, Owner: owner, Retention: retention,
+		TaskToken: task.GetTaskToken(),
+	})
+	s.NoError(err)
+	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: owner, Sequence: 1, Records: records("tokens"),
+		TaskToken: task.GetTaskToken(),
+	})
+	s.NoError(err)
+	return activityStream{ref: owned, task: task}
+}
+
+// completeActivity completes the attempt of an Activity Stream, which closes the Stream.
+func (s *StreamTestSuite) completeActivity(env *testcore.TestEnv, a activityStream) {
+	_, err := env.FrontendClient().RespondActivityTaskCompleted(s.Context(),
+		&workflowservice.RespondActivityTaskCompletedRequest{
+			Namespace: env.Namespace().String(), TaskToken: a.task.GetTaskToken(), Identity: "test",
+		})
+	s.NoError(err)
+}
+
+// A closed Standalone Activity keeps its Streams readable for their Retention, so the namespace
+// retention can't delete them with the Activity.
+func (s *StreamTestSuite) TestActivityStreamOutlivesTheRetentionOfItsActivity() {
+	env := s.retentionEnv()
+	a := s.startActivityStream(env, nil)
+	s.completeActivity(env, a)
+	// Several namespace retentions pass after the Activity's end.
+	<-time.After(4 * time.Second)
+
+	page, err := s.streamClient(env).ReadRecords(s.Context(),
+		&streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: a.ref})
+	s.NoError(err)
+	s.Equal([]string{"tokens", "close"}, kindsAndTopics(page))
+}
+
+// A closed Activity's Stream expires on its own timer, and then the namespace retention deletes
+// the Activity, though nobody reads the Stream.
+func (s *StreamTestSuite) TestClosedActivityIsDeletedAfterItsStreamExpires() {
+	env := s.retentionEnv()
+	a := s.startActivityStream(env, durationpb.New(time.Second))
+	s.completeActivity(env, a)
+
+	s.AwaitTrue(func() bool {
+		_, err := env.FrontendClient().DescribeActivityExecution(s.Context(),
+			&workflowservice.DescribeActivityExecutionRequest{
+				Namespace:  env.Namespace().String(),
+				ActivityId: a.ref.GetActivityId(),
+				RunId:      a.ref.GetActivityRunId(),
+			})
+		var notFound *serviceerror.NotFound
+		return errors.As(err, &notFound)
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+// A chain's first run keeps its Streams after it continues as new. Their tasks still run there,
+// so an unread closed Stream expires, and then the namespace retention deletes the first run.
+func (s *StreamTestSuite) TestUnreadFirstRunIsDeletedAfterItsStreamExpires() {
+	env := s.retentionEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	first := c.run.GetRunID()
+	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: first}
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+		Owner: workflowWriter(first, 3), CloseWithRun: true,
+	})
+	s.NoError(err)
+	c.respond(c.continueAsNew())
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.current, "stop"))
+
+	s.AwaitTrue(func() bool {
+		_, err := env.AdminClient().DescribeMutableState(s.Context(),
+			&adminservice.DescribeMutableStateRequest{
+				Namespace: ns,
+				Execution: &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: first},
+				Archetype: chasm.WorkflowArchetype,
+			})
+		var notFound *serviceerror.NotFound
+		return errors.As(err, &notFound)
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+// A wake on a Stream of a first run that continued as new ends at its wait, since the Stream's
+// tasks run under the closed run.
+func (s *StreamTestSuite) TestWakeInAClosedFirstRunEndsAtItsWait() {
+	env := s.newEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
 	owned := s.closeWithRun(sc, env, c)
-	c.respond(&commandpb.Command{
-		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
-		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
-			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.ContinueAsNewWorkflowExecutionCommandAttributes{
-				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
-				TaskQueue:    &taskqueuepb.TaskQueue{Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL},
-			},
-		},
-	})
-	// Several retentions of the first run pass while run 2 is open.
-	<-time.After(4 * time.Second)
+	c.respond(c.continueAsNew())
 
-	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-		Namespace: env.Namespace().String(), Stream: owned,
-		Producer: workflowWriter(c.current, 3), Sequence: 1, Records: records("late"),
+	reader := s.newCaller(env)
+	var woke streamservice.ReadRecordsResponse
+	failure, started := reader.outcome(reader.schedule(streamOp{"ReadRecords",
+		&streamservice.ReadRecordsRequest{
+			Stream: owned, WakeOnly: true, Wait: durationpb.New(2 * time.Second),
+		}})[0], &woke)
+	s.Nil(failure)
+	s.True(started)
+	s.Empty(woke.GetRecords())
+	s.False(woke.GetDone())
+}
+
+// The readers check runs in a first run that continued as new, so the floor of a reader that
+// closed is dropped, and the Retention trims its range.
+func (s *StreamTestSuite) TestReadersCheckRunsInAClosedFirstRun() {
+	env := s.newEnv(testcore.WithDynamicConfig(stream.ReaderCheckInterval, time.Second))
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	readerRun := s.newCaller(env).run
+	owned, appended := s.createWithRetention(sc, env, c)
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned},
+		readerLink(env, readerRun))
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(page))
+	c.respond(c.continueAsNew())
+
+	// Past the Retention, the floor still keeps the range.
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The Retention runs on real time.
+	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: owned, ToOffset: page.GetNextOffset(),
 	})
-	s.NoError(err)
-	page, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: owned})
-	s.NoError(err)
-	s.Equal([]string{"late"}, kindsAndTopics(page))
+	s.Nil(failure)
+	s.Equal(page.GetRecords(), again.GetRecords())
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), readerRun.GetID(),
+		readerRun.GetRunID(), "reader done"))
+
+	s.AwaitTrue(func() bool {
+		_, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+			Stream: owned, FromOffset: appended.GetFirstOffset(),
+		})
+		return failure != nil && causeType(failure) == stream.ReasonExpired
+	}, 10*time.Second, 200*time.Millisecond)
 }
 
 // An append that names a Workflow Stream by its bare id, or a Stream that doesn't exist, fails.
@@ -816,7 +1412,7 @@ func (s *StreamTestSuite) TestAppendToAStreamThatIsNotThereFails() {
 	s.Empty(page.GetRecords())
 }
 
-// A Workflow Stream that no Workflow reads trims past the size cap, so its writes go on.
+// A Workflow Stream that no Workflow reads trims past the size cap, so its writes don't fail.
 func (s *StreamTestSuite) TestWorkflowStreamWithNoReaderTrimsPastTheCap() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -826,7 +1422,9 @@ func (s *StreamTestSuite) TestWorkflowStreamWithNoReaderTrimsPastTheCap() {
 	var first int64
 	for sequence := int64(1); sequence <= 5; sequence++ {
 		resp, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-			Namespace: env.Namespace().String(), Stream: owned, Producer: workflowWriter(c.run.GetRunID(), 3),
+			Namespace: env.Namespace().
+				String(),
+			Stream: owned, Producer: workflowWriter(c.run.GetRunID(), 3),
 			Sequence: sequence, Records: []*streamservice.AppendRecord{
 				{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 1024*1024)}},
 			},
@@ -840,7 +1438,10 @@ func (s *StreamTestSuite) TestWorkflowStreamWithNoReaderTrimsPastTheCap() {
 	_, err := sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned, FromOffset: first,
 	})
-	s.Equal(stream.ReasonExpired, status.Convert(err).Details()[0].(*streamservice.StreamErrorDetails).GetReason())
+	s.Equal(
+		stream.ReasonExpired,
+		status.Convert(err).Details()[0].(*streamservice.StreamErrorDetails).GetReason(),
+	)
 }
 
 // The range that an open Workflow run read stays past the Retention, so its replay reads the same
@@ -851,35 +1452,51 @@ func (s *StreamTestSuite) TestWorkflowReaderKeepsItsRangePastTheRetention() {
 	c := s.newCaller(env)
 	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
-	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
+	owned := &streamservice.StreamRef{
+		Id:                  id,
+		WorkflowId:          c.run.GetID(),
+		FirstExecutionRunId: c.run.GetRunID(),
+	}
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
 		Namespace: ns, StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
 		Owner: workflowWriter(c.run.GetRunID(), 3),
 	})
 	s.NoError(err)
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-		Namespace: ns, Stream: owned, Producer: clientProducer(), Sequence: 1, Records: records("a"),
+		Namespace: ns, Stream: owned, Producer: clientProducer(), Sequence: 1,
+		Records: records("a"),
 	})
 	s.NoError(err)
 
 	readerRun := s.newCaller(env).run
-	reader := &commonpb.Link{Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
-		Namespace: ns, WorkflowId: readerRun.GetID(), RunId: readerRun.GetRunID(),
-	}}}
+	reader := &commonpb.Link{
+		Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
+			Namespace: ns, WorkflowId: readerRun.GetID(), RunId: readerRun.GetRunID(),
+		}},
+	}
 	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned}, reader)
 	s.Nil(failure)
 	s.Equal([]string{"a"}, kindsAndTopics(page))
 
 	// Past the Retention, and past a reader check, the replay reads the same page.
 	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention and the check run on real time.
-	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, ToOffset: page.GetNextOffset()})
+	again, failure := s.directRead(
+		env,
+		&streamservice.ReadRecordsRequest{Stream: owned, ToOffset: page.GetNextOffset()},
+	)
 	s.Nil(failure)
 	s.Equal(page.GetRecords(), again.GetRecords())
 	s.Equal(page.GetNextOffset(), again.GetNextOffset())
 
-	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), readerRun.GetID(), readerRun.GetRunID(), "reader done"))
+	s.NoError(
+		env.SdkClient().
+			TerminateWorkflow(s.Context(), readerRun.GetID(), readerRun.GetRunID(), "reader done"),
+	)
 	s.AwaitTrue(func() bool {
-		_, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()})
+		_, failure := s.directRead(
+			env,
+			&streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()},
+		)
 		return failure != nil && causeType(failure) == stream.ReasonExpired
 	}, 10*time.Second, 200*time.Millisecond)
 }
@@ -891,14 +1508,19 @@ func (s *StreamTestSuite) TestReadOfADroppedRangeFailsAsExpired() {
 	sc := s.streamClient(env)
 	ns := env.Namespace().String()
 	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
 	s.NoError(err)
 
 	var first int64
 	for sequence := int64(1); sequence <= 3; sequence++ {
 		resp, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: sequence,
-			Records: []*streamservice.AppendRecord{{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 1536*1024)}}},
+			Records: []*streamservice.AppendRecord{
+				{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 1536*1024)}},
+			},
 		})
 		s.NoError(err)
 		if first == 0 {
@@ -906,13 +1528,19 @@ func (s *StreamTestSuite) TestReadOfADroppedRangeFailsAsExpired() {
 		}
 	}
 
-	_, err = sc.ReadRecords(s.Context(), &streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id), FromOffset: first})
+	_, err = sc.ReadRecords(
+		s.Context(),
+		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: ref(id), FromOffset: first},
+	)
 	st := status.Convert(err)
 	s.Equal(codes.NotFound, st.Code())
 	s.Equal(stream.ReasonExpired, st.Details()[0].(*streamservice.StreamErrorDetails).GetReason())
 
 	// A direct page answers the reason in its operation failure.
-	_, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(id), FromOffset: first})
+	_, failure := s.directRead(
+		env,
+		&streamservice.ReadRecordsRequest{Stream: ref(id), FromOffset: first},
+	)
 	s.Equal(stream.ReasonExpired, causeType(failure))
 }
 
@@ -922,7 +1550,10 @@ func (s *StreamTestSuite) TestDirectReadErrorsKeepTheirReason() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
 	id := testcore.RandomizeStr("chat")
-	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: env.Namespace().String(), StreamId: id})
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: env.Namespace().String(), StreamId: id},
+	)
 	s.NoError(err)
 
 	for reason, req := range map[string]*streamservice.ReadRecordsRequest{
@@ -943,14 +1574,20 @@ func (s *StreamTestSuite) createWithRetention(
 	c *streamCaller,
 ) (*streamservice.StreamRef, *streamservice.AppendRecordsResponse) {
 	id := testcore.RandomizeStr("chat")
-	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID()}
+	owned := &streamservice.StreamRef{
+		Id:                  id,
+		WorkflowId:          c.run.GetID(),
+		FirstExecutionRunId: c.run.GetRunID(),
+	}
+	ns := env.Namespace().String()
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
-		Namespace: env.Namespace().String(), StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+		Namespace: ns, StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
 		Owner: workflowWriter(c.run.GetRunID(), 3),
 	})
 	s.NoError(err)
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-		Namespace: env.Namespace().String(), Stream: owned, Producer: clientProducer(), Sequence: 1, Records: records("a"),
+		Namespace: ns, Stream: owned, Producer: clientProducer(), Sequence: 1,
+		Records: records("a"),
 	})
 	s.NoError(err)
 	return owned, appended
@@ -965,13 +1602,19 @@ func (s *StreamTestSuite) TestWorkflowWakeKeepsItsFloor() {
 
 	reader := s.newCaller(env)
 	var woke streamservice.ReadRecordsResponse
-	failure, _ := reader.outcome(reader.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
-		Stream: owned, WakeOnly: true,
-	}})[0], &woke)
+	failure, _ := reader.outcome(
+		reader.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+			Stream: owned, WakeOnly: true,
+		}})[0],
+		&woke,
+	)
 	s.Nil(failure)
 
 	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention runs on real time.
-	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: woke.GetNextOffset()})
+	page, failure := s.directRead(
+		env,
+		&streamservice.ReadRecordsRequest{Stream: owned, FromOffset: woke.GetNextOffset()},
+	)
 	s.Nil(failure)
 	s.Equal([]string{"a"}, kindsAndTopics(page))
 }
@@ -982,15 +1625,20 @@ func (s *StreamTestSuite) TestReadLinkToNoRunKeepsNoFloor() {
 	sc := s.streamClient(env)
 	owned, appended := s.createWithRetention(sc, env, s.newCaller(env))
 
-	forged := &commonpb.Link{Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
-		Namespace: env.Namespace().String(), WorkflowId: "nobody", RunId: uuid.NewString(),
-	}}}
+	forged := &commonpb.Link{
+		Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
+			Namespace: env.Namespace().String(), WorkflowId: "nobody", RunId: uuid.NewString(),
+		}},
+	}
 	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned}, forged)
 	s.Nil(failure)
 	s.Equal([]string{"a"}, kindsAndTopics(page))
 
 	time.Sleep(3 * time.Second) //nolint:forbidigo // The Retention runs on real time.
-	_, failure = s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()})
+	_, failure = s.directRead(
+		env,
+		&streamservice.ReadRecordsRequest{Stream: owned, FromOffset: appended.GetFirstOffset()},
+	)
 	s.Equal(stream.ReasonExpired, causeType(failure))
 }
 
@@ -1001,16 +1649,21 @@ func (s *StreamTestSuite) TestDirectReadPastTheReaderCapIsResourceExhausted() {
 	owned, _ := s.createWithRetention(sc, env, s.newCaller(env))
 	reader := s.newCaller(env).run
 
-	_, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
-		Namespace: env.Namespace().String(),
-		Endpoint:  commonnexus.SystemEndpoint,
-		Service:   stream.ServiceName,
-		Operation: "ReadRecords",
-		Input:     payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{Stream: owned}),
-		Links: []*commonpb.Link{{Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
-			Namespace: env.Namespace().String(), WorkflowId: reader.GetID(), RunId: reader.GetRunID(),
-		}}}},
-	})
+	_, err := env.FrontendClient().
+		StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
+			Namespace: env.Namespace().String(),
+			Endpoint:  commonnexus.SystemEndpoint,
+			Service:   stream.ServiceName,
+			Operation: "ReadRecords",
+			Input:     payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{Stream: owned}),
+			Links: []*commonpb.Link{
+				{Variant: &commonpb.Link_WorkflowEvent_{WorkflowEvent: &commonpb.Link_WorkflowEvent{
+					Namespace: env.Namespace().
+						String(),
+					WorkflowId: reader.GetID(), RunId: reader.GetRunID(),
+				}}},
+			},
+		})
 	var exhausted *serviceerror.ResourceExhausted
 	s.ErrorAs(err, &exhausted)
 	s.Contains(exhausted.Error(), "most Workflow readers")
@@ -1048,6 +1701,53 @@ func (s *StreamTestSuite) TestReaderThatKeepsHalfTheCapIsToldToContinueAsNew() {
 	page, failure = s.directRead(env, next, reader)
 	s.Nil(failure)
 	s.True(page.GetContinueAsNewSuggested())
+}
+
+// A Workflow reader of a client's Stream keeps its floor too. An append that the size cap would
+// make drop the reader's range fails, and the reader's replay reads the same page.
+func (s *StreamTestSuite) TestWorkflowReaderOfAClientStreamKeepsItsRangePastTheCap() {
+	env := s.newEnv(testcore.WithDynamicConfig(stream.MaxStoredBytes, 4096))
+	sc := s.streamClient(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(
+		s.Context(),
+		&streamservice.CreateStreamRequest{Namespace: ns, StreamId: id},
+	)
+	s.NoError(err)
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1,
+		Records: records("a"),
+	})
+	s.NoError(err)
+
+	reader := readerLink(env, s.newCaller(env).run)
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(id)}, reader)
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(page))
+
+	bigAppend := func(sequence int64) error {
+		_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: sequence,
+			Records: []*streamservice.AppendRecord{
+				{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 2500)}},
+			},
+		})
+		return err
+	}
+	s.NoError(bigAppend(2))
+	s.Equal(stream.ReasonTooLarge, reasonOf(bigAppend(3)))
+
+	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: ref(id), ToOffset: page.GetNextOffset(),
+	})
+	s.Nil(failure)
+	s.Equal(page.GetRecords(), again.GetRecords())
+	next, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: ref(id), FromOffset: page.GetNextOffset(),
+	}, reader)
+	s.Nil(failure)
+	s.True(next.GetContinueAsNewSuggested())
 }
 
 // A reset run's first live page gives the lowest offset its copied reads read, so its floor
@@ -1099,8 +1799,8 @@ func localActivityWriter(runID string, started int64) *streamservice.Producer {
 	}
 }
 
-// A caller with write access can't close a Workflow Stream, write as a run outside its chain,
-// fence a run it doesn't follow, or put a Stream into another Workflow's first run.
+// A caller with write access can't close a Workflow Stream, write or fence as another run, or
+// create a Workflow Stream outside its chain. A Local Activity of the chain can't close it.
 func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -1116,6 +1816,11 @@ func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 	})
 	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a client's close")
 
+	_, err = sc.CloseStream(ctx, &streamservice.CloseStreamRequest{
+		Namespace: ns, Stream: owned, Producer: localActivityWriter(run, 3),
+	})
+	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a Local Activity's close")
+
 	stranger := s.newCaller(env).run.GetRunID()
 	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
 		Namespace: ns, Stream: owned, Producer: localActivityWriter(stranger, 3), Sequence: 1,
@@ -1130,6 +1835,10 @@ func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a withdraw_run of a run it doesn't follow")
 
 	id := testcore.RandomizeStr("chat")
+	_, err = sc.CreateStream(ctx, &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Owner: workflowWriter(run, 3),
+	})
+	s.Equal(stream.ReasonInvalid, reasonOf(err), "a Workflow owner with no Workflow ref")
 	inChain := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: run}
 	for name, owner := range map[string]*streamservice.Producer{
 		"a create from another chain": workflowWriter(stranger, 3),

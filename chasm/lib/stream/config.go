@@ -31,7 +31,8 @@ Stream that a client or an Activity created lives one Retention after its last w
 		"stream.maxStoredBytes",
 		4*1024*1024,
 		`The most Record bytes a Stream keeps. The Records are in the Stream's mutable state, so an
-append past the cap drops the oldest batches, as the Retention does.`,
+append past the cap drops the oldest batches, as the Retention does. The append fails when an open
+Workflow reader still needs them.`,
 	)
 
 	MaxWorkflowStateBytes = dynamicconfig.NewNamespaceIntSetting(
@@ -57,15 +58,15 @@ retryable error, so the caller backs off.`,
 	MaxWorkflowReaders = dynamicconfig.NewNamespaceIntSetting(
 		"stream.maxWorkflowReaders",
 		100,
-		`The most open Workflow runs whose read floor one Workflow Stream keeps. A page of a new
-reader past the cap fails with a retryable error, so the caller backs off.`,
+		`The most open Workflow runs whose read floor one Stream keeps. A page of a new reader past
+the cap fails with a retryable error, so the caller backs off.`,
 	)
 
 	ReaderCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
 		"stream.readerCheckInterval",
 		5*time.Minute,
-		`How often a Workflow Stream with read floors checks whether their runs are still open. The
-floor of a closed run goes at the next check.`,
+		`How often a Stream with read floors checks whether their runs are still open. The floor of
+a closed run goes at the next check.`,
 	)
 
 	MaxWakeWait = dynamicconfig.NewNamespaceDurationSetting(

@@ -17,8 +17,8 @@ import (
 )
 
 // StartNexusOperation runs one operation of the System Nexus endpoint for the caller's namespace,
-// as a direct call (temporalio/api#720). It creates no caller-side state and no History event,
-// so a Workflow can read through it with nothing in its History.
+// as a direct call. It creates no caller-side state and no History event, so a Workflow can read
+// through it with nothing in its History.
 func (wh *WorkflowHandler) StartNexusOperation(
 	ctx context.Context,
 	req *workflowservice.StartNexusOperationRequest,
@@ -27,7 +27,9 @@ func (wh *WorkflowHandler) StartNexusOperation(
 		return nil, serviceerror.NewUnimplemented("Direct Nexus calls are disabled")
 	}
 	if req.GetEndpoint() != commonnexus.SystemEndpoint {
-		return nil, serviceerror.NewUnimplemented("Direct Nexus calls serve only the __temporal_system endpoint")
+		return nil, serviceerror.NewUnimplemented(
+			"Direct Nexus calls serve only the __temporal_system endpoint",
+		)
 	}
 	ns, err := wh.namespaceRegistry.GetNamespace(namespace.Name(req.GetNamespace()))
 	if err != nil {
@@ -37,25 +39,33 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	if requestID == "" {
 		requestID = uuid.NewString()
 	}
-	processed, err := wh.registry.NexusEndpointProcessor.ProcessInput(chasm.NexusOperationProcessorContext{
-		Namespace:               ns,
-		RequestID:               requestID,
-		ReserializeInputPayload: true,
-	}, req.GetService(), req.GetOperation(), req.GetInput())
+	processed, err := wh.registry.NexusEndpointProcessor.ProcessInput(
+		chasm.NexusOperationProcessorContext{
+			Namespace:               ns,
+			RequestID:               requestID,
+			ReserializeInputPayload: true,
+		},
+		req.GetService(),
+		req.GetOperation(),
+		req.GetInput(),
+	)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := wh.historyClient.StartNexusOperation(ctx, &historyservice.StartNexusOperationRequest{
-		NamespaceId: ns.ID().String(),
-		ShardId:     processed.RoutingKey.ShardID(wh.config.NumHistoryShards),
-		Request: &nexuspb.StartOperationRequest{
-			Service:   req.GetService(),
-			Operation: req.GetOperation(),
-			Payload:   processed.ReserializedInputPayload,
-			RequestId: requestID,
-			Links:     workflowEventLinks(req.GetLinks(), requestID),
+	resp, err := wh.historyClient.StartNexusOperation(
+		ctx,
+		&historyservice.StartNexusOperationRequest{
+			NamespaceId: ns.ID().String(),
+			ShardId:     processed.RoutingKey.ShardID(wh.config.NumHistoryShards),
+			Request: &nexuspb.StartOperationRequest{
+				Service:   req.GetService(),
+				Operation: req.GetOperation(),
+				Payload:   processed.ReserializedInputPayload,
+				RequestId: requestID,
+				Links:     workflowEventLinks(req.GetLinks(), requestID),
+			},
 		},
-	})
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +73,9 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	case *nexuspb.StartOperationResponse_SyncSuccess:
 		return &workflowservice.StartNexusOperationResponse{
 			Variant: &workflowservice.StartNexusOperationResponse_SyncSuccess_{
-				SyncSuccess: &workflowservice.StartNexusOperationResponse_SyncSuccess{Payload: v.SyncSuccess.GetPayload()},
+				SyncSuccess: &workflowservice.StartNexusOperationResponse_SyncSuccess{
+					Payload: v.SyncSuccess.GetPayload(),
+				},
 			},
 			Links: v.SyncSuccess.GetLinks(),
 		}, nil
@@ -79,7 +91,9 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	case *nexuspb.StartOperationResponse_Failure:
 		return &workflowservice.StartNexusOperationResponse{
 			Variant: &workflowservice.StartNexusOperationResponse_OperationFailure_{
-				OperationFailure: &workflowservice.StartNexusOperationResponse_OperationFailure{Failure: v.Failure},
+				OperationFailure: &workflowservice.StartNexusOperationResponse_OperationFailure{
+					Failure: v.Failure,
+				},
 			},
 		}, nil
 	default:
@@ -87,9 +101,8 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	}
 }
 
-// workflowEventLinks passes on the caller's Workflow links, so an operation knows the reading run.
-// A direct call names no event of its caller, and the Nexus form of a link needs a reference, so a
-// link with none refers to the call's request id.
+// workflowEventLinks gives an operation the caller's Workflow links, so it knows the reading run.
+// The Nexus form of a link needs a reference, so a link with none refers to the call's request id.
 func workflowEventLinks(links []*commonpb.Link, requestID string) []*nexuspb.Link {
 	var out []nexus.Link
 	for _, link := range links {

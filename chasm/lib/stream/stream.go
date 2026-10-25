@@ -27,7 +27,7 @@ const (
 	MaxRecords = 1000
 	// MaxStreamIDBytes is the longest Stream id.
 	MaxStreamIDBytes = 4096
-	// The most entries one page scans, since a Topic filter can skip many.
+	// The most entries a page with Records scans, since a Topic filter can skip many.
 	maxScan = 10 * MaxRecords
 	// An offset is the append time in ms shifted by these bits, plus a sequence, as the Redis
 	// Store packs its entry ids. So the offsets of the two backends sort the same way, and the
@@ -146,6 +146,7 @@ func StartStream(ctx chasm.MutableContext, in CreateInput) (*Stream, error) {
 // Create opens the Stream, idempotently for one Retention.
 func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput, error) {
 	s.applyDue(ctx, in.Limits)
+	s.reopen()
 	retention := in.Request.GetRetention().AsDuration()
 	if retention <= 0 {
 		retention = in.Limits.DefaultRetention
@@ -168,8 +169,11 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 			return CreateOutput{}, NewError(ReasonAlreadyExists,
 				"The Stream exists with the Retention %v", s.GetRetention().AsDuration())
 		}
-		if owned(in.Request.GetOwner()) {
+		// The close check reads the owner, so the owner changes with WorkflowOwned, as the crate
+		// changes both.
+		if owned(in.Request.GetOwner()) && !s.WorkflowOwned {
 			s.WorkflowOwned = true
+			s.Owner = in.Request.GetOwner()
 		}
 		s.withdrawOnCreate(ctx, in.Request)
 		s.finish(ctx, in.Limits)
@@ -183,8 +187,16 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 	}
 }
 
-// owned says whether a create's owner keeps the Stream open past one Retention with no write: a
-// Workflow, or a Standalone Activity, which closes the Stream when it ends.
+// reopen makes an abandoned nested Stream pending again for a create or a wait for the create.
+// Only a Stream of its own has an execution that the caller can replace.
+func (s *Stream) reopen() {
+	if s.Nested && s.Phase == streampb.STREAM_PHASE_ABANDONED {
+		s.Phase = streampb.STREAM_PHASE_PENDING
+	}
+}
+
+// owned says whether a create's owner keeps the Stream open past one Retention with no write. A
+// Workflow and a Standalone Activity do, since each closes its Stream when it ends.
 func owned(owner *streamservice.Producer) bool {
 	kind := owner.GetKind()
 	return kind == streamservice.PRODUCER_KIND_WORKFLOW ||
@@ -199,8 +211,11 @@ type AppendInput struct {
 
 // Append writes one batch of one Producer, with the checks and the withdrawal of the crate's
 // append script in one transition. The same epoch and sequence answers the first offsets
-// again, so a retried batch goes in once.
-func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservice.AppendRecordsResponse, error) {
+// again, so a retried batch is written once.
+func (s *Stream) Append(
+	ctx chasm.MutableContext,
+	in AppendInput,
+) (*streamservice.AppendRecordsResponse, error) {
 	req := in.Request
 	producer := req.GetProducer()
 	if req.GetSequence() < 1 {
@@ -215,30 +230,16 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	}
 	key := producerKey(producer)
 	digest := BatchDigest(req.GetRecords())
-	known := s.producer(ctx, key)
-	if known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) == 0 {
-		if req.GetSequence() == known.GetSequence() {
-			if len(known.GetDigest()) > 0 && !bytes.Equal(known.GetDigest(), digest) {
-				return nil, NewError(ReasonSeqDivergent,
-					"The sequence %d has other content than its batch", req.GetSequence())
-			}
-			return &streamservice.AppendRecordsResponse{FirstOffset: known.GetFirstOffset(), LastOffset: known.GetLastOffset()}, nil
-		}
-		if req.GetSequence() < known.GetSequence() {
-			return nil, NewError(ReasonSequence,
-				"The sequence %d is below the last one, %d", req.GetSequence(), known.GetSequence())
-		}
+	if resp, err := resend(req, s.producer(ctx, key), digest); resp != nil || err != nil {
+		return resp, err
 	}
-	// A Workflow batch with no Records only settles its task facts, which a closed Stream
-	// still takes, as the Superseded Records after the close.
-	deferred := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW && req.GetDeferWithdrawal()
-	settles := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW && len(req.GetRecords()) == 0 && !deferred
+	w := withdrawalOf(req)
+	// A Workflow batch with no Records only settles its task facts. A closed Stream still takes
+	// it, since a Workflow Task that completes after the close can still withdraw Records.
+	settles := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW &&
+		len(req.GetRecords()) == 0 && !w.Defer
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && !settles {
 		return nil, NewError(ReasonClosed, "The Stream is closed")
-	}
-	w := Withdrawal{WithdrawRun: req.GetWithdrawRun(), Defer: deferred}
-	if producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
-		w.PreviousCompleted, w.FailedTasks = req.GetPreviousCompletedTask(), req.GetFailedTasks()
 	}
 	flagged, err := s.admit(ctx, producer, w)
 	if err != nil {
@@ -264,28 +265,76 @@ func (s *Stream) Append(ctx chasm.MutableContext, in AppendInput) (*streamservic
 	if orphans {
 		s.settleOrphans(ctx, producer, orphaned, wrote)
 	}
-	state := &streampb.ProducerState{
+	s.setProducer(ctx, key, &streampb.ProducerState{
 		Epoch:       producer.GetEpoch(),
 		Sequence:    req.GetSequence(),
 		FirstOffset: first,
 		LastOffset:  last,
-		Holds:       s.producer(ctx, key).GetHolds(),
+		Holds:       newHolds(producer, s.producer(ctx, key).GetHolds(), wrote, flagged),
 		Digest:      digest,
-	}
-	if withdrawsEpochs(producer.GetKind()) {
-		if wrote {
-			state.Holds = producer.GetEpoch()
-		} else if flagged {
-			state.Holds = nil
-		}
-	}
-	s.setProducer(ctx, key, state)
+	})
 	if wrote {
 		s.LastWriteTime = timestamppb.New(ctx.Now(s))
 	}
 	s.limitProducers(ctx, in.Limits.MaxProducers)
 	s.finish(ctx, in.Limits)
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
+}
+
+// resend answers a resend of a Producer's last batch with that batch's offsets, and refuses a
+// lower sequence or other content. It answers nil for a new batch.
+func resend(
+	req *streamservice.AppendRecordsRequest,
+	known *streampb.ProducerState,
+	digest []byte,
+) (*streamservice.AppendRecordsResponse, error) {
+	if known == nil || CompareEpochs(req.GetProducer().GetEpoch(), known.GetEpoch()) != 0 {
+		return nil, nil
+	}
+	switch {
+	case req.GetSequence() > known.GetSequence():
+		return nil, nil
+	case req.GetSequence() < known.GetSequence():
+		return nil, NewError(ReasonSequence,
+			"The sequence %d is below the last one, %d", req.GetSequence(), known.GetSequence())
+	case len(known.GetDigest()) > 0 && !bytes.Equal(known.GetDigest(), digest):
+		return nil, NewError(ReasonSeqDivergent,
+			"The sequence %d has other content than its batch", req.GetSequence())
+	default:
+		return &streamservice.AppendRecordsResponse{
+			FirstOffset: known.GetFirstOffset(),
+			LastOffset:  known.GetLastOffset(),
+		}, nil
+	}
+}
+
+// withdrawalOf is what a batch withdraws. Only a Workflow batch knows its Workflow Task facts.
+func withdrawalOf(req *streamservice.AppendRecordsRequest) Withdrawal {
+	w := Withdrawal{WithdrawRun: req.GetWithdrawRun()}
+	if req.GetProducer().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
+		w.Defer = req.GetDeferWithdrawal()
+		w.PreviousCompleted, w.FailedTasks = req.GetPreviousCompletedTask(), req.GetFailedTasks()
+	}
+	return w
+}
+
+// newHolds is the epoch whose Records the Producer's next higher epoch withdraws. A batch with
+// Records holds its own epoch, and a batch that withdrew the held Records holds none.
+func newHolds(
+	producer *streamservice.Producer,
+	held *streamservice.ProducerEpoch,
+	wrote, flagged bool,
+) *streamservice.ProducerEpoch {
+	switch {
+	case !withdrawsEpochs(producer.GetKind()):
+		return held
+	case wrote:
+		return producer.GetEpoch()
+	case flagged:
+		return nil
+	default:
+		return held
+	}
 }
 
 // BatchDigest is the SHA-256 of a batch's content, as the crate and the memory Store compute it.
@@ -317,13 +366,17 @@ func BatchDigest(records []*streamservice.AppendRecord) []byte {
 	return h.Sum(nil)
 }
 
-// batchEntries are the entries of one write: the orphans' Superseded Record, the batch's own
-// Superseded Record, then the Records.
-func batchEntries(req *streamservice.AppendRecordsRequest, w Withdrawal, flagged, orphans bool) []*streamservice.StreamRecord {
+// batchEntries are the entries of one write. The orphans' Superseded Record comes first, then the
+// batch's own Superseded Record, then the Records.
+func batchEntries(
+	req *streamservice.AppendRecordsRequest,
+	w Withdrawal,
+	flagged, orphans bool,
+) []*streamservice.StreamRecord {
 	producer := req.GetProducer()
 	var entries []*streamservice.StreamRecord
-	// The orphans go in an entry of their own, since the batch's first entry may carry its own
-	// Superseded Record.
+	// The orphans get an entry of their own, since the batch may also write its own Superseded
+	// Record.
 	if orphans {
 		entries = append(entries, orphanRecord(req))
 	}
@@ -345,16 +398,30 @@ func batchEntries(req *streamservice.AppendRecordsRequest, w Withdrawal, flagged
 // readers keep their Records, or one that its Workflow can't take.
 func (s *Stream) checkSize(ctx chasm.MutableContext, size int64, limits Limits) error {
 	if size > limits.MaxBatchBytes {
-		return NewError(ReasonTooLarge, "The batch has %d bytes, more than %d", size, limits.MaxBatchBytes)
+		return NewError(
+			ReasonTooLarge,
+			"The batch has %d bytes, more than %d",
+			size,
+			limits.MaxBatchBytes,
+		)
 	}
 	if kept := s.keptBytes(); kept+size > limits.MaxStoredBytes {
-		return NewError(ReasonTooLarge, "The Stream keeps %d bytes for its readers, and the cap is %d", kept, limits.MaxStoredBytes)
+		return NewError(
+			ReasonTooLarge,
+			"The Stream keeps %d bytes for its readers, and the cap is %d",
+			kept,
+			limits.MaxStoredBytes,
+		)
 	}
 	// The Records of a Workflow Stream are in the Workflow's mutable state, which terminates the
 	// run past its own limit, so the write fails first.
 	if limits.MaxWorkflowStateBytes > 0 &&
 		int64(ctx.ExecutionInfo().ApproximateStateSize)+size > limits.MaxWorkflowStateBytes {
-		return NewError(ReasonTooLarge, "The Workflow state would pass %d bytes", limits.MaxWorkflowStateBytes)
+		return NewError(
+			ReasonTooLarge,
+			"The Workflow state would pass %d bytes",
+			limits.MaxWorkflowStateBytes,
+		)
 	}
 	return nil
 }
@@ -363,11 +430,18 @@ func (s *Stream) checkSize(ctx chasm.MutableContext, size int64, limits Limits) 
 type CloseInput struct {
 	Request *streamservice.CloseStreamRequest
 	Limits  Limits
+	// Command is a Workflow run's System Nexus close, which the server runs once the Workflow
+	// Task that issued it commits. Its Producer has no epoch, so it fences nothing and withdraws
+	// nothing.
+	Command bool
 }
 
 // Close writes the close Record, with the Producer checks and the withdrawal of a batch. A
 // second close does nothing.
-func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.CloseStreamResponse, error) {
+func (s *Stream) Close(
+	ctx chasm.MutableContext,
+	in CloseInput,
+) (*streamservice.CloseStreamResponse, error) {
 	req := in.Request
 	producer := req.GetProducer()
 	status, err := callerStatus(req)
@@ -375,24 +449,38 @@ func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.
 		return nil, err
 	}
 	s.applyDue(ctx, in.Limits)
+	// The owner check goes first, as in the crate, so a second close succeeds only for a caller
+	// that may close.
+	if s.Exists() {
+		if err := s.checkCloser(producer); err != nil {
+			return nil, err
+		}
+	}
 	if s.Phase == streampb.STREAM_PHASE_CLOSED {
 		return &streamservice.CloseStreamResponse{}, nil
 	}
 	if err := s.writable(); err != nil {
 		return nil, err
 	}
-	if err := s.checkCloser(producer); err != nil {
-		return nil, err
+	if in.Command {
+		if s.runFenced(producer.GetRunId()) {
+			return nil, NewError(ReasonFenced, "A Workflow retry withdrew the run of the Producer")
+		}
+	} else {
+		w := Withdrawal{
+			PreviousCompleted: req.GetPreviousCompletedTask(),
+			FailedTasks:       req.GetFailedTasks(),
+			WithdrawRun:       req.GetWithdrawRun(),
+		}
+		flagged, err := s.admit(ctx, producer, w)
+		if err != nil {
+			return nil, err
+		}
+		if flagged {
+			s.write(ctx, []*streamservice.StreamRecord{supersededRecord(producer, w)})
+		}
+		s.settle(ctx, producer, w, false)
 	}
-	w := Withdrawal{PreviousCompleted: req.GetPreviousCompletedTask(), FailedTasks: req.GetFailedTasks(), WithdrawRun: req.GetWithdrawRun()}
-	flagged, err := s.admit(ctx, producer, w)
-	if err != nil {
-		return nil, err
-	}
-	if flagged {
-		s.write(ctx, []*streamservice.StreamRecord{supersededRecord(producer, w)})
-	}
-	s.settle(ctx, producer, w, false)
 	s.close(ctx, producer, req.GetResult(), req.GetFailure(), status)
 	s.finish(ctx, in.Limits)
 	return &streamservice.CloseStreamResponse{}, nil
@@ -452,17 +540,28 @@ func (s *Stream) writable() error {
 	}
 }
 
-// withdrawOnCreate applies a retry run's withdraw_run at its first create.
-func (s *Stream) withdrawOnCreate(ctx chasm.MutableContext, req *streamservice.CreateStreamRequest) {
-	w := Withdrawal{WithdrawRun: req.GetWithdrawRun()}
-	if s.withdrawsRun(ctx, w.WithdrawRun) {
+// withdrawOnCreate applies a retry run's withdraw_run at its first create. A create has no task
+// facts, so it withdraws no task, and its Superseded Record has no epoch, as the crate's.
+func (s *Stream) withdrawOnCreate(
+	ctx chasm.MutableContext,
+	req *streamservice.CreateStreamRequest,
+) {
+	run := req.GetWithdrawRun()
+	if run == "" || s.runFenced(run) {
+		return
+	}
+	if s.withdrawsRun(ctx, run) {
+		w := Withdrawal{WithdrawRun: run, Defer: true}
 		s.write(ctx, []*streamservice.StreamRecord{supersededRecord(req.GetOwner(), w)})
 	}
-	s.settle(ctx, req.GetOwner(), w, false)
+	s.FencedRuns = append(s.FencedRuns, run)
 }
 
 // write gives the entries their offsets and stores them as one batch.
-func (s *Stream) write(ctx chasm.MutableContext, entries []*streamservice.StreamRecord) (first int64, last int64) {
+func (s *Stream) write(
+	ctx chasm.MutableContext,
+	entries []*streamservice.StreamRecord,
+) (first int64, last int64) {
 	if len(entries) == 0 {
 		return 0, 0
 	}
@@ -478,7 +577,10 @@ func (s *Stream) write(ctx chasm.MutableContext, entries []*streamservice.Stream
 	}
 	s.Batches[first] = chasm.NewDataField(ctx, batch)
 	size := int64(proto.Size(batch))
-	s.Index = append(s.Index, &streampb.BatchInfo{FirstOffset: first, LastOffset: last, Bytes: size})
+	s.Index = append(
+		s.Index,
+		&streampb.BatchInfo{FirstOffset: first, LastOffset: last, Bytes: size},
+	)
 	s.StoredBytes += size
 	s.NewestOffset = last
 	return first, last
@@ -578,11 +680,12 @@ func (s *Stream) floor() (int64, bool) {
 	return s.Floor, s.Floor > 0 && len(s.Readers) > 0
 }
 
-// retainedFrom is the offset below which the Retention hides the Records at now. A Workflow Stream
-// hides none that it still stores, so a read from the start begins at the same offset on replay.
+// retainedFrom is the offset below which the Retention hides the Records at now. A nested Stream
+// or one with floors hides none it stores, so a replay of a read from the start starts the same.
 func (s *Stream) retainedFrom(now time.Time) int64 {
 	retained := s.TrimmedOffset + 1
-	if retention := s.GetRetention().AsDuration(); retention > 0 && !s.Nested {
+	retention := s.GetRetention().AsDuration()
+	if retention > 0 && !s.Nested && len(s.Readers) == 0 {
 		if cutMs := now.Add(-retention).UnixMilli(); cutMs > 0 {
 			retained = max(retained, cutMs<<seqBits)
 		}
@@ -596,7 +699,8 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 	switch s.Phase {
 	case streampb.STREAM_PHASE_PENDING:
 		s.resolveReads(ctx, func(read *ParkedRead) (readOutcome, bool) {
-			if deadline := read.GetCreateDeadline(); deadline != nil && !deadline.AsTime().After(now) {
+			if deadline := read.GetCreateDeadline(); deadline != nil &&
+				!deadline.AsTime().After(now) {
 				return readOutcome{err: notFound()}, true
 			}
 			return readOutcome{}, false
@@ -610,7 +714,8 @@ func (s *Stream) applyDue(ctx chasm.MutableContext, limits Limits) {
 	default:
 	}
 	// A reader's replay needs its Records, so the Stream expires only when it has no reader.
-	if s.Phase == streampb.STREAM_PHASE_CLOSED && !s.closedExpiryAt().After(now) && len(s.Readers) == 0 {
+	if s.Phase == streampb.STREAM_PHASE_CLOSED && !s.closedExpiryAt().After(now) &&
+		len(s.Readers) == 0 {
 		s.expire(ctx)
 		return
 	}
@@ -679,17 +784,21 @@ func (s *Stream) nextDeadline(ctx chasm.Context, limits Limits) (time.Time, bool
 		return deadline, false
 	}
 	for _, field := range s.Reads {
-		if read, ok := field.TryGet(ctx); ok && !read.GetResolved() && read.GetWaitDeadline() != nil {
+		if read, ok := field.TryGet(ctx); ok && !read.GetResolved() &&
+			read.GetWaitDeadline() != nil {
 			consider(read.GetWaitDeadline().AsTime())
 		}
 	}
-	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 && !s.kept(s.Index[0]) {
-		consider(time.UnixMilli(s.Index[0].GetLastOffset() >> seqBits).Add(retention + time.Millisecond))
+	if retention := s.GetRetention().AsDuration(); retention > 0 && len(s.Index) > 0 &&
+		!s.kept(s.Index[0]) {
+		consider(
+			time.UnixMilli(s.Index[0].GetLastOffset() >> seqBits).Add(retention + time.Millisecond),
+		)
 	}
 	return deadline, found
 }
 
-// finish wakes the reads that can answer now, drops the reads whose answer went out, applies
+// finish wakes the reads that can answer now, drops the reads that have answered, applies
 // the size cap and arms the timer for the next deadline.
 func (s *Stream) finish(ctx chasm.MutableContext, limits Limits) {
 	s.limitStored(limits.MaxStoredBytes)
@@ -698,7 +807,7 @@ func (s *Stream) finish(ctx chasm.MutableContext, limits Limits) {
 			return s.wake(ctx, read, limits)
 		})
 	} else if s.waitingReads(ctx) == 0 {
-		// No read waits for the create any more, so the execution can go.
+		// No read waits for the create any more, so the Stream is done.
 		s.Phase = streampb.STREAM_PHASE_ABANDONED
 	}
 	s.pruneReads(ctx)
@@ -719,7 +828,10 @@ func (s *Stream) finish(ctx chasm.MutableContext, limits Limits) {
 
 // producerKey keys the Producer table by kind, id and run.
 func producerKey(producer *streamservice.Producer) string {
-	return strings.Join([]string{producer.GetKind().String(), producer.GetId(), producer.GetRunId()}, "|")
+	return strings.Join(
+		[]string{producer.GetKind().String(), producer.GetId(), producer.GetRunId()},
+		"|",
+	)
 }
 
 // CompareEpochs compares two epochs field by field, in the order of the crate. The order is the
