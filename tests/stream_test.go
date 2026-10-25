@@ -839,6 +839,54 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 	s.Equal(streamservice.CLOSE_STATUS_COMPLETED, closed.GetCloseStatus())
 }
 
+// A reset to an earlier run of a continued-as-new chain terminates the current run, but the
+// chain goes on in the reset run, so its Streams stay open.
+func (s *StreamTestSuite) TestResetToAnEarlierRunKeepsTheStreamOpen() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	owned := s.closeWithRun(sc, env, c)
+	first := c.run.GetRunID()
+	c.respond(&commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
+			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.
+				ContinueAsNewWorkflowExecutionCommandAttributes{
+				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
+				TaskQueue: &taskqueuepb.TaskQueue{
+					Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
+				},
+			},
+		},
+	})
+	s.NotEqual(first, c.current)
+
+	reset, err := env.FrontendClient().ResetWorkflowExecution(s.Context(),
+		&workflowservice.ResetWorkflowExecutionRequest{
+			Namespace:                 ns,
+			WorkflowExecution:         &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: first},
+			Reason:                    "test",
+			WorkflowTaskFinishEventId: 4,
+			RequestId:                 uuid.NewString(),
+		})
+	s.NoError(err)
+	s.T().Cleanup(func() {
+		_ = env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), reset.GetRunId(), "test cleanup")
+	})
+
+	// The chain's end would close the Stream through a task on the terminated run.
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The close task runs on real time.
+	described, err := sc.DescribeStream(s.Context(),
+		&streamservice.DescribeStreamRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+
+	// The reset run's end is the chain's end.
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), reset.GetRunId(), "stop"))
+	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, s.readClose(sc, env, owned).GetCloseStatus())
+}
+
 // directRead reads through the direct System Nexus call, which adds no History event.
 // A link names the reading Workflow run.
 func (s *StreamTestSuite) directRead(
