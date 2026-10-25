@@ -136,7 +136,8 @@ func (s *Stream) withdrawsRun(ctx chasm.Context, run string) bool {
 func supersededRecord(producer *streamservice.Producer, w Withdrawal) *streamservice.StreamRecord {
 	epoch := producer.GetEpoch()
 	if w.Defer {
-		// A deferred batch withdraws only the retry run's previous run, so no epoch goes with it.
+		// A deferred batch or a create withdraws only the retry run's previous run, so no epoch
+		// goes with it.
 		epoch = nil
 	}
 	return &streamservice.StreamRecord{

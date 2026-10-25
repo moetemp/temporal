@@ -469,13 +469,18 @@ func (s *Stream) writable() error {
 	}
 }
 
-// withdrawOnCreate applies a retry run's withdraw_run at its first create.
+// withdrawOnCreate applies a retry run's withdraw_run at its first create. A create has no task
+// facts, so it withdraws no task, and its Superseded Record has no epoch, as the crate's.
 func (s *Stream) withdrawOnCreate(ctx chasm.MutableContext, req *streamservice.CreateStreamRequest) {
-	w := Withdrawal{WithdrawRun: req.GetWithdrawRun()}
-	if s.withdrawsRun(ctx, w.WithdrawRun) {
+	run := req.GetWithdrawRun()
+	if run == "" || s.runFenced(run) {
+		return
+	}
+	if s.withdrawsRun(ctx, run) {
+		w := Withdrawal{WithdrawRun: run, Defer: true}
 		s.write(ctx, []*streamservice.StreamRecord{supersededRecord(req.GetOwner(), w)})
 	}
-	s.settle(ctx, req.GetOwner(), w, false)
+	s.FencedRuns = append(s.FencedRuns, run)
 }
 
 // write gives the entries their offsets and stores them as one batch.

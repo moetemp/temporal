@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -320,6 +321,61 @@ func TestWorkflowCreateTakesOverTheOwner(t *testing.T) {
 
 	require.ErrorContains(t, h.close("done"), ReasonNotOwner)
 	require.NoError(t, h.commandClose("run", "done"))
+}
+
+// A create has no task facts. A create again in a later task of the same run withdraws none of
+// the run's Records, so a last read gives them as a plain read does.
+func TestCreateAgainKeepsTheRunsRecordsInLast(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: workflowProducer(3),
+	})
+	require.NoError(t, err)
+	for i, task := range []int64{3, 7} {
+		call := localActivityProducer(task)
+		call.Id = fmt.Sprintf("la:run:%d", task)
+		_, err := h.append(call, int64(i+1), "t")
+		require.NoError(t, err)
+	}
+	_, err = h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: workflowProducer(12),
+	})
+	require.NoError(t, err)
+
+	plain, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"t", "t"}, topics(plain))
+	last, err := chasm.ReadComponent(h.ctx, h.ref(), (*Stream).Last,
+		&streamservice.ReadRecordsRequest{Last: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"t", "t"}, topics(last))
+}
+
+// A retry run's create withdraws its previous run with a Superseded Record that has no epoch, as
+// the crate's, so a reader withdraws no task of the retry run.
+func TestCreateWithdrawsThePreviousRunWithNoEpoch(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: workflowProducer(1),
+	})
+	require.NoError(t, err)
+	_, err = h.append(workflowProducer(3), 1, "a")
+	require.NoError(t, err)
+	retry := workflowProducer(5)
+	retry.Id, retry.RunId = "wf:retry", "retry"
+	_, err = h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: retry, WithdrawRun: "run",
+	})
+	require.NoError(t, err)
+
+	read, err := h.read(&streamservice.ReadRecordsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "superseded"}, topics(read))
+	supersession := read.GetRecords()[1].GetSupersession()
+	require.Nil(t, supersession.GetEpoch())
+	require.Equal(t, "run", supersession.GetWithdrawRun())
+	_, err = h.append(workflowProducer(9), 2, "late")
+	require.ErrorContains(t, err, ReasonFenced)
 }
 
 // A second close does nothing, but only for a caller that may close the Stream.
