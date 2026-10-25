@@ -16,6 +16,8 @@ import (
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/server/api/adminservice/v1"
+	"go.temporal.io/server/chasm"
 	"go.temporal.io/server/chasm/lib/stream"
 	"go.temporal.io/server/common/dynamicconfig"
 	commonnexus "go.temporal.io/server/common/nexus"
@@ -885,6 +887,41 @@ func (s *StreamTestSuite) TestResetToAnEarlierRunKeepsTheStreamOpen() {
 	// The reset run's end is the chain's end.
 	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), reset.GetRunId(), "stop"))
 	s.Equal(streamservice.CLOSE_STATUS_TERMINATED, s.readClose(sc, env, owned).GetCloseStatus())
+}
+
+// A chain whose first run has no Stream ends with no write to that run.
+func (s *StreamTestSuite) TestChainEndLeavesAFirstRunWithNoStreamAlone() {
+	env := s.newEnv()
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	first := c.run.GetRunID()
+	c.respond(&commandpb.Command{
+		CommandType: enumspb.COMMAND_TYPE_CONTINUE_AS_NEW_WORKFLOW_EXECUTION,
+		Attributes: &commandpb.Command_ContinueAsNewWorkflowExecutionCommandAttributes{
+			ContinueAsNewWorkflowExecutionCommandAttributes: &commandpb.
+				ContinueAsNewWorkflowExecutionCommandAttributes{
+				WorkflowType: &commonpb.WorkflowType{Name: "stream-caller"},
+				TaskQueue: &taskqueuepb.TaskQueue{
+					Name: c.taskQueue, Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
+				},
+			},
+		},
+	})
+	transitions := func() int64 {
+		resp, err := env.AdminClient().DescribeMutableState(s.Context(),
+			&adminservice.DescribeMutableStateRequest{
+				Namespace: ns,
+				Execution: &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: first},
+				Archetype: chasm.WorkflowArchetype,
+			})
+		s.NoError(err)
+		return resp.GetDatabaseMutableState().GetExecutionInfo().GetStateTransitionCount()
+	}
+	before := transitions()
+
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.current, "stop"))
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The chain's close task runs on real time.
+	s.Equal(before, transitions())
 }
 
 // directRead reads through the direct System Nexus call, which adds no History event.

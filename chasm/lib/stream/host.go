@@ -302,6 +302,18 @@ func (h *closeChainTaskHandler) Execute(
 		nested: true,
 		host:   chasm.WorkflowArchetypeID,
 	}
+	// A later run can't tell whether the first run has Streams, so every chain end comes here. A
+	// read first spares the first run a write when it has none.
+	nests, err := chasm.ReadComponent(ctx, first.hostRef(),
+		func(h Host, _ chasm.Context, _ struct{}) (bool, error) {
+			return len(h.NestedStreams()) > 0, nil
+		}, struct{}{})
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return nil
+	}
+	if err != nil || !nests {
+		return err
+	}
 	_, _, err = chasm.UpdateComponent(ctx, first.hostRef(),
 		func(h Host, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
 			for _, field := range h.NestedStreams() {
