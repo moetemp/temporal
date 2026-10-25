@@ -168,8 +168,11 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 			return CreateOutput{}, NewError(ReasonAlreadyExists,
 				"The Stream exists with the Retention %v", s.GetRetention().AsDuration())
 		}
-		if owned(in.Request.GetOwner()) {
+		// The close check reads the owner, so the owner changes with WorkflowOwned, as the crate
+		// changes both.
+		if owned(in.Request.GetOwner()) && !s.WorkflowOwned {
 			s.WorkflowOwned = true
+			s.Owner = in.Request.GetOwner()
 		}
 		s.withdrawOnCreate(ctx, in.Request)
 		s.finish(ctx, in.Limits)

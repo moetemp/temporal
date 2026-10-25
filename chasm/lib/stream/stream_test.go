@@ -300,6 +300,28 @@ func TestCloseEndsEveryRead(t *testing.T) {
 	require.Equal(t, CreateOutput{Status: streamservice.STREAM_STATUS_CLOSED}, out)
 }
 
+// A Workflow owns a Stream only in its chain, where the chain checks and the chain's end apply.
+func TestWorkflowOwnerNeedsAWorkflowRef(t *testing.T) {
+	require.ErrorContains(t, checkOwner(workflowProducer(1), target{}), ReasonInvalid)
+	nested := target{nested: true, host: chasm.WorkflowArchetypeID}
+	require.NoError(t, checkOwner(workflowProducer(1), nested))
+}
+
+// A Workflow's create of an open client Stream makes the Workflow its owner, so a client can't
+// close it any more.
+func TestWorkflowCreateTakesOverTheOwner(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: workflowProducer(1),
+	})
+	require.NoError(t, err)
+
+	require.ErrorContains(t, h.close("done"), ReasonNotOwner)
+	require.NoError(t, h.commandClose("run", "done"))
+}
+
 // A second close does nothing, but only for a caller that may close the Stream.
 func TestSecondCloseChecksTheOwner(t *testing.T) {
 	h := newHarness(t)

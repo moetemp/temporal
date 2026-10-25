@@ -218,7 +218,7 @@ func (s *StreamTestSuite) TestWorkflowReadAndDescribe() {
 	id := testcore.RandomizeStr("chat")
 	writer := workflowWriter("run-1", 3)
 
-	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id, Owner: writer})
+	_, err := sc.CreateStream(ctx, &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
 	s.NoError(err)
 	appended, err := sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
 		Namespace: ns, Stream: ref(id), Producer: writer, Sequence: 1, Records: records("turns", "tools"),
@@ -235,7 +235,7 @@ func (s *StreamTestSuite) TestWorkflowReadAndDescribe() {
 	s.Nil(c.call(streamOp{"DescribeStream", &streamservice.DescribeStreamRequest{Stream: ref(id)}}, &described))
 	s.Equal(appended.GetLastOffset(), described.GetLastOffset())
 
-	_, err = sc.CloseStream(ctx, &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: writer, Result: payload.EncodeString("done")})
+	_, err = sc.CloseStream(ctx, &streamservice.CloseStreamRequest{Namespace: ns, Stream: ref(id), Producer: clientProducer(), Result: payload.EncodeString("done")})
 	s.NoError(err)
 	var last streamservice.ReadRecordsResponse
 	s.Nil(c.call(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{Stream: ref(id), FromOffset: page.GetNextOffset()}}, &last))
@@ -1194,7 +1194,8 @@ func localActivityWriter(runID string, started int64) *streamservice.Producer {
 
 // A caller with write access can't close a Workflow Stream, write as a run outside its chain,
 // fence a run it doesn't follow, or put a Stream into another Workflow's first run. A Local
-// Activity of the chain can't close it either, since it writes before its task commits.
+// Activity of the chain can't close it either, since it writes before its task commits. A
+// Workflow owns no Stream outside its chain.
 func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -1229,6 +1230,10 @@ func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a withdraw_run of a run it doesn't follow")
 
 	id := testcore.RandomizeStr("chat")
+	_, err = sc.CreateStream(ctx, &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Owner: workflowWriter(run, 3),
+	})
+	s.Equal(stream.ReasonInvalid, reasonOf(err), "a Workflow owner with no Workflow ref")
 	inChain := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: run}
 	for name, owner := range map[string]*streamservice.Producer{
 		"a create from another chain": workflowWriter(stranger, 3),

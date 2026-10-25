@@ -41,6 +41,9 @@ func checkOwner(owner *streamservice.Producer, t target) error {
 		return notOwner("Only the Standalone Activity creates its Stream")
 	case kind == streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY && !t.activity():
 		return invalid("A Standalone Activity owns only a Stream in its ref")
+	// Outside a chain the Stream would get the safety TTL with no chain check and no close.
+	case kind == streamservice.PRODUCER_KIND_WORKFLOW && !t.workflow():
+		return invalid("A Workflow owns only a Stream in its ref")
 	case kind == streamservice.PRODUCER_KIND_WORKFLOW ||
 		kind == streamservice.PRODUCER_KIND_CLIENT ||
 		kind == streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY:
