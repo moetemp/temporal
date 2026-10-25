@@ -183,10 +183,9 @@ func (s *Stream) Last(
 	var size int64
 	scanned := 0
 	collect := func() {
-		for i := len(s.Index) - 1; i >= 0; i-- {
-			entries := s.Batches[s.Index[i].GetFirstOffset()].Get(ctx).GetRecords()
-			for j := len(entries) - 1; j >= 0; j-- {
-				entry := entries[j]
+		for _, info := range slices.Backward(s.Index) {
+			entries := s.Batches[info.GetFirstOffset()].Get(ctx).GetRecords()
+			for _, entry := range slices.Backward(entries) {
 				if entry.GetOffset() < retained || len(picked) >= want || scanned >= maxScan {
 					return
 				}
@@ -262,10 +261,8 @@ func passes(req *streamservice.ReadRecordsRequest, topic string) bool {
 	if len(req.GetTopics()) == 0 && len(req.GetTopicPrefixes()) == 0 {
 		return true
 	}
-	for _, t := range req.GetTopics() {
-		if t == topic {
-			return true
-		}
+	if slices.Contains(req.GetTopics(), topic) {
+		return true
 	}
 	for _, prefix := range req.GetTopicPrefixes() {
 		if strings.HasPrefix(topic, prefix) {
