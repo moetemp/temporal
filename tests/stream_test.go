@@ -587,9 +587,8 @@ func (s *StreamTestSuite) TestWorkflowWakeWaitsForTheCreate() {
 	s.Empty(page.GetRecords())
 }
 
-// A wake whose wait for the create ends first leaves the Workflow Stream's node abandoned. The
-// node has no execution of its own to replace, so a later wake parks again and the create opens
-// it.
+// A wake whose create wait ends first leaves the Workflow Stream's node abandoned. A later wake
+// parks again and the create opens it, since the node has no execution of its own to replace.
 func (s *StreamTestSuite) TestAbandonedWorkflowStreamCanStillBeCreated() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -1694,10 +1693,8 @@ func localActivityWriter(runID string, started int64) *streamservice.Producer {
 	}
 }
 
-// A caller with write access can't close a Workflow Stream, write as a run outside its chain,
-// fence a run it doesn't follow, or put a Stream into another Workflow's first run. A Local
-// Activity of the chain can't close it either, since it writes before its task commits. A
-// Workflow owns no Stream outside its chain.
+// A caller with write access can't close a Workflow Stream, write or fence as another run, or
+// create a Workflow Stream outside its chain. A Local Activity of the chain can't close it.
 func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 	env := s.newEnv()
 	sc := s.streamClient(env)

@@ -106,8 +106,7 @@ func (s *Stream) scan(
 			if end := req.GetToOffset(); end > 0 && entry.GetOffset() >= end {
 				return resp, nil
 			}
-			full := len(resp.Records) >= limit || (scanned >= maxScan && len(resp.Records) > 0)
-			if resp.Done || full {
+			if pageFull(resp, limit, scanned) {
 				return resp, nil
 			}
 			if entry.GetOffset() >= retained && overBytes(req, resp, entry, size) {
@@ -129,6 +128,15 @@ func (s *Stream) scan(
 		}
 	}
 	return resp, nil
+}
+
+// pageFull says whether a page ends before its next entry. Only a page with Records stops at the
+// scan cap, so a reader never takes an empty page for the end with a match left.
+func pageFull(resp *streamservice.ReadRecordsResponse, limit int, scanned int) bool {
+	if len(resp.GetRecords()) == 0 {
+		return false
+	}
+	return resp.GetDone() || len(resp.GetRecords()) >= limit || scanned >= maxScan
 }
 
 // firstBatchAt is the index of the first batch with an entry at or past offset, so a look of a
@@ -329,6 +337,11 @@ type ReadInput struct {
 	Limits Limits
 }
 
+// parks says whether the read may park, a wake_only read whose operation a callback completes.
+func (in ReadInput) parks() bool {
+	return in.Callback != nil && in.Request.GetWakeOnly()
+}
+
 // StartForRead is the start of an execution for a read. The Stream waits for its create. The
 // start parks the read itself, since a child node that the update of a new execution adds is
 // not persisted.
@@ -340,9 +353,8 @@ func StartForRead(ctx chasm.MutableContext, in ReadInput) (*Stream, error) {
 	return s, nil
 }
 
-// ReadOrPark answers a read at once, but parks a wake_only read that finds no Record until the
-// Stream can answer it. It answers nil for a parked read. A wake's answer has no Records, so a
-// parked read keeps no page, though one append wakes every parked read in one transaction.
+// ReadOrPark answers a read at once, but parks a wake_only read with no Record and answers nil.
+// A wake's answer has no Records, so one append that wakes every parked read copies no page.
 func (s *Stream) ReadOrPark(
 	ctx chasm.MutableContext,
 	in ReadInput,
@@ -369,7 +381,7 @@ func (s *Stream) ReadOrPark(
 	if in.Reader != nil {
 		read.ReaderRunId = in.Reader.RunID
 	}
-	parks := in.Callback != nil && in.Request.GetWakeOnly()
+	parks := in.parks()
 	wait, createWait := parkWaits(in.Request, in.Limits)
 	if wait > 0 {
 		read.WaitDeadline = timestamppb.New(now.Add(wait))

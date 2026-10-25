@@ -58,8 +58,8 @@ func readVectors(t *testing.T, name string, into any) {
 	require.NoError(t, json.Unmarshal(data, into))
 }
 
-// vectorWithdraws applies a Superseded Record to a Record with the server's rules: the task rule
-// of withdrawTasks for a Workflow item, and CompareEpochs for the other kinds that withdraw.
+// vectorWithdraws applies a Superseded Record to a Record with the server's rules. A Workflow item
+// uses the task rule of withdrawTasks, and the other kinds that withdraw use CompareEpochs.
 func vectorWithdraws(s *streamservice.Supersession, p *streamservice.Producer) bool {
 	if s.GetWithdrawRun() != "" && p.GetRunId() == s.GetWithdrawRun() {
 		return true

@@ -142,9 +142,8 @@ func (t *timerQueueTaskExecutorBase) executeDeleteHistoryEventTask(
 	if err != nil {
 		return err
 	}
-	// The first run of a chain keeps the chain's Streams, which the chain may still write after
-	// this run closed. A Standalone Activity keeps its Streams readable for their Retention. The
-	// execution stays one more retention, until its Streams expire.
+	// A chain writes its first run's Streams after that run closed, and a closed Standalone
+	// Activity keeps its Streams for their Retention. So the execution waits one more retention.
 	if holds {
 		mutableState.AddTasks(&tasks.DeleteHistoryEventTask{
 			WorkflowKey: task.WorkflowKey,

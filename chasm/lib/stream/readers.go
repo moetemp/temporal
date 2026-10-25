@@ -36,9 +36,8 @@ func readerRunOf(links []nexus.Link) *ReaderRun {
 	return nil
 }
 
-// readerFloor is the floor that a read from from sets for the run. It is false when the run's
-// floor is already that low, or when the read fails anyway. A client's Stream keeps floors too,
-// since the size cap would otherwise drop what a Workflow's replay reads again.
+// readerFloor is the floor that a read from from sets for the run, false when the run's floor is
+// as low or the read fails anyway. Every Stream keeps floors, since its size cap trims too.
 func (s *Stream) readerFloor(ctx chasm.Context, runID string, from int64) (int64, bool) {
 	if from == 0 {
 		from = s.TrimmedOffset + 1

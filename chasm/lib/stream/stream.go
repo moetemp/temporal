@@ -27,8 +27,7 @@ const (
 	MaxRecords = 1000
 	// MaxStreamIDBytes is the longest Stream id.
 	MaxStreamIDBytes = 4096
-	// The most entries a page with Records scans, since a Topic filter can skip many. An empty
-	// page scans on to the end, so a reader never takes it for the end with a match left.
+	// The most entries a page with Records scans, since a Topic filter can skip many.
 	maxScan = 10 * MaxRecords
 	// An offset is the append time in ms shifted by these bits, plus a sequence, as the Redis
 	// Store packs its entry ids. So the offsets of the two backends sort the same way, and the
@@ -653,9 +652,8 @@ func (s *Stream) floor() (int64, bool) {
 	return s.Floor, s.Floor > 0 && len(s.Readers) > 0
 }
 
-// retainedFrom is the offset below which the Retention hides the Records at now. A nested Stream,
-// or one with Workflow readers, hides none that it still stores, so a read from the start begins
-// at the same offset on replay.
+// retainedFrom is the offset below which the Retention hides the Records at now. A nested Stream
+// or one with floors hides none it stores, so a replay of a read from the start starts the same.
 func (s *Stream) retainedFrom(now time.Time) int64 {
 	retained := s.TrimmedOffset + 1
 	retention := s.GetRetention().AsDuration()
