@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"errors"
+	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -62,6 +63,15 @@ func (s *Stream) EndChain(ctx chasm.MutableContext, end RunEnd, limits Limits) {
 		s.close(ctx, s.GetOwner(), end.Result, end.Failure, end.Status)
 	}
 	s.finish(ctx, limits)
+}
+
+// HeldUntil is when a closed Stream expires, false for a Stream that isn't closed. A closed host
+// runs no task of its Streams, so the close time and the Retention tell when the Stream expires.
+func (s *Stream) HeldUntil() (time.Time, bool) {
+	if s.Phase != streampb.STREAM_PHASE_CLOSED {
+		return time.Time{}, false
+	}
+	return s.closedExpiryAt(), true
 }
 
 // EndOwner closes a Standalone Activity's Stream with the Activity's end, in the transition that

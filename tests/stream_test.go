@@ -1012,6 +1012,69 @@ func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
 	s.Equal([]string{"late"}, kindsAndTopics(page))
 }
 
+// A closed Standalone Activity keeps its Streams readable for their Retention, so the namespace
+// retention can't delete them with the Activity.
+func (s *StreamTestSuite) TestActivityStreamOutlivesTheRetentionOfItsActivity() {
+	env := testcore.NewEnv(s.T(),
+		testcore.WithDedicatedCluster(),
+		testcore.WithDynamicConfig(stream.Enabled, true),
+		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionGlobal, time.Duration(0)),
+		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionLocal, time.Duration(0)),
+		testcore.WithDynamicConfig(dynamicconfig.RetentionTimerJitterDuration, time.Duration(0)),
+	)
+	ctx := s.Context()
+	ns := env.Namespace().String()
+	_, err := env.FrontendClient().UpdateNamespace(ctx, &workflowservice.UpdateNamespaceRequest{
+		Namespace: ns,
+		Config:    &namespacepb.NamespaceConfig{WorkflowExecutionRetentionTtl: durationpb.New(time.Second)},
+	})
+	s.NoError(err)
+	// Wait for the namespace cache to see the new retention.
+	<-time.After(2 * testcore.NamespaceCacheRefreshInterval)
+
+	activityID := "tool-" + uuid.NewString()
+	taskQueue := &taskqueuepb.TaskQueue{Name: "tools-" + uuid.NewString(), Kind: enumspb.TASK_QUEUE_KIND_NORMAL}
+	started, err := env.FrontendClient().StartActivityExecution(ctx,
+		&workflowservice.StartActivityExecutionRequest{
+			Namespace: ns, ActivityId: activityID, ActivityType: &commonpb.ActivityType{Name: "tool"},
+			Identity: "test", TaskQueue: taskQueue, StartToCloseTimeout: durationpb.New(time.Minute),
+		})
+	s.NoError(err)
+	task, err := env.FrontendClient().PollActivityTaskQueue(ctx,
+		&workflowservice.PollActivityTaskQueueRequest{Namespace: ns, TaskQueue: taskQueue, Identity: "test"})
+	s.NoError(err)
+	id := testcore.RandomizeStr("tokens")
+	owned := &streamservice.StreamRef{Id: id, ActivityId: activityID, ActivityRunId: started.GetRunId()}
+	owner := &streamservice.Producer{
+		Kind: streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY,
+		Id:   "sa:" + activityID + ":" + started.GetRunId(),
+		Epoch: &streamservice.ProducerEpoch{
+			AttemptScheduledTime: task.GetCurrentAttemptScheduledTime(), Attempt: task.GetAttempt(),
+		},
+	}
+	sc := s.streamClient(env)
+	_, err = sc.CreateStream(ctx, &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Ref: owned, Owner: owner, TaskToken: task.GetTaskToken(),
+	})
+	s.NoError(err)
+	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: owner, Sequence: 1, Records: records("tokens"),
+		TaskToken: task.GetTaskToken(),
+	})
+	s.NoError(err)
+	_, err = env.FrontendClient().RespondActivityTaskCompleted(ctx,
+		&workflowservice.RespondActivityTaskCompletedRequest{
+			Namespace: ns, TaskToken: task.GetTaskToken(), Identity: "test",
+		})
+	s.NoError(err)
+	// Several namespace retentions pass after the Activity's end.
+	<-time.After(4 * time.Second)
+
+	page, err := sc.ReadRecords(ctx, &streamservice.ReadRecordsRequest{Namespace: ns, Stream: owned})
+	s.NoError(err)
+	s.Equal([]string{"tokens", "close"}, kindsAndTopics(page))
+}
+
 // An append that names a Workflow Stream by its bare id, or a Stream that doesn't exist, fails.
 // It never writes somewhere a reader of the Workflow Stream can't see.
 func (s *StreamTestSuite) TestAppendToAStreamThatIsNotThereFails() {

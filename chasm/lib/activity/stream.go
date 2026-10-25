@@ -81,6 +81,20 @@ func (a *Activity) checkAttempt(
 	return nil
 }
 
+// HoldsStreams says whether a Stream of the closed Activity is still readable, so the Activity
+// outlives the namespace retention that would delete it. Each Stream closed with the Activity.
+func (a *Activity) HoldsStreams(ctx chasm.Context) bool {
+	now := ctx.Now(a)
+	for _, field := range a.Streams {
+		if s, ok := field.TryGet(ctx); ok {
+			if until, held := s.HeldUntil(); held && until.After(now) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // endStreams closes the Activity's Streams with its end. Each terminal transition passes its
 // status, since the transition sets the Activity's status after its apply function.
 func (a *Activity) endStreams(ctx chasm.MutableContext, status activitypb.ActivityExecutionStatus) {

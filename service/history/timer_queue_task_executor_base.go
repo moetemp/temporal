@@ -11,6 +11,7 @@ import (
 	enumsspb "go.temporal.io/server/api/enums/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/chasm"
+	chasmstream "go.temporal.io/server/chasm/lib/stream"
 	"go.temporal.io/server/common/locks"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
@@ -137,28 +138,28 @@ func (t *timerQueueTaskExecutorBase) executeDeleteHistoryEventTask(
 		return err
 	}
 
-	if task.ArchetypeID == chasm.WorkflowArchetypeID && mutableState.ChasmEnabled() {
-		wf, chasmCtx, err := mutableState.ChasmWorkflowComponentReadOnly(ctx)
-		if err != nil {
-			return err
+	holds, err := holdsStreams(ctx, task.ArchetypeID, mutableState)
+	if err != nil {
+		return err
+	}
+	// The first run of a chain keeps the chain's Streams, which the chain may still write after
+	// this run closed. A Standalone Activity keeps its Streams readable for their Retention. The
+	// execution stays one more retention, until its Streams expire.
+	if holds {
+		mutableState.AddTasks(&tasks.DeleteHistoryEventTask{
+			WorkflowKey: task.WorkflowKey,
+			VisibilityTimestamp: t.shardContext.GetTimeSource().Now().
+				Add(mutableState.GetNamespaceEntry().Retention()),
+			Version:     task.Version,
+			BranchToken: task.BranchToken,
+			ArchetypeID: task.ArchetypeID,
+		})
+		// A standby cluster writes the closed execution as its replication does.
+		policy := historyi.TransactionPolicyActive
+		if !t.isActive {
+			policy = historyi.TransactionPolicyPassive
 		}
-		// The first run of a chain keeps the chain's Streams, which the chain may still write
-		// after this run closed. The run stays one more retention, until its Streams expire.
-		if wf.HoldsStreams(chasmCtx) {
-			mutableState.AddTasks(&tasks.DeleteHistoryEventTask{
-				WorkflowKey:         task.WorkflowKey,
-				VisibilityTimestamp: t.shardContext.GetTimeSource().Now().Add(mutableState.GetNamespaceEntry().Retention()),
-				Version:             task.Version,
-				BranchToken:         task.BranchToken,
-				ArchetypeID:         task.ArchetypeID,
-			})
-			// A standby cluster writes the closed run as its replication does.
-			policy := historyi.TransactionPolicyActive
-			if !t.isActive {
-				policy = historyi.TransactionPolicyPassive
-			}
-			return weContext.SubmitClosedWorkflowSnapshot(ctx, t.shardContext, policy)
-		}
+		return weContext.SubmitClosedWorkflowSnapshot(ctx, t.shardContext, policy)
 	}
 
 	return t.deleteManager.DeleteWorkflowExecutionByRetention(
@@ -169,6 +170,36 @@ func (t *timerQueueTaskExecutorBase) executeDeleteHistoryEventTask(
 		mutableState,
 		&task.ProcessStage,
 	)
+}
+
+// streamHost is the root component of an execution that nests Streams.
+type streamHost interface {
+	HoldsStreams(chasm.Context) bool
+}
+
+// holdsStreams says whether a closed execution nests a Stream that is still readable. Only a
+// Workflow and a Standalone Activity nest Streams.
+func holdsStreams(
+	ctx context.Context,
+	archetypeID chasm.ArchetypeID,
+	mutableState historyi.MutableState,
+) (bool, error) {
+	nests := archetypeID == chasm.WorkflowArchetypeID ||
+		archetypeID == chasmstream.ActivityArchetypeID
+	if !nests || !mutableState.ChasmEnabled() {
+		return false, nil
+	}
+	tree, ok := mutableState.ChasmTree().(*chasm.Node)
+	if !ok {
+		return false, nil
+	}
+	chasmCtx := chasm.NewContext(ctx, tree)
+	root, err := tree.ComponentByPath(chasmCtx, nil)
+	if err != nil {
+		return false, err
+	}
+	host, ok := root.(streamHost)
+	return ok && host.HoldsStreams(chasmCtx), nil
 }
 
 func (t *timerQueueTaskExecutorBase) deleteHistoryBranch(
