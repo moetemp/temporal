@@ -68,14 +68,13 @@ func (s *Stream) admit(
 }
 
 // newEpoch says whether a write is the first of a higher epoch of a Producer whose lower epoch
-// wrote Records, so its Superseded Record withdraws them, as the crate's append script does. A
-// Local Activity's next attempt in the same Workflow Task redoes the call.
+// wrote Records, so its Superseded Record withdraws them. A Local Activity's retry redoes the call.
 func newEpoch(producer *streamservice.Producer, known *streampb.ProducerState) bool {
 	return withdrawsEpochs(producer.GetKind()) && known != nil && known.GetHolds() != nil &&
 		CompareEpochs(known.GetHolds(), producer.GetEpoch()) < 0
 }
 
-// settle keeps the facts of a write that went in: the epoch, the task index and the run.
+// settle keeps the task facts and the fenced run of a write that succeeded.
 func (s *Stream) settle(
 	ctx chasm.MutableContext,
 	producer *streamservice.Producer,
@@ -108,8 +107,8 @@ func (s *Stream) settle(
 	}
 }
 
-// withdrawn says whether the Stream knows that a Superseded Record withdrew the Record: its run
-// is fenced, its Workflow Task was withdrawn, or a higher epoch of its Producer wrote.
+// withdrawn says whether the Stream knows that a Superseded Record withdrew the Record. It knows
+// when the run is fenced, the Workflow Task was withdrawn, or a higher epoch of the Producer wrote.
 func (s *Stream) withdrawn(ctx chasm.Context, record *streamservice.StreamRecord) bool {
 	producer := record.GetProducer()
 	if s.runFenced(producer.GetRunId()) {
@@ -129,9 +128,8 @@ func (s *Stream) withdrawn(ctx chasm.Context, record *streamservice.StreamRecord
 		CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0
 }
 
-// withdrawsEpochs says whether a higher epoch of a Producer outside Workflow code withdraws the
-// Records of its lower epochs. An Activity's retry redoes the attempt's work. A client's higher
-// epoch only fences the lower ones, since a client process writes on and doesn't redo.
+// withdrawsEpochs says whether a non-Workflow Producer's higher epoch withdraws its lower epochs'
+// Records. An Activity's retry redoes the attempt's work, but a client doesn't redo its writes.
 func withdrawsEpochs(kind streamservice.ProducerKind) bool {
 	return kind != streamservice.PRODUCER_KIND_WORKFLOW &&
 		kind != streamservice.PRODUCER_KIND_CLIENT
@@ -150,8 +148,8 @@ func (s *Stream) withdrawsRun(ctx chasm.Context, run string) bool {
 func supersededRecord(producer *streamservice.Producer, w Withdrawal) *streamservice.StreamRecord {
 	epoch := producer.GetEpoch()
 	if w.Defer {
-		// A deferred batch or a create withdraws only the retry run's previous run, so no epoch
-		// goes with it.
+		// A deferred batch or a create withdraws only the retry run's previous run, so its
+		// Superseded Record has no epoch.
 		epoch = nil
 	}
 	return &streamservice.StreamRecord{
@@ -168,7 +166,7 @@ func supersededRecord(producer *streamservice.Producer, w Withdrawal) *streamser
 	}
 }
 
-// orphans applies to a Local Activity write with its run's last completed task (S110). It splits
+// orphans applies to a Local Activity write that has its run's last completed task. It splits
 // the run's open Local Activity tasks into those that never completed and those still open.
 func (s *Stream) orphans(
 	ctx chasm.Context,
@@ -243,9 +241,8 @@ func completedTask(req *streamservice.AppendRecordsRequest) *streamservice.Workf
 	return nil
 }
 
-// orphanRecord withdraws a run's orphaned Local Activity Records. It names the run's Workflow
-// Producer in the write's task, so a reader's Workflow rule withdraws the run's Local Activity
-// Records of the tasks after the completed one and before that task, and of the failed ones.
+// orphanRecord is a Superseded Record of the run's Workflow Producer at the write's task, so a
+// reader's Workflow rule withdraws the run's orphaned Local Activity Records.
 func orphanRecord(req *streamservice.AppendRecordsRequest) *streamservice.StreamRecord {
 	producer := req.GetProducer()
 	epoch := producer.GetEpoch()
@@ -266,7 +263,7 @@ func orphanRecord(req *streamservice.AppendRecordsRequest) *streamservice.Stream
 	}
 }
 
-// EncodeIDPart percent-encodes an id part as the crate does, so a Producer id matches its.
+// EncodeIDPart percent-encodes an id part as the crate does, so a Producer id matches the crate's.
 func EncodeIDPart(text string) string {
 	return encodePart(text)
 }
@@ -289,10 +286,8 @@ type taskSplit struct {
 	kept      []*streamservice.WorkflowTaskEpoch
 }
 
-// withdrawTasks is the crate's Workflow withdrawal rule over a task index. For task t with the
-// previous completed task c, it withdraws the tasks in failed or strictly between c and t, and
-// those at the started id of c or of t with a lower attempt. It keeps the tasks after c, since
-// no task up to c can be withdrawn later.
+// withdrawTasks is the crate's Workflow withdrawal rule for task t and the previous completed task
+// c. The index keeps only the tasks after c, since no later write can withdraw a task up to c.
 func withdrawTasks(
 	index []*streamservice.WorkflowTaskEpoch,
 	t, c *streamservice.WorkflowTaskEpoch,

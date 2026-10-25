@@ -1149,8 +1149,8 @@ func TestEffectiveUserMetadata_FallsBackToLegacy(t *testing.T) {
 	require.Same(t, legacyMD, got)
 }
 
-// A Stream ref with an activity id routes to the Activity's component, so the stream library's
-// copy of the archetype must stay this library's.
+// A Stream ref with an activity id routes to stream.ActivityArchetypeID, so that id must equal
+// this library's ArchetypeID.
 func TestStreamHostArchetypeIsTheActivity(t *testing.T) {
 	require.Equal(t, ArchetypeID, stream.ActivityArchetypeID)
 }

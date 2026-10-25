@@ -768,8 +768,8 @@ func TestErrorsCarryTheReason(t *testing.T) {
 	require.Equal(t, ReasonFenced, details[0].(*streamservice.StreamErrorDetails).GetReason())
 }
 
-// A reader's floor keeps its Records past the Retention and the cap, and the Records below it
-// trim. When the reader goes, the Retention trims the rest.
+// A reader's floor keeps its Records past the Retention and the cap, and the Records below it are
+// trimmed. When the floor is dropped, the Retention trims the rest.
 func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	h := newHarness(t)
 	h.limits.MaxStoredBytes = 200
@@ -884,8 +884,8 @@ func TestReaderFloorKeepsTheRecordsOfAClientStream(t *testing.T) {
 	require.Equal(t, []string{"a"}, topics(page))
 }
 
-// localActivityWrite is a write of the Local Activity call of the run, dispatched by task
-// started, with the run's last completed task (0 before the first), as the crate's S110 test has.
+// localActivityWrite is a write of the run's Local Activity call from the task that started at
+// started. It has the run's last completed task, or 0 before the first, as the crate's tests do.
 func localActivityWrite(
 	call string,
 	started, completed int64,
@@ -1056,8 +1056,8 @@ func TestOnlyAWakeParks(t *testing.T) {
 	require.Nil(t, h.parked("page"))
 }
 
-// A page stops before the Record that would take it past max_bytes, and a larger Record comes
-// alone, so a reader with a small cap still moves on.
+// A page stops before the Record that would take it past max_bytes, and a larger Record is alone
+// on its page, so a reader with a small cap still makes progress.
 func TestPageStopsAtMaxBytes(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
@@ -1228,7 +1228,7 @@ func TestReplayOfAPagePastTheCloseGetsTheClose(t *testing.T) {
 }
 
 // A client's higher epoch fences its lower epochs but withdraws none of their Records, since a
-// client process writes on and doesn't redo the work.
+// client process doesn't redo its writes.
 func TestClientEpochFencesButWithdrawsNothing(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
@@ -1271,8 +1271,8 @@ func TestRecordsOfOneAppendHaveConsecutiveOffsets(t *testing.T) {
 	require.Equal(t, resp.GetFirstOffset()+2, resp.GetLastOffset())
 }
 
-// At the Producer cap a Local Activity's entry goes first, since a call writes only while it
-// runs. A client's older entry keeps its dedupe state, so its resend still goes in once.
+// At the Producer cap a Local Activity's entry is dropped first, since a call writes only while it
+// runs. A client's older entry keeps its dedupe state, so its resend is still written once.
 func TestLocalActivityProducerGoesFirstAtTheCap(t *testing.T) {
 	h := newHarness(t)
 	h.limits.MaxProducers = 2

@@ -665,7 +665,7 @@ type ParkedReadState struct {
 	Request *v1.ReadRecordsRequest `protobuf:"bytes,1,opt,name=request,proto3" json:"request,omitempty"`
 	// The Nexus request id, so a retry of the start finds this read.
 	RequestId string `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	// Where the next look starts. A look that finds only other Topics moves it on.
+	// Where the next look starts. A look that finds only other Topics advances it.
 	ScanOffset int64 `protobuf:"varint,3,opt,name=scan_offset,json=scanOffset,proto3" json:"scan_offset,omitempty"`
 	// Set while the read waits for the create.
 	CreateDeadline   *timestamppb.Timestamp  `protobuf:"bytes,4,opt,name=create_deadline,json=createDeadline,proto3" json:"create_deadline,omitempty"`

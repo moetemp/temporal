@@ -105,8 +105,8 @@ func (s *Stream) dropReaders(ctx chasm.MutableContext, runIDs []string) {
 	}
 }
 
-// limitProducers drops Producers past the cap. A Local Activity call writes only while it runs,
-// so its entry goes first. Then the Producer with the oldest last batch goes, with its fence.
+// limitProducers drops Producers past the cap, each with its fence. A Local Activity call writes
+// only while it runs, so its entry is dropped first, then the one with the oldest last batch.
 func (s *Stream) limitProducers(ctx chasm.MutableContext, maxProducers int) {
 	localPrefix := streamservice.PRODUCER_KIND_LOCAL_ACTIVITY.String() + "|"
 	for maxProducers > 0 && len(s.Producers) > maxProducers {
@@ -134,8 +134,8 @@ func (s *Stream) oldestProducer(ctx chasm.MutableContext, match func(string) boo
 	return oldestKey
 }
 
-// DropActivityProducers drops the entries of an Activity of a run that closed. It never writes
-// again, so its fence and dedupe state can go.
+// DropActivityProducers drops the entries of an Activity of a run that closed. The Activity never
+// writes again, so its fence and dedupe state aren't needed.
 func (s *Stream) DropActivityProducers(runID, activityID string) {
 	prefix := streamservice.PRODUCER_KIND_ACTIVITY.String() + "|act:" + encodePart(runID) + ":" +
 		encodePart(activityID) + ":"

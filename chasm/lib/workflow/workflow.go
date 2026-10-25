@@ -52,7 +52,7 @@ type Workflow struct {
 	Updates chasm.Map[string, *WorkflowUpdate]
 
 	// Streams are the native Streams of the run chain, keyed by Stream id. They nest in the
-	// chain's first run, since a run's tree doesn't move to the next run.
+	// chain's first run, since each run of a chain has its own tree.
 	Streams chasm.Map[string, *stream.Stream]
 }
 
@@ -118,8 +118,8 @@ func (w *Workflow) CheckWriter(chasm.Context, *streamservice.Producer, []byte) e
 	return nil
 }
 
-// HasChainStreams says whether the final close of this run may have Streams to close: its own,
-// or, for a later run of a chain, the ones nested in the chain's first run.
+// HasChainStreams says whether the final close of this run may have Streams to close. Those are
+// its own, or, for a later run of a chain, the ones nested in the chain's first run.
 func (w *Workflow) HasChainStreams(ctx chasm.Context, firstRunID string) bool {
 	if len(w.Streams) > 0 {
 		return true
@@ -161,7 +161,7 @@ func (w *Workflow) EndChainStreams(
 
 // DropActivityProducers drops a closed Activity's Producer entries from the Streams of this run.
 // After continue-as-new the Streams are in the chain's first run, another execution, and keep
-// the entries until the Producer cap.
+// the entries until the Producer cap drops them.
 func (w *Workflow) DropActivityProducers(ctx chasm.MutableContext, activityID string) {
 	runID := ctx.ExecutionKey().RunID
 	for _, field := range w.Streams {

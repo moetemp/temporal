@@ -25,7 +25,7 @@ type ReaderRun struct {
 }
 
 // readerRunOf finds the reading run in the links of a direct call. A call with no Workflow link,
-// such as a replay's read again, keeps no floor.
+// such as a read that a replay repeats, keeps no floor.
 func readerRunOf(links []nexus.Link) *ReaderRun {
 	for _, link := range links {
 		if event, err := commonnexus.ConvertNexusLinkToLinkWorkflowEvent(link); err == nil &&
@@ -36,8 +36,8 @@ func readerRunOf(links []nexus.Link) *ReaderRun {
 	return nil
 }
 
-// readerFloor is the floor that a read from from sets for the run, false when the run's floor is
-// as low or the read fails anyway. Every Stream keeps floors, since its size cap trims too.
+// readerFloor is the floor that a read at from sets for the run. It's false when the run's floor
+// is as low already, or when the read fails anyway.
 func (s *Stream) readerFloor(ctx chasm.Context, runID string, from int64) (int64, bool) {
 	if from == 0 {
 		from = s.TrimmedOffset + 1
@@ -51,9 +51,8 @@ func (s *Stream) readerFloor(ctx chasm.Context, runID string, from int64) (int64
 	return from, true
 }
 
-// floorStart is where a run's floor starts for a read from start. A reset run copied the reads of
-// the old run into its History, and its first live read gives the lowest of them in floor_from,
-// so the floor covers what its replay reads again.
+// floorStart is where a run's floor starts for a read at start. A reset run's first live read
+// gives the lowest offset of its copied reads in floor_from, so the floor covers its replay.
 func (s *Stream) floorStart(req *streamservice.ReadRecordsRequest, start int64) int64 {
 	floorFrom := req.GetFloorFrom()
 	if floorFrom <= 0 || start == 0 || floorFrom >= start {
@@ -79,7 +78,7 @@ func (s *Stream) suggestsContinueAsNew(ctx chasm.Context, runID string, limits L
 	return 2*kept > limits.MaxStoredBytes
 }
 
-// AddReader keeps the floor of a Workflow run that reads from from, in the transaction that
+// AddReader keeps the floor of a Workflow run that reads at from, in the transaction that
 // answers the read. No trim passes the floor while the run is open.
 func (s *Stream) AddReader(
 	ctx chasm.MutableContext,
@@ -196,7 +195,7 @@ func (h *readersCheckTaskHandler) Execute(
 }
 
 // runOpen says whether a Workflow run is still open. A deleted or unknown run is closed. The run
-// may be on another shard, so it goes through the history client.
+// may be on another shard, so the check calls the history client.
 func runOpen(
 	ctx context.Context,
 	historyClient resource.HistoryClient,

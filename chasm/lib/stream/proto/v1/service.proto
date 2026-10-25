@@ -8,7 +8,7 @@ import "temporal/server/api/routing/v1/extension.proto";
 
 option go_package = "go.temporal.io/server/chasm/lib/stream/gen/streampb;streampb";
 
-// StreamService carries the frontend's Stream calls to the history shard of the Stream. A Workflow
+// StreamService serves the frontend's Stream calls on the history shard of the Stream. A Workflow
 // Stream is on its Workflow's shard, and a Standalone Activity's Stream on its Activity's.
 service StreamService {
   rpc CreateStream(CreateStreamRequest) returns (CreateStreamResponse) {

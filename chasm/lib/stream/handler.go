@@ -38,7 +38,7 @@ func newHandler(
 
 // Reader is a Workflow read through System Nexus.
 type Reader struct {
-	// The Nexus request id, which a retry of the operation start carries again.
+	// The Nexus request id. A retry of the operation start sends the same id.
 	RequestID string
 	// The completion callback of the read's operation. A read with none answers at once.
 	Callback *commonpb.Callback
@@ -299,10 +299,9 @@ func (h *handler) CloseStream(
 	return resp, streamError(ctx, t, err)
 }
 
-// CloseFromRun closes a Workflow Stream for the System Nexus command of run, the calling run
-// from the link that the server's Nexus call adds. Run must be an open run of the Stream's chain,
-// and the close goes in as run's Workflow Producer. Only the result, the failure and the status
-// come from the request.
+// CloseFromRun closes a Workflow Stream for the System Nexus command of run. Run comes from the
+// link that the server's Nexus call adds, and must be an open run of the Stream's chain. The close
+// uses run's Workflow Producer, and takes only the result, the failure and the status from req.
 func (h *handler) CloseFromRun(
 	ctx context.Context,
 	req *streamservice.CloseStreamRequest,
@@ -457,12 +456,12 @@ func (h *handler) CancelRead(
 const pollTick = 100 * time.Millisecond
 
 // longPollBuffer is the time a read leaves before the caller's deadline, so the empty answer
-// gets back in time.
+// reaches the caller before its deadline.
 const longPollBuffer = time.Second
 
-// ReadRecords is a frontend read. It waits up to create_wait for the create and up to wait for
-// a Record, and answers an empty page after the wait. A page of an open Workflow run, run, keeps
-// the run's floor first, so no trim drops what it reads.
+// ReadRecords is a frontend long poll. It waits up to create_wait for the create and up to wait
+// for a Record. The first page of an open Workflow run also sets the run's floor, so no trim
+// drops the Records that the run read.
 func (h *handler) ReadRecords(
 	ctx context.Context,
 	req *streamservice.ReadRecordsRequest,
@@ -529,9 +528,8 @@ func (h *handler) ReadRecords(
 	}
 }
 
-// floorRun is the run whose floor the first page keeps, or nil. That is a run whose page would
-// lower its floor, mostly its first, and that is open. The link is the Worker's claim, so a run
-// that is closed or doesn't exist keeps no floor.
+// floorRun gives run if the first page would lower its floor and the run is open, or nil. The
+// Worker sets the link, so a run that is closed or doesn't exist gets no floor.
 func (h *handler) floorRun(
 	ctx context.Context,
 	t target,
@@ -556,9 +554,8 @@ func (h *handler) floorRun(
 	return run, nil
 }
 
-// page reads one page from from. With floorRun set, the transaction that answers the page keeps
-// the run's floor too, so no trim comes between the answer and the floor. The page of a reader
-// run suggests continue-as-new when the run's floor keeps too much.
+// page reads one page at from. With floorRun set, the transaction that answers the page also keeps
+// the run's floor, so no trim runs between the answer and the floor.
 func (h *handler) page(
 	ctx context.Context,
 	t target,

@@ -17,8 +17,8 @@ import (
 )
 
 // StartNexusOperation runs one operation of the System Nexus endpoint for the caller's namespace,
-// as a direct call (temporalio/api#720). It creates no caller-side state and no History event,
-// so a Workflow can read through it with nothing in its History.
+// as a direct call. It creates no caller-side state and no History event, so a Workflow can read
+// through it with nothing in its History.
 func (wh *WorkflowHandler) StartNexusOperation(
 	ctx context.Context,
 	req *workflowservice.StartNexusOperationRequest,
@@ -101,9 +101,8 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	}
 }
 
-// workflowEventLinks passes on the caller's Workflow links, so an operation knows the reading run.
-// A direct call names no event of its caller, and the Nexus form of a link needs a reference, so a
-// link with none refers to the call's request id.
+// workflowEventLinks gives an operation the caller's Workflow links, so it knows the reading run.
+// The Nexus form of a link needs a reference, so a link with none refers to the call's request id.
 func workflowEventLinks(links []*commonpb.Link, requestID string) []*nexuspb.Link {
 	var out []nexus.Link
 	for _, link := range links {

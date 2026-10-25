@@ -8,9 +8,8 @@ import (
 	"go.temporal.io/server/common/tasktoken"
 )
 
-// A Standalone Activity owns its Streams. They nest in the Activity's execution, so a call routes
-// by the activity id, and they close in the transition that ends the Activity, with its status.
-// A retry is the same execution, so a Stream goes on across attempts.
+// A Standalone Activity's Streams nest in its execution, so a call routes by the activity id. A
+// retry is the same execution, so a Stream stays open across attempts.
 
 var _ stream.Host = (*Activity)(nil)
 
@@ -22,8 +21,8 @@ func (a *Activity) NestedStreams() chasm.Map[string, *stream.Stream] {
 	return a.Streams
 }
 
-// CheckOwner refuses a create that isn't the Activity's own, by its current attempt. It
-// implements [stream.Host].
+// CheckOwner refuses a create unless the owner is the Activity's own Producer with the task token
+// of its current attempt. It implements [stream.Host].
 func (a *Activity) CheckOwner(
 	ctx chasm.Context,
 	owner *streamservice.Producer,
@@ -35,8 +34,8 @@ func (a *Activity) CheckOwner(
 	return a.checkAttempt(ctx, owner, token)
 }
 
-// CheckWriter refuses a write as the Activity's own Producer by any other than its current
-// attempt. Other Producers write as on any Stream. It implements [stream.Host].
+// CheckWriter refuses a write as the Activity's own Producer unless the task token is the
+// Activity's current attempt. It doesn't check other Producers. It implements [stream.Host].
 func (a *Activity) CheckWriter(
 	ctx chasm.Context,
 	producer *streamservice.Producer,
@@ -48,7 +47,7 @@ func (a *Activity) CheckWriter(
 	return a.checkAttempt(ctx, producer, token)
 }
 
-// ownProducer says whether a Producer is this Activity's, by the id that the crate makes.
+// ownProducer says whether a Producer has the kind and the id that the crate gives this Activity.
 func (a *Activity) ownProducer(ctx chasm.Context, producer *streamservice.Producer) bool {
 	key := ctx.ExecutionKey()
 	id := "sa:" + stream.EncodeIDPart(key.BusinessID) + ":" + stream.EncodeIDPart(key.RunID)
@@ -57,7 +56,7 @@ func (a *Activity) ownProducer(ctx chasm.Context, producer *streamservice.Produc
 }
 
 // checkAttempt checks that a task token is this Activity's current attempt, and that the
-// Producer's epoch is that attempt. The epoch stays (attempt scheduled time, attempt).
+// Producer's epoch has the same attempt.
 func (a *Activity) checkAttempt(
 	ctx chasm.Context,
 	producer *streamservice.Producer,
@@ -82,12 +81,12 @@ func (a *Activity) checkAttempt(
 }
 
 // HoldsStreams says whether a Stream of the closed Activity is still readable, so the Activity
-// outlives the namespace retention. A closed Stream stays readable for its Retention.
+// must outlive the namespace retention. A closed Stream stays readable for its Retention.
 func (a *Activity) HoldsStreams(ctx chasm.Context) bool {
 	return stream.HoldsStreams(ctx, a.Streams)
 }
 
-// endStreams closes the Activity's Streams with its end. Each terminal transition passes its
+// endStreams closes the Activity's Streams when it ends. Each terminal transition passes its
 // status, since the transition sets the Activity's status after its apply function.
 func (a *Activity) endStreams(ctx chasm.MutableContext, status activitypb.ActivityExecutionStatus) {
 	if len(a.Streams) == 0 {

@@ -28,9 +28,9 @@ func NewFrontendHandler(
 	return &FrontendHandler{client: client, config: config, namespaceRegistry: namespaceRegistry}
 }
 
-// RedirectableMethods lists the StreamService methods that a cell forwards to the namespace's
-// active cell, with the response each one answers. The Stream is in the active cell's
-// mutable state, so a call served elsewhere would read a replica or write a copy.
+// RedirectableMethods maps each StreamService method that a cell forwards to the namespace's
+// active cell to a func that makes its empty response. The Stream is in the active cell's mutable
+// state, so a call served elsewhere would read a replica or write a copy.
 func RedirectableMethods() map[string]func() any {
 	return map[string]func() any{
 		streamservice.StreamService_CreateStream_FullMethodName: func() any {

@@ -790,8 +790,8 @@ func (s *StreamTestSuite) TestCloseCommandOfAFailedWorkflowTaskIsDropped() {
 	)
 }
 
-// A cron run's end isn't the chain's end, so the next cron run writes on. The terminate of a later
-// run ends the chain and closes the Stream with its status.
+// A cron run's end isn't the chain's end, so the next cron run still writes. The terminate of a
+// later run ends the chain and closes the Stream with its status.
 func (s *StreamTestSuite) TestCronRunEndKeepsTheStreamOpen() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -985,7 +985,7 @@ func (s *StreamTestSuite) TestStreamClosesWithTheLastRunOfTheChain() {
 }
 
 // A reset to an earlier run of a continued-as-new chain terminates the current run, but the
-// chain goes on in the reset run, so its Streams stay open.
+// chain continues in the reset run, so its Streams stay open.
 func (s *StreamTestSuite) TestResetToAnEarlierRunKeepsTheStreamOpen() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -1355,7 +1355,7 @@ func (s *StreamTestSuite) TestWakeInAClosedFirstRunEndsAtItsWait() {
 }
 
 // The readers check runs in a first run that continued as new, so the floor of a reader that
-// closed goes, and the Retention trims its range.
+// closed is dropped, and the Retention trims its range.
 func (s *StreamTestSuite) TestReadersCheckRunsInAClosedFirstRun() {
 	env := s.newEnv(testcore.WithDynamicConfig(stream.ReaderCheckInterval, time.Second))
 	sc := s.streamClient(env)
@@ -1412,7 +1412,7 @@ func (s *StreamTestSuite) TestAppendToAStreamThatIsNotThereFails() {
 	s.Empty(page.GetRecords())
 }
 
-// A Workflow Stream that no Workflow reads trims past the size cap, so its writes go on.
+// A Workflow Stream that no Workflow reads trims past the size cap, so its writes don't fail.
 func (s *StreamTestSuite) TestWorkflowStreamWithNoReaderTrimsPastTheCap() {
 	env := s.newEnv()
 	sc := s.streamClient(env)

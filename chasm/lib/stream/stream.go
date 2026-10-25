@@ -195,8 +195,8 @@ func (s *Stream) reopen() {
 	}
 }
 
-// owned says whether a create's owner keeps the Stream open past one Retention with no write: a
-// Workflow, or a Standalone Activity, which closes the Stream when it ends.
+// owned says whether a create's owner keeps the Stream open past one Retention with no write. A
+// Workflow and a Standalone Activity do, since each closes its Stream when it ends.
 func owned(owner *streamservice.Producer) bool {
 	kind := owner.GetKind()
 	return kind == streamservice.PRODUCER_KIND_WORKFLOW ||
@@ -211,7 +211,7 @@ type AppendInput struct {
 
 // Append writes one batch of one Producer, with the checks and the withdrawal of the crate's
 // append script in one transition. The same epoch and sequence answers the first offsets
-// again, so a retried batch goes in once.
+// again, so a retried batch is written once.
 func (s *Stream) Append(
 	ctx chasm.MutableContext,
 	in AppendInput,
@@ -247,8 +247,8 @@ func (s *Stream) Append(
 				"The sequence %d is below the last one, %d", req.GetSequence(), known.GetSequence())
 		}
 	}
-	// A Workflow batch with no Records only settles its task facts, which a closed Stream
-	// still takes, as the Superseded Records after the close.
+	// A Workflow batch with no Records only settles its task facts. A closed Stream still takes
+	// it, since a Workflow Task that completes after the close can still withdraw Records.
 	deferred := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW &&
 		req.GetDeferWithdrawal()
 	settles := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW &&
@@ -338,8 +338,8 @@ func BatchDigest(records []*streamservice.AppendRecord) []byte {
 	return h.Sum(nil)
 }
 
-// batchEntries are the entries of one write: the orphans' Superseded Record, the batch's own
-// Superseded Record, then the Records.
+// batchEntries are the entries of one write. The orphans' Superseded Record comes first, then the
+// batch's own Superseded Record, then the Records.
 func batchEntries(
 	req *streamservice.AppendRecordsRequest,
 	w Withdrawal,
@@ -347,8 +347,8 @@ func batchEntries(
 ) []*streamservice.StreamRecord {
 	producer := req.GetProducer()
 	var entries []*streamservice.StreamRecord
-	// The orphans go in an entry of their own, since the batch's first entry may carry its own
-	// Superseded Record.
+	// The orphans get an entry of their own, since the batch may also write its own Superseded
+	// Record.
 	if orphans {
 		entries = append(entries, orphanRecord(req))
 	}
@@ -770,7 +770,7 @@ func (s *Stream) nextDeadline(ctx chasm.Context, limits Limits) (time.Time, bool
 	return deadline, found
 }
 
-// finish wakes the reads that can answer now, drops the reads whose answer went out, applies
+// finish wakes the reads that can answer now, drops the reads that have answered, applies
 // the size cap and arms the timer for the next deadline.
 func (s *Stream) finish(ctx chasm.MutableContext, limits Limits) {
 	s.limitStored(limits.MaxStoredBytes)
@@ -779,7 +779,7 @@ func (s *Stream) finish(ctx chasm.MutableContext, limits Limits) {
 			return s.wake(ctx, read, limits)
 		})
 	} else if s.waitingReads(ctx) == 0 {
-		// No read waits for the create any more, so the execution can go.
+		// No read waits for the create any more, so the Stream is done.
 		s.Phase = streampb.STREAM_PHASE_ABANDONED
 	}
 	s.pruneReads(ctx)

@@ -32,9 +32,8 @@ func readerOf(options nexus.StartOperationOptions) Reader {
 	return reader
 }
 
-// nexusError gives the Nexus form of a Stream error. A Stream error fails the operation with
-// an application failure whose type is the reason token, so the Workflow sees the same error
-// class as a client. Any other error stays a handler error, which the caller retries.
+// nexusError converts a Stream error to an application failure whose type is the reason token, so
+// a Workflow sees the same error class as a client. Other errors stay handler errors for retry.
 func nexusError(err error) error {
 	if err == nil {
 		return nil
@@ -53,8 +52,7 @@ func nexusError(err error) error {
 }
 
 // newNexusService serves the reads and the close to Workflow code. The close is a command, so the
-// server runs it only when the Workflow Task that issued it commits. Workflow writes go over the
-// frontend from the Core extension, which knows the Workflow Task facts of each write.
+// server runs it only when the Workflow Task that issued it commits.
 func newNexusService(h *handler) *nexus.Service {
 	service := nexus.NewService(ServiceName)
 	service.MustRegister(

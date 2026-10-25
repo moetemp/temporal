@@ -46,9 +46,9 @@ func (s *Stream) StartOffset(req *streamservice.ReadRecordsRequest) (int64, erro
 	return from, nil
 }
 
-// Page reads the Records from the offset from. It is false when the page has no Record, so a
-// reader waits. A page ends at the close Record, and a read past the close gives the close
-// Record again, so every read of a closed Stream ends with it.
+// Page reads the Records at or past from. Its bool is false when the page has no Record, so the
+// reader waits. A read past the close gives the close Record again, so every read of a closed
+// Stream ends with it.
 func (s *Stream) Page(
 	ctx chasm.Context,
 	req *streamservice.ReadRecordsRequest,
@@ -81,7 +81,7 @@ func (s *Stream) Page(
 	return resp, len(resp.GetRecords()) > 0, nil
 }
 
-// scan collects the Records from from that pass the Topic filter, up to limit.
+// scan collects the Records at or past from that pass the Topic filter, up to limit.
 func (s *Stream) scan(
 	ctx chasm.Context,
 	req *streamservice.ReadRecordsRequest,
@@ -130,8 +130,8 @@ func (s *Stream) scan(
 	return resp, nil
 }
 
-// pageFull says whether a page ends before its next entry. Only a page with Records stops at the
-// scan cap, so a reader never takes an empty page for the end with a match left.
+// pageFull says whether a page ends before its next entry. An empty page doesn't stop at the scan
+// cap, so a reader can't mistake it for the end while a match is left.
 func pageFull(resp *streamservice.ReadRecordsResponse, limit int, scanned int) bool {
 	if len(resp.GetRecords()) == 0 {
 		return false
@@ -148,7 +148,7 @@ func (s *Stream) firstBatchAt(offset int64) int {
 }
 
 // overBytes says whether entry would take a page past its max_bytes. A page takes its first
-// Record at any size, so a read always moves on.
+// Record at any size, so a read always makes progress.
 func overBytes(
 	req *streamservice.ReadRecordsRequest,
 	resp *streamservice.ReadRecordsResponse,
@@ -275,8 +275,8 @@ func passes(req *streamservice.ReadRecordsRequest, topic string) bool {
 	return false
 }
 
-// wakeAnswer is the answer of a wake_only read: no Records, the read's start as its next
-// offset, and whether the Stream is closed.
+// wakeAnswer is the answer of a wake_only read. It has no Records, and its next offset is the
+// read's start.
 func (s *Stream) wakeAnswer(start int64) *streamservice.ReadRecordsResponse {
 	return &streamservice.ReadRecordsResponse{
 		NextOffset: start,
@@ -284,9 +284,8 @@ func (s *Stream) wakeAnswer(start int64) *streamservice.ReadRecordsResponse {
 	}
 }
 
-// afterClose gives the Superseded items written after the close from the offset from, and the
-// offset after the last entry, zero if none. A Workflow Task that completes after the close
-// still withdraws, and a reader stops at the close Record, so a page puts them before it.
+// afterClose gives the Superseded items written after the close at or past from, and the offset
+// after the last one. A reader stops at the close Record, so a page puts them before it.
 func (s *Stream) afterClose(
 	ctx chasm.Context,
 	from, end int64,
@@ -451,8 +450,8 @@ type readOutcome struct {
 	err  error
 }
 
-// wake answers a parked read when the Stream can. A look that finds only other Topics moves
-// the read's offset on, so the next look starts after it.
+// wake answers a parked read when the Stream can. A look that finds only other Topics advances
+// the read's offset, so the next look starts after those entries.
 func (s *Stream) wake(
 	ctx chasm.MutableContext,
 	read *ParkedRead,
@@ -467,7 +466,7 @@ func (s *Stream) wake(
 		read.StartOffset = from
 		read.ScanOffset = from
 	}
-	// Nothing came since the read's last look, so every parked read doesn't rescan on each write.
+	// With no entry since the read's last look, a write doesn't rescan the parked read.
 	if s.Phase == streampb.STREAM_PHASE_OPEN && read.GetScanOffset() > s.NewestOffset {
 		return readOutcome{}, false
 	}
