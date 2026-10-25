@@ -34,22 +34,33 @@ func (s *Stream) admit(
 	}
 	known := s.producer(ctx, producerKey(producer))
 	if known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) < 0 {
-		return false, NewError(ReasonFenced, "The epoch is lower than the newest one of the Producer")
+		return false, NewError(
+			ReasonFenced,
+			"The epoch is lower than the newest one of the Producer",
+		)
 	}
 	run := s.run(ctx, producer.GetRunId())
 	task := taskOf(producer.GetEpoch())
 	switch producer.GetKind() {
 	case streamservice.PRODUCER_KIND_LOCAL_ACTIVITY:
-		if run != nil && (slices.ContainsFunc(run.GetWithdrawn(), func(t *streamservice.WorkflowTaskEpoch) bool {
-			return compareTasks(t, task) == 0
-		}) || (run.GetLastTask() != nil && len(withdrawTasks(
-			[]*streamservice.WorkflowTaskEpoch{task}, run.GetLastTask(), run.GetLastCompleted(), run.GetLastFailed(),
-		).withdrawn) > 0)) {
-			return false, NewError(ReasonFenced, "A Superseded Record withdrew the Workflow Task of the call")
+		withdrawn := slices.ContainsFunc(run.GetWithdrawn(),
+			func(t *streamservice.WorkflowTaskEpoch) bool { return compareTasks(t, task) == 0 })
+		if run.GetLastTask() != nil {
+			index := []*streamservice.WorkflowTaskEpoch{task}
+			split := withdrawTasks(index, run.GetLastTask(), run.GetLastCompleted(),
+				run.GetLastFailed())
+			withdrawn = withdrawn || len(split.withdrawn) > 0
+		}
+		if withdrawn {
+			return false, NewError(
+				ReasonFenced,
+				"A Superseded Record withdrew the Workflow Task of the call",
+			)
 		}
 		return newEpoch(producer, known) || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	case streamservice.PRODUCER_KIND_WORKFLOW:
-		flagged := !w.Defer && len(withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks).withdrawn) > 0
+		split := withdrawTasks(run.GetIndex(), task, w.PreviousCompleted, w.FailedTasks)
+		flagged := !w.Defer && len(split.withdrawn) > 0
 		return flagged || s.withdrawsRun(ctx, w.WithdrawRun), nil
 	default:
 		return newEpoch(producer, known) || s.withdrawsRun(ctx, w.WithdrawRun), nil
@@ -88,7 +99,10 @@ func (s *Stream) settle(
 	}
 	if wroteRecords {
 		run.Wrote = true
-		if !slices.ContainsFunc(run.Index, func(t *streamservice.WorkflowTaskEpoch) bool { return compareTasks(t, task) == 0 }) {
+		if !slices.ContainsFunc(
+			run.Index,
+			func(t *streamservice.WorkflowTaskEpoch) bool { return compareTasks(t, task) == 0 },
+		) {
 			run.Index = append(run.Index, task)
 		}
 	}
@@ -180,7 +194,11 @@ func (s *Stream) settleOrphans(
 	run := s.runForWrite(ctx, producer.GetRunId())
 	run.OpenLocal = split.kept
 	task := taskOf(producer.GetEpoch())
-	if wroteRecords && !slices.ContainsFunc(run.OpenLocal, func(t *streamservice.WorkflowTaskEpoch) bool { return compareTasks(t, task) == 0 }) {
+	if wroteRecords &&
+		!slices.ContainsFunc(
+			run.OpenLocal,
+			func(t *streamservice.WorkflowTaskEpoch) bool { return compareTasks(t, task) == 0 },
+		) {
 		run.OpenLocal = append(run.OpenLocal, task)
 	}
 	run.Withdrawn = append(run.Withdrawn, split.withdrawn...)

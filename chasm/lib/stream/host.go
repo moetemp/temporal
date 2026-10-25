@@ -122,7 +122,10 @@ func targetOf(namespaceID, streamID string, ref *streamservice.StreamRef) (targe
 		}, nil
 	}
 	if ref.GetWorkflowId() == "" {
-		return target{key: chasm.ExecutionKey{NamespaceID: namespaceID, BusinessID: streamID}, id: streamID}, nil
+		return target{
+			key: chasm.ExecutionKey{NamespaceID: namespaceID, BusinessID: streamID},
+			id:  streamID,
+		}, nil
 	}
 	if ref.GetFirstExecutionRunId() == "" {
 		return target{}, invalid("A Workflow Stream ref needs first_execution_run_id")
@@ -165,7 +168,9 @@ func update[O any](
 	}
 	if !t.nested {
 		out, _, err := chasm.UpdateComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
-			func(s *Stream, mctx chasm.MutableContext, _ struct{}) (O, error) { return fn(s, mctx) }, struct{}{})
+			func(s *Stream, mctx chasm.MutableContext, _ struct{}) (O, error) {
+				return fn(s, mctx)
+			}, struct{}{})
 		return out, uncarry(err)
 	}
 	out, _, err := chasm.UpdateComponent(ctx, t.hostRef(),
@@ -198,14 +203,22 @@ func update[O any](
 }
 
 // read runs fn on the Stream with no write.
-func read[O any](ctx context.Context, t target, view func(*Stream, chasm.Context) (O, error)) (O, error) {
+func read[O any](
+	ctx context.Context,
+	t target,
+	view func(*Stream, chasm.Context) (O, error),
+) (O, error) {
 	fn := func(s *Stream, cctx chasm.Context) (O, error) {
 		out, err := view(s, cctx)
 		return out, carry(err)
 	}
 	if !t.nested {
-		out, err := chasm.ReadComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
-			func(s *Stream, cctx chasm.Context, _ struct{}) (O, error) { return fn(s, cctx) }, struct{}{})
+		out, err := chasm.ReadComponent(
+			ctx,
+			chasm.NewComponentRef[*Stream](t.key),
+			func(s *Stream, cctx chasm.Context, _ struct{}) (O, error) { return fn(s, cctx) },
+			struct{}{},
+		)
 		return out, uncarry(err)
 	}
 	out, err := chasm.ReadComponent(ctx, t.hostRef(),
@@ -244,9 +257,14 @@ func uncarry(err error) error {
 func poll(ctx context.Context, t target, done func(*Stream) bool) error {
 	var err error
 	if !t.nested {
-		_, _, err = chasm.PollComponent(ctx, chasm.NewComponentRef[*Stream](t.key),
-			func(s *Stream, _ chasm.Context, _ struct{}) (struct{}, bool, error) { return struct{}{}, done(s), nil },
-			struct{}{})
+		_, _, err = chasm.PollComponent(
+			ctx,
+			chasm.NewComponentRef[*Stream](t.key),
+			func(s *Stream, _ chasm.Context, _ struct{}) (struct{}, bool, error) {
+				return struct{}{}, done(s), nil
+			},
+			struct{}{},
+		)
 	} else {
 		_, _, err = chasm.PollComponent(ctx, t.hostRef(),
 			func(h Host, cctx chasm.Context, _ struct{}) (struct{}, bool, error) {
@@ -266,7 +284,10 @@ type closeChainTaskHandler struct {
 	namespaceRegistry namespace.Registry
 }
 
-func newCloseChainTaskHandler(config *Config, namespaceRegistry namespace.Registry) *closeChainTaskHandler {
+func newCloseChainTaskHandler(
+	config *Config,
+	namespaceRegistry namespace.Registry,
+) *closeChainTaskHandler {
 	return &closeChainTaskHandler{config: config, namespaceRegistry: namespaceRegistry}
 }
 
@@ -298,7 +319,11 @@ func (h *closeChainTaskHandler) Execute(
 	}
 	limits := h.config.LimitsFor(ns.Name().String())
 	first := target{
-		key:    chasm.ExecutionKey{NamespaceID: ref.NamespaceID, BusinessID: ref.BusinessID, RunID: task.GetFirstRunId()},
+		key: chasm.ExecutionKey{
+			NamespaceID: ref.NamespaceID,
+			BusinessID:  ref.BusinessID,
+			RunID:       task.GetFirstRunId(),
+		},
 		nested: true,
 		host:   chasm.WorkflowArchetypeID,
 	}

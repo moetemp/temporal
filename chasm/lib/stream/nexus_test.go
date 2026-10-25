@@ -23,7 +23,9 @@ func TestNexusErrorFailsTheOperationWithTheReason(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, nexus.OperationStateFailed, opErr.State)
 
-	_, ok = nexusError(serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT, "full")).(*nexus.HandlerError)
+	full := serviceerror.NewResourceExhausted(
+		enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT, "full")
+	_, ok = nexusError(full).(*nexus.HandlerError)
 	require.True(t, ok)
 
 	unavailable := serviceerror.NewUnavailable("down")
@@ -32,32 +34,72 @@ func TestNexusErrorFailsTheOperationWithTheReason(t *testing.T) {
 
 func TestProcessorRoutesByStreamID(t *testing.T) {
 	ns := namespace.NewLocalNamespaceForTest(
-		&persistencespb.NamespaceInfo{Id: "ns-id", Name: "ns"}, &persistencespb.NamespaceConfig{}, "active")
+		&persistencespb.NamespaceInfo{
+			Id:   "ns-id",
+			Name: "ns",
+		},
+		&persistencespb.NamespaceConfig{},
+		"active",
+	)
 	collection := dynamicconfig.NewMemoryClient()
 	collection.OverrideSetting(Enabled, true)
-	sp := newNexusServiceProcessor(ConfigProvider(dynamicconfig.NewCollection(collection, log.NewNoopLogger())))
+	sp := newNexusServiceProcessor(
+		ConfigProvider(dynamicconfig.NewCollection(collection, log.NewNoopLogger())),
+	)
 	ctx := chasm.NexusOperationProcessorContext{Namespace: ns, ReserializeInputPayload: true}
 
-	input := payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{Stream: &streamservice.StreamRef{Id: "chat-1"}})
+	input := payloads.MustEncodeSingle(
+		&streamservice.ReadRecordsRequest{Stream: &streamservice.StreamRef{Id: "chat-1"}},
+	)
 	result, err := sp.ProcessInput(ctx, "ReadRecords", input)
 	require.NoError(t, err)
-	require.Equal(t, chasm.NexusOperationRoutingKeyExecution{NamespaceID: "ns-id", BusinessID: "chat-1"}, result.RoutingKey)
+	require.Equal(
+		t,
+		chasm.NexusOperationRoutingKeyExecution{NamespaceID: "ns-id", BusinessID: "chat-1"},
+		result.RoutingKey,
+	)
 	var routed streamservice.ReadRecordsRequest
-	require.NoError(t, payloads.Decode(&commonpb.Payloads{Payloads: []*commonpb.Payload{result.ReserializedInputPayload}}, &routed))
+	require.NoError(
+		t,
+		payloads.Decode(
+			&commonpb.Payloads{Payloads: []*commonpb.Payload{result.ReserializedInputPayload}},
+			&routed,
+		),
+	)
 	require.Equal(t, "ns", routed.GetNamespace())
 
 	// A Workflow Stream is on its Workflow's shard.
-	result, err = sp.ProcessInput(ctx, "CloseStream", payloads.MustEncodeSingle(&streamservice.CloseStreamRequest{
-		Stream: &streamservice.StreamRef{Id: "chat-1", WorkflowId: "wf", FirstExecutionRunId: "first"},
-	}))
+	result, err = sp.ProcessInput(
+		ctx,
+		"CloseStream",
+		payloads.MustEncodeSingle(&streamservice.CloseStreamRequest{
+			Stream: &streamservice.StreamRef{
+				Id:                  "chat-1",
+				WorkflowId:          "wf",
+				FirstExecutionRunId: "first",
+			},
+		}),
+	)
 	require.NoError(t, err)
-	require.Equal(t, chasm.NexusOperationRoutingKeyExecution{NamespaceID: "ns-id", BusinessID: "wf"}, result.RoutingKey)
+	require.Equal(
+		t,
+		chasm.NexusOperationRoutingKeyExecution{NamespaceID: "ns-id", BusinessID: "wf"},
+		result.RoutingKey,
+	)
 
-	_, err = sp.ProcessInput(ctx, "ReadRecords", payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{}))
+	_, err = sp.ProcessInput(
+		ctx,
+		"ReadRecords",
+		payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{}),
+	)
 	require.ErrorContains(t, err, ReasonInvalid)
-	_, err = sp.ProcessInput(ctx, "ReadRecords", payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{
-		Namespace: "other",
-		Stream:    &streamservice.StreamRef{Id: "chat-1"},
-	}))
+	_, err = sp.ProcessInput(
+		ctx,
+		"ReadRecords",
+		payloads.MustEncodeSingle(&streamservice.ReadRecordsRequest{
+			Namespace: "other",
+			Stream:    &streamservice.StreamRef{Id: "chat-1"},
+		}),
+	)
 	require.ErrorContains(t, err, "does not match")
 }

@@ -20,7 +20,8 @@ func (h *timerTaskHandler) Validate(
 	_ chasm.TaskInvocation,
 	task *streampb.StreamTimerTask,
 ) (bool, error) {
-	return s.GetTimerDeadline() != nil && s.GetTimerDeadline().AsTime().Equal(task.GetDeadline().AsTime()), nil
+	return s.GetTimerDeadline() != nil &&
+		s.GetTimerDeadline().AsTime().Equal(task.GetDeadline().AsTime()), nil
 }
 
 func (h *timerTaskHandler) Execute(

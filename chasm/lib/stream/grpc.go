@@ -17,7 +17,10 @@ func newGRPCHandler(h *handler) *grpcHandler {
 	return &grpcHandler{handler: h}
 }
 
-func (g *grpcHandler) CreateStream(ctx context.Context, req *streampb.CreateStreamRequest) (*streampb.CreateStreamResponse, error) {
+func (g *grpcHandler) CreateStream(
+	ctx context.Context,
+	req *streampb.CreateStreamRequest,
+) (*streampb.CreateStreamResponse, error) {
 	resp, err := g.handler.CreateStream(ctx, req.GetFrontendRequest())
 	if err != nil {
 		return nil, err
@@ -25,7 +28,10 @@ func (g *grpcHandler) CreateStream(ctx context.Context, req *streampb.CreateStre
 	return &streampb.CreateStreamResponse{FrontendResponse: resp}, nil
 }
 
-func (g *grpcHandler) AppendRecords(ctx context.Context, req *streampb.AppendRecordsRequest) (*streampb.AppendRecordsResponse, error) {
+func (g *grpcHandler) AppendRecords(
+	ctx context.Context,
+	req *streampb.AppendRecordsRequest,
+) (*streampb.AppendRecordsResponse, error) {
 	resp, err := g.handler.AppendRecords(ctx, req.GetFrontendRequest())
 	if err != nil {
 		return nil, err
@@ -33,7 +39,10 @@ func (g *grpcHandler) AppendRecords(ctx context.Context, req *streampb.AppendRec
 	return &streampb.AppendRecordsResponse{FrontendResponse: resp}, nil
 }
 
-func (g *grpcHandler) CloseStream(ctx context.Context, req *streampb.CloseStreamRequest) (*streampb.CloseStreamResponse, error) {
+func (g *grpcHandler) CloseStream(
+	ctx context.Context,
+	req *streampb.CloseStreamRequest,
+) (*streampb.CloseStreamResponse, error) {
 	resp, err := g.handler.CloseStream(ctx, req.GetFrontendRequest())
 	if err != nil {
 		return nil, err
@@ -41,7 +50,10 @@ func (g *grpcHandler) CloseStream(ctx context.Context, req *streampb.CloseStream
 	return &streampb.CloseStreamResponse{FrontendResponse: resp}, nil
 }
 
-func (g *grpcHandler) ReadRecords(ctx context.Context, req *streampb.ReadRecordsRequest) (*streampb.ReadRecordsResponse, error) {
+func (g *grpcHandler) ReadRecords(
+	ctx context.Context,
+	req *streampb.ReadRecordsRequest,
+) (*streampb.ReadRecordsResponse, error) {
 	resp, err := g.handler.ReadRecords(ctx, req.GetFrontendRequest(), nil)
 	if err != nil {
 		return nil, err
@@ -49,7 +61,10 @@ func (g *grpcHandler) ReadRecords(ctx context.Context, req *streampb.ReadRecords
 	return &streampb.ReadRecordsResponse{FrontendResponse: resp}, nil
 }
 
-func (g *grpcHandler) DescribeStream(ctx context.Context, req *streampb.DescribeStreamRequest) (*streampb.DescribeStreamResponse, error) {
+func (g *grpcHandler) DescribeStream(
+	ctx context.Context,
+	req *streampb.DescribeStreamRequest,
+) (*streampb.DescribeStreamResponse, error) {
 	resp, err := g.handler.DescribeStream(ctx, req.GetFrontendRequest())
 	if err != nil {
 		return nil, err

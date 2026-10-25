@@ -42,7 +42,10 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, registry.Register(&chasm.CoreLibrary{}))
 	require.NoError(t, registry.Register(callback.NewNilLibrary()))
 	config := ConfigProvider(dynamicconfig.NewNoopCollection())
-	require.NoError(t, registry.Register(newLibrary(config, nil, nil, newTimerTaskHandler(config), nil, nil)))
+	require.NoError(
+		t,
+		registry.Register(newLibrary(config, nil, nil, newTimerTaskHandler(config), nil, nil)),
+	)
 	ts := clock.NewEventTimeSource()
 	ts.Update(time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC))
 	engine := chasmtest.NewEngine(t, registry, chasmtest.WithTimeSource(ts))
@@ -61,16 +64,27 @@ func (h *harness) ref() chasm.ComponentRef {
 }
 
 func (h *harness) create(req *streamservice.CreateStreamRequest) (CreateOutput, error) {
-	result, err := chasm.UpdateWithStartExecution(h.ctx, h.key, StartStream, (*Stream).Create,
+	result, err := chasm.UpdateWithStartExecution(
+		h.ctx,
+		h.key,
+		StartStream,
+		(*Stream).Create,
 		CreateInput{Request: req, Limits: h.limits},
-		chasm.WithBusinessIDPolicy(chasm.BusinessIDReusePolicyRejectDuplicate, chasm.BusinessIDConflictPolicyUseExisting),
+		chasm.WithBusinessIDPolicy(
+			chasm.BusinessIDReusePolicyRejectDuplicate,
+			chasm.BusinessIDConflictPolicyUseExisting,
+		),
 	)
 	out := result.UpdateOutput
 	out.Created = out.Created || result.Created
 	return out, err
 }
 
-func (h *harness) append(producer *streamservice.Producer, sequence int64, topics ...string) (*streamservice.AppendRecordsResponse, error) {
+func (h *harness) append(
+	producer *streamservice.Producer,
+	sequence int64,
+	topics ...string,
+) (*streamservice.AppendRecordsResponse, error) {
 	req := &streamservice.AppendRecordsRequest{Producer: producer, Sequence: sequence}
 	for _, topic := range topics {
 		req.Records = append(req.Records, &streamservice.AppendRecord{
@@ -81,8 +95,15 @@ func (h *harness) append(producer *streamservice.Producer, sequence int64, topic
 	return h.appendRequest(req)
 }
 
-func (h *harness) appendRequest(req *streamservice.AppendRecordsRequest) (*streamservice.AppendRecordsResponse, error) {
-	resp, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Append, AppendInput{Request: req, Limits: h.limits})
+func (h *harness) appendRequest(
+	req *streamservice.AppendRecordsRequest,
+) (*streamservice.AppendRecordsResponse, error) {
+	resp, _, err := chasm.UpdateComponent(
+		h.ctx,
+		h.ref(),
+		(*Stream).Append,
+		AppendInput{Request: req, Limits: h.limits},
+	)
 	return resp, err
 }
 
@@ -101,8 +122,12 @@ func (h *harness) close(result string) error {
 func (h *harness) commandClose(run, result string) error {
 	_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
 		Request: &streamservice.CloseStreamRequest{
-			Producer: &streamservice.Producer{Kind: streamservice.PRODUCER_KIND_WORKFLOW, Id: "wf:" + run, RunId: run},
-			Result:   &commonpb.Payload{Data: []byte(result)},
+			Producer: &streamservice.Producer{
+				Kind:  streamservice.PRODUCER_KIND_WORKFLOW,
+				Id:    "wf:" + run,
+				RunId: run,
+			},
+			Result: &commonpb.Payload{Data: []byte(result)},
 		},
 		Limits:  h.limits,
 		Command: true,
@@ -110,31 +135,51 @@ func (h *harness) commandClose(run, result string) error {
 	return err
 }
 
-func (h *harness) read(req *streamservice.ReadRecordsRequest) (*streamservice.ReadRecordsResponse, error) {
-	return chasm.ReadComponent(h.ctx, h.ref(),
-		func(s *Stream, ctx chasm.Context, req *streamservice.ReadRecordsRequest) (*streamservice.ReadRecordsResponse, error) {
+func (h *harness) read(
+	req *streamservice.ReadRecordsRequest,
+) (*streamservice.ReadRecordsResponse, error) {
+	return chasm.ReadComponent(
+		h.ctx,
+		h.ref(),
+		func(
+			s *Stream,
+			ctx chasm.Context,
+			req *streamservice.ReadRecordsRequest,
+		) (*streamservice.ReadRecordsResponse, error) {
 			from, err := s.StartOffset(req)
 			if err != nil {
 				return nil, err
 			}
 			resp, _, err := s.Page(ctx, req, from)
 			return resp, err
-		}, req)
+		},
+		req,
+	)
 }
 
-func (h *harness) readOrPark(requestID string, req *streamservice.ReadRecordsRequest) (*streamservice.ReadRecordsResponse, error) {
-	result, err := chasm.UpdateWithStartExecution(h.ctx, h.key,
+func (h *harness) readOrPark(
+	requestID string,
+	req *streamservice.ReadRecordsRequest,
+) (*streamservice.ReadRecordsResponse, error) {
+	result, err := chasm.UpdateWithStartExecution(
+		h.ctx,
+		h.key,
 		StartForRead,
 		(*Stream).ReadOrPark,
 		ReadInput{
 			Request:   req,
 			RequestID: requestID,
-			Callback: &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
-				Url: chasm.NexusCompletionHandlerURL,
-			}}},
+			Callback: &commonpb.Callback{
+				Variant: &commonpb.Callback_Nexus_{Nexus: &commonpb.Callback_Nexus{
+					Url: chasm.NexusCompletionHandlerURL,
+				}},
+			},
 			Limits: h.limits,
 		},
-		chasm.WithBusinessIDPolicy(chasm.BusinessIDReusePolicyRejectDuplicate, chasm.BusinessIDConflictPolicyUseExisting),
+		chasm.WithBusinessIDPolicy(
+			chasm.BusinessIDReusePolicyRejectDuplicate,
+			chasm.BusinessIDConflictPolicyUseExisting,
+		),
 	)
 	return result.UpdateOutput, err
 }
@@ -210,7 +255,12 @@ func TestCreateIsIdempotentForOneRetention(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, CreateOutput{Status: streamservice.STREAM_STATUS_OPEN}, out)
 
-	_, err = h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Retention: durationpb.New(time.Hour)})
+	_, err = h.create(
+		&streamservice.CreateStreamRequest{
+			StreamId:  "chat-1",
+			Retention: durationpb.New(time.Hour),
+		},
+	)
 	require.ErrorContains(t, err, ReasonAlreadyExists)
 }
 
@@ -229,11 +279,18 @@ func TestAppendAndRead(t *testing.T) {
 	require.Equal(t, []string{"turns", "tool/search", "other"}, topics(all))
 	require.Equal(t, first.GetLastOffset()+1, all.GetNextOffset())
 
-	filtered, err := h.read(&streamservice.ReadRecordsRequest{Topics: []string{"turns"}, TopicPrefixes: []string{"tool/"}})
+	filtered, err := h.read(
+		&streamservice.ReadRecordsRequest{
+			Topics:        []string{"turns"},
+			TopicPrefixes: []string{"tool/"},
+		},
+	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"turns", "tool/search"}, topics(filtered))
 
-	page, err := h.read(&streamservice.ReadRecordsRequest{FromOffset: first.GetFirstOffset() + 1, MaxRecords: 1})
+	page, err := h.read(
+		&streamservice.ReadRecordsRequest{FromOffset: first.GetFirstOffset() + 1, MaxRecords: 1},
+	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"tool/search"}, topics(page))
 	require.Equal(t, first.GetFirstOffset()+2, page.GetNextOffset())
@@ -395,7 +452,9 @@ func TestSecondCloseChecksTheOwner(t *testing.T) {
 // A command close has no epoch, so the epoch of the run's earlier writes doesn't fence it.
 func TestCommandCloseOfTheOwnerRun(t *testing.T) {
 	h := newHarness(t)
-	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1)})
+	_, err := h.create(
+		&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1)},
+	)
 	require.NoError(t, err)
 	_, err = h.append(workflowProducer(3), 1, "a")
 	require.NoError(t, err)
@@ -433,11 +492,20 @@ func TestLocalActivityCantCloseAWorkflowStream(t *testing.T) {
 
 func TestCommandCloseOfAWithdrawnRunIsFenced(t *testing.T) {
 	h := newHarness(t)
-	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1)})
+	_, err := h.create(
+		&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1)},
+	)
 	require.NoError(t, err)
 	retry := workflowProducer(3)
 	retry.Id, retry.RunId = "wf:retry", "retry"
-	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{Producer: retry, Sequence: 1, Records: records("a"), WithdrawRun: "run"})
+	_, err = h.appendRequest(
+		&streamservice.AppendRecordsRequest{
+			Producer:    retry,
+			Sequence:    1,
+			Records:     records("a"),
+			WithdrawRun: "run",
+		},
+	)
 	require.NoError(t, err)
 
 	require.ErrorContains(t, h.commandClose("run", "done"), ReasonFenced)
@@ -445,7 +513,12 @@ func TestCommandCloseOfAWithdrawnRunIsFenced(t *testing.T) {
 
 func TestRetentionDropsOldRecordsAndExpiresTheStream(t *testing.T) {
 	h := newHarness(t)
-	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Retention: durationpb.New(time.Hour)})
+	_, err := h.create(
+		&streamservice.CreateStreamRequest{
+			StreamId:  "chat-1",
+			Retention: durationpb.New(time.Hour),
+		},
+	)
 	require.NoError(t, err)
 	old, err := h.append(activityProducer(1), 1, "old")
 	require.NoError(t, err)
@@ -463,7 +536,12 @@ func TestRetentionDropsOldRecordsAndExpiresTheStream(t *testing.T) {
 	h.advance(time.Hour)
 	_, err = h.read(&streamservice.ReadRecordsRequest{})
 	require.ErrorContains(t, err, ReasonExpired)
-	out, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Retention: durationpb.New(time.Hour)})
+	out, err := h.create(
+		&streamservice.CreateStreamRequest{
+			StreamId:  "chat-1",
+			Retention: durationpb.New(time.Hour),
+		},
+	)
 	require.Error(t, err)
 	require.Equal(t, CreateOutput{}, out)
 }
@@ -489,7 +567,11 @@ func TestParkedReadWakesOnAppend(t *testing.T) {
 	read := h.parked("read-1")
 	require.True(t, read.GetResolved())
 	require.Empty(t, read.GetResponse().GetRecords())
-	require.Equal(t, []callbackspb.CallbackStatus{callbackspb.CALLBACK_STATUS_SCHEDULED}, read.callbacks)
+	require.Equal(
+		t,
+		[]callbackspb.CallbackStatus{callbackspb.CALLBACK_STATUS_SCHEDULED},
+		read.callbacks,
+	)
 
 	again, err := h.readOrPark("read-1", wake)
 	require.NoError(t, err)
@@ -573,9 +655,13 @@ func workflowProducer(started int64) *streamservice.Producer {
 
 func localActivityProducer(started int64) *streamservice.Producer {
 	return &streamservice.Producer{
-		Kind:  streamservice.PRODUCER_KIND_LOCAL_ACTIVITY,
-		Id:    "la:run:1",
-		Epoch: &streamservice.ProducerEpoch{TaskStartedEventId: started, TaskAttempt: 1, Attempt: 1},
+		Kind: streamservice.PRODUCER_KIND_LOCAL_ACTIVITY,
+		Id:   "la:run:1",
+		Epoch: &streamservice.ProducerEpoch{
+			TaskStartedEventId: started,
+			TaskAttempt:        1,
+			Attempt:            1,
+		},
 		RunId: "run",
 	}
 }
@@ -583,7 +669,10 @@ func localActivityProducer(started int64) *streamservice.Producer {
 func records(topics ...string) []*streamservice.AppendRecord {
 	var out []*streamservice.AppendRecord
 	for _, topic := range topics {
-		out = append(out, &streamservice.AppendRecord{Topic: topic, Body: &commonpb.Payload{Data: []byte(topic)}})
+		out = append(
+			out,
+			&streamservice.AppendRecord{Topic: topic, Body: &commonpb.Payload{Data: []byte(topic)}},
+		)
 	}
 	return out
 }
@@ -626,7 +715,14 @@ func TestWithdrawRunFencesThePreviousRun(t *testing.T) {
 
 	retry := workflowProducer(3)
 	retry.Id, retry.RunId = "wf:retry", "retry"
-	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{Producer: retry, Sequence: 1, Records: records("b"), WithdrawRun: "run"})
+	_, err = h.appendRequest(
+		&streamservice.AppendRecordsRequest{
+			Producer:    retry,
+			Sequence:    1,
+			Records:     records("b"),
+			WithdrawRun: "run",
+		},
+	)
 	require.NoError(t, err)
 	_, err = h.append(workflowProducer(9), 1, "c")
 	require.ErrorContains(t, err, ReasonFenced)
@@ -686,9 +782,14 @@ func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	b, err := h.append(activityProducer(1), 2, "b")
 	require.NoError(t, err)
 	setReaders := func(fn func(*Stream, chasm.MutableContext) error) {
-		_, _, err := chasm.UpdateComponent(h.ctx, h.ref(), func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
-			return struct{}{}, fn(s, mctx)
-		}, struct{}{})
+		_, _, err := chasm.UpdateComponent(
+			h.ctx,
+			h.ref(),
+			func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+				return struct{}{}, fn(s, mctx)
+			},
+			struct{}{},
+		)
 		require.NoError(t, err)
 	}
 	setReaders(func(s *Stream, mctx chasm.MutableContext) error {
@@ -697,9 +798,13 @@ func TestReaderFloorKeepsItsRecords(t *testing.T) {
 			b.GetFirstOffset(), h.limits)
 	})
 
-	big := &streamservice.AppendRecordsRequest{Producer: activityProducer(1), Sequence: 3, Records: []*streamservice.AppendRecord{
-		{Topic: "c", Body: &commonpb.Payload{Data: make([]byte, 300)}},
-	}}
+	big := &streamservice.AppendRecordsRequest{
+		Producer: activityProducer(1),
+		Sequence: 3,
+		Records: []*streamservice.AppendRecord{
+			{Topic: "c", Body: &commonpb.Payload{Data: make([]byte, 300)}},
+		},
+	}
 	_, err = h.appendRequest(big)
 	require.ErrorContains(t, err, ReasonTooLarge)
 
@@ -781,7 +886,11 @@ func TestReaderFloorKeepsTheRecordsOfAClientStream(t *testing.T) {
 
 // localActivityWrite is a write of the Local Activity call of the run, dispatched by task
 // started, with the run's last completed task (0 before the first), as the crate's S110 test has.
-func localActivityWrite(call string, started, completed int64, topic string) *streamservice.AppendRecordsRequest {
+func localActivityWrite(
+	call string,
+	started, completed int64,
+	topic string,
+) *streamservice.AppendRecordsRequest {
 	return &streamservice.AppendRecordsRequest{
 		Producer: &streamservice.Producer{
 			Kind: streamservice.PRODUCER_KIND_LOCAL_ACTIVITY,
@@ -816,9 +925,13 @@ func TestLocalActivityOfATaskThatNeverCompletedIsWithdrawnByTheNextWrite(t *test
 	require.Equal(t, []string{"done", "orphan", "superseded", "other"}, topics(read))
 	require.Equal(t, read.GetRecords()[3].GetOffset(), other.GetFirstOffset())
 	require.Equal(t, &streamservice.Supersession{
-		ProducerKind:          streamservice.PRODUCER_KIND_WORKFLOW,
-		ProducerId:            "wf:run",
-		Epoch:                 &streamservice.ProducerEpoch{TaskStartedEventId: 4, TaskAttempt: 1, TaskStartedTime: timestamppb.New(time.Unix(104, 0))},
+		ProducerKind: streamservice.PRODUCER_KIND_WORKFLOW,
+		ProducerId:   "wf:run",
+		Epoch: &streamservice.ProducerEpoch{
+			TaskStartedEventId: 4,
+			TaskAttempt:        1,
+			TaskStartedTime:    timestamppb.New(time.Unix(104, 0)),
+		},
 		PreviousCompletedTask: &streamservice.WorkflowTaskEpoch{StartedEventId: 2},
 		RunId:                 "run",
 	}, read.GetRecords()[2].GetSupersession())

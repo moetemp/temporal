@@ -36,7 +36,12 @@ func (s *Stream) StartOffset(req *streamservice.ReadRecordsRequest) (int64, erro
 		from = s.NewestOffset + 1
 	}
 	if from > s.NewestOffset+1 {
-		return 0, NewError(ReasonOffset, "The offset %d is past the newest offset + 1, %d", from, s.NewestOffset+1)
+		return 0, NewError(
+			ReasonOffset,
+			"The offset %d is past the newest offset + 1, %d",
+			from,
+			s.NewestOffset+1,
+		)
 	}
 	return from, nil
 }
@@ -265,13 +270,19 @@ func passes(req *streamservice.ReadRecordsRequest, topic string) bool {
 // wakeAnswer is the answer of a wake_only read: no Records, the read's start as its next
 // offset, and whether the Stream is closed.
 func (s *Stream) wakeAnswer(start int64) *streamservice.ReadRecordsResponse {
-	return &streamservice.ReadRecordsResponse{NextOffset: start, Done: s.Phase == streampb.STREAM_PHASE_CLOSED}
+	return &streamservice.ReadRecordsResponse{
+		NextOffset: start,
+		Done:       s.Phase == streampb.STREAM_PHASE_CLOSED,
+	}
 }
 
 // afterClose gives the Superseded items written after the close from the offset from, and the
 // offset after the last entry, zero if none. A Workflow Task that completes after the close
 // still withdraws, and a reader stops at the close Record, so a page puts them before it.
-func (s *Stream) afterClose(ctx chasm.Context, from, end int64) ([]*streamservice.StreamRecord, int64) {
+func (s *Stream) afterClose(
+	ctx chasm.Context,
+	from, end int64,
+) ([]*streamservice.StreamRecord, int64) {
 	var records []*streamservice.StreamRecord
 	var after int64
 	for _, info := range s.Index[s.firstBatchAt(from):] {
@@ -332,7 +343,10 @@ func StartForRead(ctx chasm.MutableContext, in ReadInput) (*Stream, error) {
 // ReadOrPark answers a read at once, but parks a wake_only read that finds no Record until the
 // Stream can answer it. It answers nil for a parked read. A wake's answer has no Records, so a
 // parked read keeps no page, though one append wakes every parked read in one transaction.
-func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamservice.ReadRecordsResponse, error) {
+func (s *Stream) ReadOrPark(
+	ctx chasm.MutableContext,
+	in ReadInput,
+) (*streamservice.ReadRecordsResponse, error) {
 	s.applyDue(ctx, in.Limits)
 	if field, ok := s.Reads[in.RequestID]; ok {
 		read := field.Get(ctx)
@@ -399,7 +413,9 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 		s.Reads = make(chasm.Map[string, *ParkedRead])
 	}
 	s.Reads[in.RequestID] = chasm.NewComponentField(ctx, read)
-	if err := callback.Attach(ctx, read, in.RequestID, timestamppb.New(now), []*commonpb.Callback{in.Callback}); err != nil {
+	callbacks := []*commonpb.Callback{in.Callback}
+	err := callback.Attach(ctx, read, in.RequestID, timestamppb.New(now), callbacks)
+	if err != nil {
 		return nil, err
 	}
 	s.finish(ctx, in.Limits)
@@ -459,7 +475,10 @@ func (s *Stream) wake(
 }
 
 // resolveReads completes each waiting read for which decide is done.
-func (s *Stream) resolveReads(ctx chasm.MutableContext, decide func(*ParkedRead) (readOutcome, bool)) {
+func (s *Stream) resolveReads(
+	ctx chasm.MutableContext,
+	decide func(*ParkedRead) (readOutcome, bool),
+) {
 	for _, field := range s.Reads {
 		read := field.Get(ctx)
 		if read.GetResolved() {
@@ -491,7 +510,8 @@ func (s *Stream) pruneReads(ctx chasm.MutableContext) {
 		delivered := true
 		for _, cb := range read.Callbacks {
 			status := cb.Get(ctx).GetStatus()
-			if status != callbackspb.CALLBACK_STATUS_SUCCEEDED && status != callbackspb.CALLBACK_STATUS_FAILED {
+			if status != callbackspb.CALLBACK_STATUS_SUCCEEDED &&
+				status != callbackspb.CALLBACK_STATUS_FAILED {
 				delivered = false
 				break
 			}
@@ -516,8 +536,12 @@ func parkWaits(
 }
 
 // ReadTimeout is how long a frontend read waits, bounded by the crate's limit.
-func ReadTimeout(req *streamservice.ReadRecordsRequest) (wait time.Duration, createWait time.Duration) {
-	return min(max(req.GetWait().AsDuration(), 0), MaxWait), min(max(req.GetCreateWait().AsDuration(), 0), MaxWait)
+func ReadTimeout(
+	req *streamservice.ReadRecordsRequest,
+) (wait time.Duration, createWait time.Duration) {
+	wait = min(max(req.GetWait().AsDuration(), 0), MaxWait)
+	createWait = min(max(req.GetCreateWait().AsDuration(), 0), MaxWait)
+	return wait, createWait
 }
 
 // keepWakeFloor keeps the floor of a wake's Workflow in the transaction that takes the wake,

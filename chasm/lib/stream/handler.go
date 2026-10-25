@@ -24,8 +24,16 @@ type handler struct {
 	historyClient     resource.HistoryClient
 }
 
-func newHandler(config *Config, namespaceRegistry namespace.Registry, historyClient resource.HistoryClient) *handler {
-	return &handler{config: config, namespaceRegistry: namespaceRegistry, historyClient: historyClient}
+func newHandler(
+	config *Config,
+	namespaceRegistry namespace.Registry,
+	historyClient resource.HistoryClient,
+) *handler {
+	return &handler{
+		config:            config,
+		namespaceRegistry: namespaceRegistry,
+		historyClient:     historyClient,
+	}
 }
 
 // Reader is a Workflow read through System Nexus.
@@ -49,7 +57,11 @@ func checkProducer(producer *streamservice.Producer) error {
 		return invalid("The Producer has no kind")
 	}
 	if !strings.HasPrefix(producer.GetId(), prefix) {
-		return invalid("The Producer id %q doesn't start with %q, as its kind requires", producer.GetId(), prefix)
+		return invalid(
+			"The Producer id %q doesn't start with %q, as its kind requires",
+			producer.GetId(),
+			prefix,
+		)
 	}
 	return nil
 }
@@ -95,7 +107,10 @@ func CheckStreamID(id string) error {
 }
 
 // target resolves the namespace, the limits and the place of a Stream.
-func (h *handler) target(namespaceName, streamID string, ref *streamservice.StreamRef) (target, Limits, error) {
+func (h *handler) target(
+	namespaceName, streamID string,
+	ref *streamservice.StreamRef,
+) (target, Limits, error) {
 	if err := CheckStreamID(streamID); err != nil {
 		return target{}, Limits{}, err
 	}
@@ -175,7 +190,8 @@ func (h *handler) CreateStream(
 	}
 	workflowOwner := req.GetOwner().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW
 	if req.GetCloseWithRun() && (!t.workflow() || !workflowOwner) {
-		return nil, invalid("close_with_run needs a Workflow owner and a ref with workflow_id and first_execution_run_id")
+		return nil, invalid("close_with_run needs a Workflow owner and a ref with workflow_id " +
+			"and first_execution_run_id")
 	}
 	if err := h.checkChain(ctx, t, req.GetOwner(), req.GetWithdrawRun()); err != nil {
 		return nil, err
@@ -186,8 +202,10 @@ func (h *handler) CreateStream(
 		check := func(h Host, cctx chasm.Context) error {
 			return h.CheckOwner(cctx, req.GetOwner(), req.GetTaskToken())
 		}
-		out, err = update(ctx, t, newNestedStream, check,
-			func(s *Stream, mctx chasm.MutableContext) (CreateOutput, error) { return s.Create(mctx, in) })
+		create := func(s *Stream, mctx chasm.MutableContext) (CreateOutput, error) {
+			return s.Create(mctx, in)
+		}
+		out, err = update(ctx, t, newNestedStream, check, create)
 		err = streamError(ctx, t, err)
 	} else {
 		out, err = h.createStandalone(ctx, t, in)
@@ -205,7 +223,11 @@ func (h *handler) CreateStream(
 	}, nil
 }
 
-func (h *handler) createStandalone(ctx context.Context, t target, in CreateInput) (CreateOutput, error) {
+func (h *handler) createStandalone(
+	ctx context.Context,
+	t target,
+	in CreateInput,
+) (CreateOutput, error) {
 	create := func(policy chasm.TransitionOption) (CreateOutput, error) {
 		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartStream,
 			func(s *Stream, mctx chasm.MutableContext, in CreateInput) (CreateOutput, error) {
@@ -330,16 +352,24 @@ func (h *handler) DescribeStream(
 	if err := h.applyDue(ctx, t, limits); err != nil {
 		return nil, streamError(ctx, t, err)
 	}
-	resp, err := read(ctx, t, func(s *Stream, _ chasm.Context) (*streamservice.DescribeStreamResponse, error) {
-		return s.Describe()
-	})
+	resp, err := read(
+		ctx,
+		t,
+		func(s *Stream, _ chasm.Context) (*streamservice.DescribeStreamResponse, error) {
+			return s.Describe()
+		},
+	)
 	return resp, streamError(ctx, t, err)
 }
 
 // applyDue runs a write step when a deadline such as the TTL passed, so that a read never sees
 // the Stream open after it expired.
 func (h *handler) applyDue(ctx context.Context, t target, limits Limits) error {
-	due, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (bool, error) { return s.Due(cctx, limits) })
+	due, err := read(
+		ctx,
+		t,
+		func(s *Stream, cctx chasm.Context) (bool, error) { return s.Due(cctx, limits) },
+	)
 	if err != nil || !due {
 		return err
 	}
@@ -364,7 +394,13 @@ func (h *handler) ReadOrPark(
 	if err := checkLast(req, true); err != nil {
 		return nil, err
 	}
-	in := ReadInput{Request: req, RequestID: reader.RequestID, Callback: reader.Callback, Reader: reader.Run, Limits: limits}
+	in := ReadInput{
+		Request:   req,
+		RequestID: reader.RequestID,
+		Callback:  reader.Callback,
+		Reader:    reader.Run,
+		Limits:    limits,
+	}
 	if t.nested {
 		resp, err := update(ctx, t, newNestedStream, nil,
 			func(s *Stream, mctx chasm.MutableContext) (*streamservice.ReadRecordsResponse, error) {
@@ -372,12 +408,19 @@ func (h *handler) ReadOrPark(
 			})
 		return resp, streamError(ctx, t, err)
 	}
-	readStandalone := func(policy chasm.TransitionOption) (*streamservice.ReadRecordsResponse, error) {
-		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartForRead,
-			func(s *Stream, mctx chasm.MutableContext, in ReadInput) (*streamservice.ReadRecordsResponse, error) {
-				resp, err := s.ReadOrPark(mctx, in)
-				return resp, carry(err)
-			}, in, policy)
+	readOrPark := func(
+		s *Stream,
+		mctx chasm.MutableContext,
+		in ReadInput,
+	) (*streamservice.ReadRecordsResponse, error) {
+		resp, err := s.ReadOrPark(mctx, in)
+		return resp, carry(err)
+	}
+	readStandalone := func(
+		policy chasm.TransitionOption,
+	) (*streamservice.ReadRecordsResponse, error) {
+		result, err := chasm.UpdateWithStartExecution(ctx, t.key, StartForRead, readOrPark, in,
+			policy)
 		return result.UpdateOutput, uncarry(err)
 	}
 	resp, err := readStandalone(useExisting)
@@ -394,7 +437,12 @@ func (h *handler) ReadOrPark(
 }
 
 // CancelRead completes a parked read as canceled.
-func (h *handler) CancelRead(ctx context.Context, namespaceName string, ref *streamservice.StreamRef, requestID string) error {
+func (h *handler) CancelRead(
+	ctx context.Context,
+	namespaceName string,
+	ref *streamservice.StreamRef,
+	requestID string,
+) error {
 	t, limits, err := h.target(namespaceName, ref.GetId(), ref)
 	if err != nil {
 		return err
@@ -448,7 +496,11 @@ func (h *handler) ReadRecords(
 			})
 		return resp, streamError(ctx, t, err)
 	}
-	start, err := read(ctx, t, func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) })
+	start, err := read(
+		ctx,
+		t,
+		func(s *Stream, _ chasm.Context) (int64, error) { return s.StartOffset(req) },
+	)
 	if err != nil {
 		return nil, streamError(ctx, t, err)
 	}
@@ -569,7 +621,12 @@ func (h *handler) waitForCreate(ctx context.Context, t target, until time.Time) 
 
 // waitForChange waits until the Stream has an entry at or past cursor, or is no longer open, or
 // the deadline passes. The expiry is a timer task, so it ends the wait too.
-func (h *handler) waitForChange(ctx context.Context, t target, cursor int64, deadline time.Time) error {
+func (h *handler) waitForChange(
+	ctx context.Context,
+	t target,
+	cursor int64,
+	deadline time.Time,
+) error {
 	pollCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	cursor = max(cursor, 1)

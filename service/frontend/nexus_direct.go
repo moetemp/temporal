@@ -27,7 +27,9 @@ func (wh *WorkflowHandler) StartNexusOperation(
 		return nil, serviceerror.NewUnimplemented("Direct Nexus calls are disabled")
 	}
 	if req.GetEndpoint() != commonnexus.SystemEndpoint {
-		return nil, serviceerror.NewUnimplemented("Direct Nexus calls serve only the __temporal_system endpoint")
+		return nil, serviceerror.NewUnimplemented(
+			"Direct Nexus calls serve only the __temporal_system endpoint",
+		)
 	}
 	ns, err := wh.namespaceRegistry.GetNamespace(namespace.Name(req.GetNamespace()))
 	if err != nil {
@@ -37,25 +39,33 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	if requestID == "" {
 		requestID = uuid.NewString()
 	}
-	processed, err := wh.registry.NexusEndpointProcessor.ProcessInput(chasm.NexusOperationProcessorContext{
-		Namespace:               ns,
-		RequestID:               requestID,
-		ReserializeInputPayload: true,
-	}, req.GetService(), req.GetOperation(), req.GetInput())
+	processed, err := wh.registry.NexusEndpointProcessor.ProcessInput(
+		chasm.NexusOperationProcessorContext{
+			Namespace:               ns,
+			RequestID:               requestID,
+			ReserializeInputPayload: true,
+		},
+		req.GetService(),
+		req.GetOperation(),
+		req.GetInput(),
+	)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := wh.historyClient.StartNexusOperation(ctx, &historyservice.StartNexusOperationRequest{
-		NamespaceId: ns.ID().String(),
-		ShardId:     processed.RoutingKey.ShardID(wh.config.NumHistoryShards),
-		Request: &nexuspb.StartOperationRequest{
-			Service:   req.GetService(),
-			Operation: req.GetOperation(),
-			Payload:   processed.ReserializedInputPayload,
-			RequestId: requestID,
-			Links:     workflowEventLinks(req.GetLinks(), requestID),
+	resp, err := wh.historyClient.StartNexusOperation(
+		ctx,
+		&historyservice.StartNexusOperationRequest{
+			NamespaceId: ns.ID().String(),
+			ShardId:     processed.RoutingKey.ShardID(wh.config.NumHistoryShards),
+			Request: &nexuspb.StartOperationRequest{
+				Service:   req.GetService(),
+				Operation: req.GetOperation(),
+				Payload:   processed.ReserializedInputPayload,
+				RequestId: requestID,
+				Links:     workflowEventLinks(req.GetLinks(), requestID),
+			},
 		},
-	})
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +73,9 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	case *nexuspb.StartOperationResponse_SyncSuccess:
 		return &workflowservice.StartNexusOperationResponse{
 			Variant: &workflowservice.StartNexusOperationResponse_SyncSuccess_{
-				SyncSuccess: &workflowservice.StartNexusOperationResponse_SyncSuccess{Payload: v.SyncSuccess.GetPayload()},
+				SyncSuccess: &workflowservice.StartNexusOperationResponse_SyncSuccess{
+					Payload: v.SyncSuccess.GetPayload(),
+				},
 			},
 			Links: v.SyncSuccess.GetLinks(),
 		}, nil
@@ -79,7 +91,9 @@ func (wh *WorkflowHandler) StartNexusOperation(
 	case *nexuspb.StartOperationResponse_Failure:
 		return &workflowservice.StartNexusOperationResponse{
 			Variant: &workflowservice.StartNexusOperationResponse_OperationFailure_{
-				OperationFailure: &workflowservice.StartNexusOperationResponse_OperationFailure{Failure: v.Failure},
+				OperationFailure: &workflowservice.StartNexusOperationResponse_OperationFailure{
+					Failure: v.Failure,
+				},
 			},
 		}, nil
 	default:

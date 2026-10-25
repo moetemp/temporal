@@ -82,7 +82,12 @@ func (s *Stream) suggestsContinueAsNew(ctx chasm.Context, runID string, limits L
 
 // AddReader keeps the floor of a Workflow run that reads from from, in the transaction that
 // answers the read. No trim passes the floor while the run is open.
-func (s *Stream) AddReader(ctx chasm.MutableContext, run ReaderRun, from int64, limits Limits) error {
+func (s *Stream) AddReader(
+	ctx chasm.MutableContext,
+	run ReaderRun,
+	from int64,
+	limits Limits,
+) error {
 	floor, ok := s.readerFloor(ctx, run.RunID, from)
 	if !ok {
 		return nil
@@ -126,7 +131,11 @@ func newReadersCheckTaskHandler(
 	namespaceRegistry namespace.Registry,
 	historyClient resource.HistoryClient,
 ) *readersCheckTaskHandler {
-	return &readersCheckTaskHandler{config: config, namespaceRegistry: namespaceRegistry, historyClient: historyClient}
+	return &readersCheckTaskHandler{
+		config:            config,
+		namespaceRegistry: namespaceRegistry,
+		historyClient:     historyClient,
+	}
 }
 
 func (h *readersCheckTaskHandler) Validate(
@@ -135,7 +144,8 @@ func (h *readersCheckTaskHandler) Validate(
 	_ chasm.TaskInvocation,
 	task *streampb.StreamReadersCheckTask,
 ) (bool, error) {
-	return s.GetReadersCheckTime() != nil && s.GetReadersCheckTime().AsTime().Equal(task.GetDeadline().AsTime()), nil
+	return s.GetReadersCheckTime() != nil &&
+		s.GetReadersCheckTime().AsTime().Equal(task.GetDeadline().AsTime()), nil
 }
 
 func (h *readersCheckTaskHandler) Execute(
@@ -157,7 +167,12 @@ func (h *readersCheckTaskHandler) Execute(
 	}
 	var closed []string
 	for runID, workflowID := range readers {
-		open, err := runOpen(ctx, h.historyClient, ref.NamespaceID, ReaderRun{WorkflowID: workflowID, RunID: runID})
+		open, err := runOpen(
+			ctx,
+			h.historyClient,
+			ref.NamespaceID,
+			ReaderRun{WorkflowID: workflowID, RunID: runID},
+		)
 		if err != nil {
 			return err
 		}
@@ -181,9 +196,14 @@ func (h *readersCheckTaskHandler) Execute(
 	return err
 }
 
-// runOpen says whether a Workflow run is still open. A deleted or unknown run is closed. The run may be on
-// another shard, so it goes through the history client.
-func runOpen(ctx context.Context, historyClient resource.HistoryClient, namespaceID string, run ReaderRun) (bool, error) {
+// runOpen says whether a Workflow run is still open. A deleted or unknown run is closed. The run
+// may be on another shard, so it goes through the history client.
+func runOpen(
+	ctx context.Context,
+	historyClient resource.HistoryClient,
+	namespaceID string,
+	run ReaderRun,
+) (bool, error) {
 	resp, err := historyClient.GetMutableState(ctx, &historyservice.GetMutableStateRequest{
 		NamespaceId: namespaceID,
 		Execution:   &commonpb.WorkflowExecution{WorkflowId: run.WorkflowID, RunId: run.RunID},

@@ -48,7 +48,8 @@ var reasons = []string{
 // StreamErrorDetails in the status details.
 func NewError(reason string, format string, args ...any) error {
 	st := status.New(reasonCode(reason), reason+": "+fmt.Sprintf(format, args...))
-	if detailed, err := st.WithDetails(&streamservice.StreamErrorDetails{Reason: reason}); err == nil {
+	detailed, err := st.WithDetails(&streamservice.StreamErrorDetails{Reason: reason})
+	if err == nil {
 		st = detailed
 	}
 	return serviceerror.FromStatus(st)

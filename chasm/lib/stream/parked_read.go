@@ -52,7 +52,10 @@ func (r *ParkedRead) CompletionCallbackMetadata() *callbackspb.CallbackMetadata 
 
 // GetNexusCompletion gives the page as the result, or the error as the failure of the
 // operation.
-func (r *ParkedRead) GetNexusCompletion(ctx chasm.Context, _ string) (nexusrpc.CompleteOperationOptions, error) {
+func (r *ParkedRead) GetNexusCompletion(
+	ctx chasm.Context,
+	_ string,
+) (nexusrpc.CompleteOperationOptions, error) {
 	opts := nexusrpc.CompleteOperationOptions{StartTime: r.GetStartTime().AsTime()}
 	if r.GetFailure() == nil {
 		result, err := SystemPayload(r.GetResponse())
@@ -70,7 +73,11 @@ func (r *ParkedRead) GetNexusCompletion(ctx chasm.Context, _ string) (nexusrpc.C
 	return opts, nil
 }
 
-func (r *ParkedRead) resolve(ctx chasm.MutableContext, resp *streamservice.ReadRecordsResponse, err error) {
+func (r *ParkedRead) resolve(
+	ctx chasm.MutableContext,
+	resp *streamservice.ReadRecordsResponse,
+	err error,
+) {
 	r.Resolved = true
 	r.CreateDeadline = nil
 	if err != nil {
@@ -88,19 +95,25 @@ func (r *ParkedRead) resolve(ctx chasm.MutableContext, resp *streamservice.ReadR
 func FailureOf(err error) *failurepb.Failure {
 	if errors.Is(err, errCanceled) {
 		return &failurepb.Failure{
-			Message:     "The read was canceled",
-			FailureInfo: &failurepb.Failure_CanceledFailureInfo{CanceledFailureInfo: &failurepb.CanceledFailureInfo{}},
+			Message: "The read was canceled",
+			FailureInfo: &failurepb.Failure_CanceledFailureInfo{
+				CanceledFailureInfo: &failurepb.CanceledFailureInfo{},
+			},
 		}
 	}
 	reason := ReasonOf(err)
-	details, _ := sdkconverter.PreferProtoDataConverter.ToPayloads(&streamservice.StreamErrorDetails{Reason: reason})
+	details, _ := sdkconverter.PreferProtoDataConverter.ToPayloads(
+		&streamservice.StreamErrorDetails{Reason: reason},
+	)
 	return &failurepb.Failure{
 		Message: err.Error(),
-		FailureInfo: &failurepb.Failure_ApplicationFailureInfo{ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{
-			Type:         reason,
-			NonRetryable: true,
-			Details:      details,
-		}},
+		FailureInfo: &failurepb.Failure_ApplicationFailureInfo{
+			ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{
+				Type:         reason,
+				NonRetryable: true,
+				Details:      details,
+			},
+		},
 	}
 }
 

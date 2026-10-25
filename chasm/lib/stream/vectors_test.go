@@ -151,8 +151,14 @@ func TestCompareEpochsMatchesTheCrateKeys(t *testing.T) {
 	require.NotEmpty(t, vectors)
 	for _, a := range vectors {
 		for _, b := range vectors {
-			require.Equal(t, strings.Compare(a.Key, b.Key), CompareEpochs(a.Epoch.proto(), b.Epoch.proto()),
-				"%s against %s", a.Key, b.Key)
+			require.Equal(
+				t,
+				strings.Compare(a.Key, b.Key),
+				CompareEpochs(a.Epoch.proto(), b.Epoch.proto()),
+				"%s against %s",
+				a.Key,
+				b.Key,
+			)
 		}
 	}
 }

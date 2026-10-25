@@ -437,7 +437,8 @@ func RedirectionInterceptorProvider(
 		timeSource,
 		clusterMetadata,
 	).WithRedirectResponses(chasmstream.RedirectableMethods()).
-		WithAdditionalAllowedMethods(slices.Collect(maps.Keys(chasmstream.RedirectableMethods()))...)
+		WithAdditionalAllowedMethods(
+			slices.Collect(maps.Keys(chasmstream.RedirectableMethods()))...)
 }
 
 func BusinessIDInterceptorProvider(
