@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"iter"
 	"slices"
 	"sort"
 	"strings"
@@ -98,36 +99,47 @@ func (s *Stream) scan(
 	resp := &streamservice.ReadRecordsResponse{NextOffset: from}
 	scanned := 0
 	var size int64
-	for _, info := range s.Index[s.firstBatchAt(start):] {
-		for _, entry := range s.Batches[info.GetFirstOffset()].Get(ctx).GetRecords() {
-			if entry.GetOffset() < start {
-				continue
+	for entry := range s.entriesFrom(ctx, start) {
+		if end := req.GetToOffset(); end > 0 && entry.GetOffset() >= end {
+			return resp, nil
+		}
+		if pageFull(resp, limit, scanned) {
+			return resp, nil
+		}
+		if entry.GetOffset() >= retained && overBytes(req, resp, entry, size) {
+			return resp, nil
+		}
+		scanned++
+		resp.NextOffset = entry.GetOffset() + 1
+		if entry.GetOffset() < retained {
+			if from > 0 {
+				return nil, expired()
 			}
-			if end := req.GetToOffset(); end > 0 && entry.GetOffset() >= end {
-				return resp, nil
-			}
-			if pageFull(resp, limit, scanned) {
-				return resp, nil
-			}
-			if entry.GetOffset() >= retained && overBytes(req, resp, entry, size) {
-				return resp, nil
-			}
-			scanned++
-			resp.NextOffset = entry.GetOffset() + 1
-			if entry.GetOffset() < retained {
-				if from > 0 {
-					return nil, expired()
-				}
-				continue
-			}
-			taken := len(resp.Records)
-			s.take(ctx, req, resp, entry)
-			if len(resp.Records) > taken {
-				size += int64(proto.Size(entry))
-			}
+			continue
+		}
+		taken := len(resp.Records)
+		s.take(ctx, req, resp, entry)
+		if len(resp.Records) > taken {
+			size += int64(proto.Size(entry))
 		}
 	}
 	return resp, nil
+}
+
+// entriesFrom gives the stored entries at or past offset, oldest first.
+func (s *Stream) entriesFrom(
+	ctx chasm.Context,
+	offset int64,
+) iter.Seq[*streamservice.StreamRecord] {
+	return func(yield func(*streamservice.StreamRecord) bool) {
+		for _, info := range s.Index[s.firstBatchAt(offset):] {
+			for _, entry := range s.Batches[info.GetFirstOffset()].Get(ctx).GetRecords() {
+				if entry.GetOffset() >= offset && !yield(entry) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // pageFull says whether a page ends before its next entry. An empty page doesn't stop at the scan
@@ -356,15 +368,8 @@ func (s *Stream) ReadOrPark(
 	in ReadInput,
 ) (*streamservice.ReadRecordsResponse, error) {
 	s.applyDue(ctx, in.Limits)
-	if field, ok := s.Reads[in.RequestID]; ok {
-		read := field.Get(ctx)
-		if !read.GetResolved() {
-			return nil, nil
-		}
-		if read.GetFailure() != nil {
-			return nil, errorOfFailure(read.GetFailure())
-		}
-		return common.CloneProto(read.GetResponse()), nil
+	if resp, known, err := s.parkedAnswer(ctx, in.RequestID); known {
+		return resp, err
 	}
 	now := ctx.Now(s)
 	read := &ParkedRead{
@@ -388,32 +393,74 @@ func (s *Stream) ReadOrPark(
 			return nil, notFound()
 		}
 		read.CreateDeadline = timestamppb.New(now.Add(createWait))
-	} else {
-		from, err := s.StartOffset(in.Request)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.keepWakeFloor(ctx, in, from); err != nil {
-			return nil, err
-		}
-		resp, found, err := s.Page(ctx, in.Request, from)
-		if err != nil {
-			return nil, err
-		}
-		if found || !parks {
-			s.finish(ctx, in.Limits)
-			if in.Request.GetWakeOnly() {
-				resp = s.wakeAnswer(from)
-			}
-			resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(ctx, read.GetReaderRunId(),
-				in.Limits)
-			return resp, nil
-		}
-		read.StartOffset = from
-		read.ScanOffset = max(from, resp.GetNextOffset())
+	} else if resp, err := s.firstLook(ctx, in, read); resp != nil || err != nil {
+		return resp, err
 	}
+	return nil, s.park(ctx, in, read, now)
+}
+
+// parkedAnswer answers a retry of a read's start from the read that it parked. It is false when
+// the Stream has no read of the request id.
+func (s *Stream) parkedAnswer(
+	ctx chasm.Context,
+	requestID string,
+) (*streamservice.ReadRecordsResponse, bool, error) {
+	field, ok := s.Reads[requestID]
+	if !ok {
+		return nil, false, nil
+	}
+	read := field.Get(ctx)
+	switch {
+	case !read.GetResolved():
+		return nil, true, nil
+	case read.GetFailure() != nil:
+		return nil, true, errorOfFailure(read.GetFailure())
+	default:
+		return common.CloneProto(read.GetResponse()), true, nil
+	}
+}
+
+// firstLook pages a read of a Stream that exists. It answers the page when the read finds Records
+// or doesn't park, and otherwise sets where the parked read looks next.
+func (s *Stream) firstLook(
+	ctx chasm.MutableContext,
+	in ReadInput,
+	read *ParkedRead,
+) (*streamservice.ReadRecordsResponse, error) {
+	from, err := s.StartOffset(in.Request)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.keepWakeFloor(ctx, in, from); err != nil {
+		return nil, err
+	}
+	resp, found, err := s.Page(ctx, in.Request, from)
+	if err != nil {
+		return nil, err
+	}
+	if found || !in.parks() {
+		s.finish(ctx, in.Limits)
+		if in.Request.GetWakeOnly() {
+			resp = s.wakeAnswer(from)
+		}
+		resp.ContinueAsNewSuggested = s.suggestsContinueAsNew(ctx, read.GetReaderRunId(),
+			in.Limits)
+		return resp, nil
+	}
+	read.StartOffset = from
+	read.ScanOffset = max(from, resp.GetNextOffset())
+	return nil, nil
+}
+
+// park keeps the read with its completion callback until the Stream can answer it.
+func (s *Stream) park(
+	ctx chasm.MutableContext,
+	in ReadInput,
+	read *ParkedRead,
+	now time.Time,
+) error {
 	if s.waitingReads(ctx) >= in.Limits.MaxParkedReads {
-		return nil, serviceerror.NewResourceExhausted(
+		return serviceerror.NewResourceExhausted(
 			enumspb.RESOURCE_EXHAUSTED_CAUSE_CONCURRENT_LIMIT,
 			"The Stream has the most waiting reads")
 	}
@@ -424,10 +471,10 @@ func (s *Stream) ReadOrPark(
 	callbacks := []*commonpb.Callback{in.Callback}
 	err := callback.Attach(ctx, read, in.RequestID, timestamppb.New(now), callbacks)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	s.finish(ctx, in.Limits)
-	return nil, nil
+	return nil
 }
 
 // CancelRead completes a parked read as canceled.

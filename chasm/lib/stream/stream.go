@@ -230,36 +230,16 @@ func (s *Stream) Append(
 	}
 	key := producerKey(producer)
 	digest := BatchDigest(req.GetRecords())
-	known := s.producer(ctx, key)
-	if known != nil && CompareEpochs(producer.GetEpoch(), known.GetEpoch()) == 0 {
-		if req.GetSequence() == known.GetSequence() {
-			if len(known.GetDigest()) > 0 && !bytes.Equal(known.GetDigest(), digest) {
-				return nil, NewError(ReasonSeqDivergent,
-					"The sequence %d has other content than its batch", req.GetSequence())
-			}
-			return &streamservice.AppendRecordsResponse{
-				FirstOffset: known.GetFirstOffset(),
-				LastOffset:  known.GetLastOffset(),
-			}, nil
-		}
-		if req.GetSequence() < known.GetSequence() {
-			return nil, NewError(ReasonSequence,
-				"The sequence %d is below the last one, %d", req.GetSequence(), known.GetSequence())
-		}
+	if resp, err := resend(req, s.producer(ctx, key), digest); resp != nil || err != nil {
+		return resp, err
 	}
+	w := withdrawalOf(req)
 	// A Workflow batch with no Records only settles its task facts. A closed Stream still takes
 	// it, since a Workflow Task that completes after the close can still withdraw Records.
-	deferred := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW &&
-		req.GetDeferWithdrawal()
 	settles := producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW &&
-		len(req.GetRecords()) == 0 &&
-		!deferred
+		len(req.GetRecords()) == 0 && !w.Defer
 	if s.Phase == streampb.STREAM_PHASE_CLOSED && !settles {
 		return nil, NewError(ReasonClosed, "The Stream is closed")
-	}
-	w := Withdrawal{WithdrawRun: req.GetWithdrawRun(), Defer: deferred}
-	if producer.GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
-		w.PreviousCompleted, w.FailedTasks = req.GetPreviousCompletedTask(), req.GetFailedTasks()
 	}
 	flagged, err := s.admit(ctx, producer, w)
 	if err != nil {
@@ -285,28 +265,76 @@ func (s *Stream) Append(
 	if orphans {
 		s.settleOrphans(ctx, producer, orphaned, wrote)
 	}
-	state := &streampb.ProducerState{
+	s.setProducer(ctx, key, &streampb.ProducerState{
 		Epoch:       producer.GetEpoch(),
 		Sequence:    req.GetSequence(),
 		FirstOffset: first,
 		LastOffset:  last,
-		Holds:       s.producer(ctx, key).GetHolds(),
+		Holds:       newHolds(producer, s.producer(ctx, key).GetHolds(), wrote, flagged),
 		Digest:      digest,
-	}
-	if withdrawsEpochs(producer.GetKind()) {
-		if wrote {
-			state.Holds = producer.GetEpoch()
-		} else if flagged {
-			state.Holds = nil
-		}
-	}
-	s.setProducer(ctx, key, state)
+	})
 	if wrote {
 		s.LastWriteTime = timestamppb.New(ctx.Now(s))
 	}
 	s.limitProducers(ctx, in.Limits.MaxProducers)
 	s.finish(ctx, in.Limits)
 	return &streamservice.AppendRecordsResponse{FirstOffset: first, LastOffset: last}, nil
+}
+
+// resend answers a resend of a Producer's last batch with that batch's offsets, and refuses a
+// lower sequence or other content. It answers nil for a new batch.
+func resend(
+	req *streamservice.AppendRecordsRequest,
+	known *streampb.ProducerState,
+	digest []byte,
+) (*streamservice.AppendRecordsResponse, error) {
+	if known == nil || CompareEpochs(req.GetProducer().GetEpoch(), known.GetEpoch()) != 0 {
+		return nil, nil
+	}
+	switch {
+	case req.GetSequence() > known.GetSequence():
+		return nil, nil
+	case req.GetSequence() < known.GetSequence():
+		return nil, NewError(ReasonSequence,
+			"The sequence %d is below the last one, %d", req.GetSequence(), known.GetSequence())
+	case len(known.GetDigest()) > 0 && !bytes.Equal(known.GetDigest(), digest):
+		return nil, NewError(ReasonSeqDivergent,
+			"The sequence %d has other content than its batch", req.GetSequence())
+	default:
+		return &streamservice.AppendRecordsResponse{
+			FirstOffset: known.GetFirstOffset(),
+			LastOffset:  known.GetLastOffset(),
+		}, nil
+	}
+}
+
+// withdrawalOf is what a batch withdraws. Only a Workflow batch knows its Workflow Task facts.
+func withdrawalOf(req *streamservice.AppendRecordsRequest) Withdrawal {
+	w := Withdrawal{WithdrawRun: req.GetWithdrawRun()}
+	if req.GetProducer().GetKind() == streamservice.PRODUCER_KIND_WORKFLOW {
+		w.Defer = req.GetDeferWithdrawal()
+		w.PreviousCompleted, w.FailedTasks = req.GetPreviousCompletedTask(), req.GetFailedTasks()
+	}
+	return w
+}
+
+// newHolds is the epoch whose Records the Producer's next higher epoch withdraws. A batch with
+// Records holds its own epoch, and a batch that withdrew the held Records holds none.
+func newHolds(
+	producer *streamservice.Producer,
+	held *streamservice.ProducerEpoch,
+	wrote, flagged bool,
+) *streamservice.ProducerEpoch {
+	switch {
+	case !withdrawsEpochs(producer.GetKind()):
+		return held
+	case wrote:
+		return producer.GetEpoch()
+	case flagged:
+		return nil
+	default:
+		return held
+	}
 }
 
 // BatchDigest is the SHA-256 of a batch's content, as the crate and the memory Store compute it.
