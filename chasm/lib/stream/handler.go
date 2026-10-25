@@ -188,6 +188,7 @@ func (h *handler) CreateStream(
 		}
 		out, err = update(ctx, t, newNestedStream, check,
 			func(s *Stream, mctx chasm.MutableContext) (CreateOutput, error) { return s.Create(mctx, in) })
+		err = streamError(ctx, t, err)
 	} else {
 		out, err = h.createStandalone(ctx, t, in)
 	}

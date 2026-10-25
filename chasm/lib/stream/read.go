@@ -360,6 +360,7 @@ func (s *Stream) ReadOrPark(ctx chasm.MutableContext, in ReadInput) (*streamserv
 	if wait > 0 {
 		read.WaitDeadline = timestamppb.New(now.Add(wait))
 	}
+	s.reopen()
 	if s.Phase == streampb.STREAM_PHASE_PENDING {
 		if createWait <= 0 || !parks {
 			return nil, notFound()

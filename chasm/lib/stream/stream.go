@@ -147,6 +147,7 @@ func StartStream(ctx chasm.MutableContext, in CreateInput) (*Stream, error) {
 // Create opens the Stream, idempotently for one Retention.
 func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput, error) {
 	s.applyDue(ctx, in.Limits)
+	s.reopen()
 	retention := in.Request.GetRetention().AsDuration()
 	if retention <= 0 {
 		retention = in.Limits.DefaultRetention
@@ -184,6 +185,14 @@ func (s *Stream) Create(ctx chasm.MutableContext, in CreateInput) (CreateOutput,
 	default:
 		s.finish(ctx, in.Limits)
 		return CreateOutput{Status: s.Status()}, nil
+	}
+}
+
+// reopen makes an abandoned nested Stream pending again for a create or a wait for the create.
+// Only a Stream of its own has an execution that the caller can replace.
+func (s *Stream) reopen() {
+	if s.Nested && s.Phase == streampb.STREAM_PHASE_ABANDONED {
+		s.Phase = streampb.STREAM_PHASE_PENDING
 	}
 }
 

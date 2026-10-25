@@ -453,6 +453,43 @@ func (s *StreamTestSuite) TestWorkflowWakeWaitsForTheCreate() {
 	s.Empty(page.GetRecords())
 }
 
+// A wake whose wait for the create ends first leaves the Workflow Stream's node abandoned. The
+// node has no execution of its own to replace, so a later wake parks again and the create opens
+// it.
+func (s *StreamTestSuite) TestAbandonedWorkflowStreamCanStillBeCreated() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	owned := &streamservice.StreamRef{
+		Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: c.run.GetRunID(),
+	}
+
+	failure := c.call(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true,
+		CreateWait: durationpb.New(time.Second), Wait: durationpb.New(time.Hour),
+	}}, &streamservice.ReadRecordsResponse{})
+	s.Equal(stream.ReasonNotFound, causeType(failure))
+
+	wake := c.schedule(streamOp{"ReadRecords", &streamservice.ReadRecordsRequest{
+		Stream: owned, WakeOnly: true, CreateWait: durationpb.New(30 * time.Second),
+	}})[0]
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Owner: workflowWriter(c.current, 3), Ref: owned,
+		CloseWithRun: true,
+	})
+	s.NoError(err)
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: owned, Producer: clientProducer(), Sequence: 1,
+		Records: records("turns"),
+	})
+	s.NoError(err)
+	failure, started := c.outcome(wake, &streamservice.ReadRecordsResponse{})
+	s.Nil(failure)
+	s.True(started)
+}
+
 // closeWithRun creates a Stream that closes with the caller's run chain.
 func (s *StreamTestSuite) closeWithRun(sc streamservice.StreamServiceClient, env *testcore.TestEnv, c *streamCaller) *streamservice.StreamRef {
 	id := testcore.RandomizeStr("chat")
