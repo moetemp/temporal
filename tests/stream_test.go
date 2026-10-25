@@ -1193,7 +1193,8 @@ func localActivityWriter(runID string, started int64) *streamservice.Producer {
 }
 
 // A caller with write access can't close a Workflow Stream, write as a run outside its chain,
-// fence a run it doesn't follow, or put a Stream into another Workflow's first run.
+// fence a run it doesn't follow, or put a Stream into another Workflow's first run. A Local
+// Activity of the chain can't close it either, since it writes before its task commits.
 func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
@@ -1208,6 +1209,11 @@ func (s *StreamTestSuite) TestForgedOwnerCallsAreRefused() {
 		Result: payload.EncodeString("forged"),
 	})
 	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a client's close")
+
+	_, err = sc.CloseStream(ctx, &streamservice.CloseStreamRequest{
+		Namespace: ns, Stream: owned, Producer: localActivityWriter(run, 3),
+	})
+	s.Equal(stream.ReasonNotOwner, reasonOf(err), "a Local Activity's close")
 
 	stranger := s.newCaller(env).run.GetRunID()
 	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{

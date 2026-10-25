@@ -52,14 +52,16 @@ func checkOwner(owner *streamservice.Producer, t target) error {
 }
 
 // checkCloser refuses a close that the Stream's owner doesn't allow. A Workflow Stream closes
-// only from its run chain, and a client's Stream only from a client. The server's own close with
-// the run chain comes from no caller.
+// only as a run of its chain, and a client's Stream only from a client. The server's own close
+// with the run chain comes from no caller.
 func (s *Stream) checkCloser(producer *streamservice.Producer) error {
 	kind := producer.GetKind()
 	owner := ownerKind(s.GetOwner())
 	switch owner {
 	case streamservice.PRODUCER_KIND_WORKFLOW:
-		if ofRun(kind) {
+		// A Local Activity writes before its Workflow Task commits, and a failed task can't
+		// take a close back, so only the run's close Activity or command closes.
+		if kind == streamservice.PRODUCER_KIND_WORKFLOW {
 			return nil
 		}
 	case streamservice.PRODUCER_KIND_CLIENT:

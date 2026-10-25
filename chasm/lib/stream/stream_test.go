@@ -322,6 +322,23 @@ func TestCommandCloseOfTheOwnerRun(t *testing.T) {
 	}, closed.GetProducer())
 }
 
+// A Local Activity writes before its Workflow Task commits, so it can't close a Workflow Stream.
+// A failed task would leave the Stream closed, and the retried task's create would fail.
+func TestLocalActivityCantCloseAWorkflowStream(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{
+		StreamId: "chat-1", Owner: workflowProducer(1),
+	})
+	require.NoError(t, err)
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
+		Request: &streamservice.CloseStreamRequest{Producer: localActivityProducer(3)},
+		Limits:  h.limits,
+	})
+	require.ErrorContains(t, err, ReasonNotOwner)
+
+	require.NoError(t, h.commandClose("run", "done"))
+}
+
 func TestCommandCloseOfAWithdrawnRunIsFenced(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1", Owner: workflowProducer(1)})
