@@ -414,7 +414,7 @@ const longPollBuffer = time.Second
 
 // ReadRecords is a frontend read. It waits up to create_wait for the create and up to wait for
 // a Record, and answers an empty page after the wait. A page of an open Workflow run, run, keeps
-// the run's floor on a Workflow Stream first, so no trim drops what it reads.
+// the run's floor first, so no trim drops what it reads.
 func (h *handler) ReadRecords(
 	ctx context.Context,
 	req *streamservice.ReadRecordsRequest,
@@ -487,7 +487,7 @@ func (h *handler) floorRun(
 	from int64,
 	run *ReaderRun,
 ) (*ReaderRun, error) {
-	if run == nil || !t.nested || req.GetWakeOnly() {
+	if run == nil || req.GetWakeOnly() {
 		return nil, nil
 	}
 	lowers, err := read(ctx, t, func(s *Stream, cctx chasm.Context) (bool, error) {

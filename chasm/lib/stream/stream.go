@@ -610,11 +610,13 @@ func (s *Stream) floor() (int64, bool) {
 	return s.Floor, s.Floor > 0 && len(s.Readers) > 0
 }
 
-// retainedFrom is the offset below which the Retention hides the Records at now. A Workflow Stream
-// hides none that it still stores, so a read from the start begins at the same offset on replay.
+// retainedFrom is the offset below which the Retention hides the Records at now. A nested Stream,
+// or one with Workflow readers, hides none that it still stores, so a read from the start begins
+// at the same offset on replay.
 func (s *Stream) retainedFrom(now time.Time) int64 {
 	retained := s.TrimmedOffset + 1
-	if retention := s.GetRetention().AsDuration(); retention > 0 && !s.Nested {
+	retention := s.GetRetention().AsDuration()
+	if retention > 0 && !s.Nested && len(s.Readers) == 0 {
 		if cutMs := now.Add(-retention).UnixMilli(); cutMs > 0 {
 			retained = max(retained, cutMs<<seqBits)
 		}

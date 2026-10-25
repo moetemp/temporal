@@ -129,7 +129,7 @@ func targetOf(namespaceID, streamID string, ref *streamservice.StreamRef) (targe
 	}, nil
 }
 
-// newNestedStream makes a nested Stream, whose Workflow readers keep their floors.
+// newNestedStream makes a nested Stream, whose Retention hides no Record that it still stores.
 func newNestedStream(ctx chasm.MutableContext) (*Stream, error) {
 	s := NewStream(ctx, streampb.STREAM_PHASE_PENDING)
 	s.Nested = true

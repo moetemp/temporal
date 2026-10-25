@@ -1224,6 +1224,49 @@ func (s *StreamTestSuite) TestReaderThatKeepsHalfTheCapIsToldToContinueAsNew() {
 	s.True(page.GetContinueAsNewSuggested())
 }
 
+// A Workflow reader of a client's Stream keeps its floor too. An append that the size cap would
+// make drop the reader's range fails, and the reader's replay reads the same page.
+func (s *StreamTestSuite) TestWorkflowReaderOfAClientStreamKeepsItsRangePastTheCap() {
+	env := s.newEnv(testcore.WithDynamicConfig(stream.MaxStoredBytes, 4096))
+	sc := s.streamClient(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{Namespace: ns, StreamId: id})
+	s.NoError(err)
+	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+		Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: 1, Records: records("a"),
+	})
+	s.NoError(err)
+
+	reader := readerLink(env, s.newCaller(env).run)
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: ref(id)}, reader)
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(page))
+
+	bigAppend := func(sequence int64) error {
+		_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+			Namespace: ns, Stream: ref(id), Producer: clientProducer(), Sequence: sequence,
+			Records: []*streamservice.AppendRecord{
+				{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 2500)}},
+			},
+		})
+		return err
+	}
+	s.NoError(bigAppend(2))
+	s.Equal(stream.ReasonTooLarge, reasonOf(bigAppend(3)))
+
+	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: ref(id), ToOffset: page.GetNextOffset(),
+	})
+	s.Nil(failure)
+	s.Equal(page.GetRecords(), again.GetRecords())
+	next, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: ref(id), FromOffset: page.GetNextOffset(),
+	}, reader)
+	s.Nil(failure)
+	s.True(next.GetContinueAsNewSuggested())
+}
+
 // A reset run's first live page gives the lowest offset its copied reads read, so its floor
 // keeps them and its replay finds them past the Retention.
 func (s *StreamTestSuite) TestFloorFromKeepsTheReadsOfAResetRun() {

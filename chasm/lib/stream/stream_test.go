@@ -717,6 +717,34 @@ func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	require.ErrorContains(t, err, ReasonExpired)
 }
 
+// A client's Stream keeps the floor of a Workflow reader too, so the size cap can't drop what the
+// reader's replay reads again. The append that would drop it fails instead.
+func TestReaderFloorKeepsTheRecordsOfAClientStream(t *testing.T) {
+	h := newHarness(t)
+	// The cap takes the large batch alone, but not with the batch of "a".
+	h.limits.MaxStoredBytes = 270
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	a, err := h.append(clientProducer(), 1, "a")
+	require.NoError(t, err)
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(),
+		func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			return struct{}{}, s.AddReader(mctx, ReaderRun{WorkflowID: "wf", RunID: "run-1"},
+				a.GetFirstOffset(), h.limits)
+		}, struct{}{})
+	require.NoError(t, err)
+
+	_, err = h.appendRequest(&streamservice.AppendRecordsRequest{
+		Producer: clientProducer(), Sequence: 2, Records: []*streamservice.AppendRecord{
+			{Topic: "big", Body: &commonpb.Payload{Data: make([]byte, 200)}},
+		},
+	})
+	require.ErrorContains(t, err, ReasonTooLarge)
+	page, err := h.read(&streamservice.ReadRecordsRequest{FromOffset: a.GetFirstOffset()})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a"}, topics(page))
+}
+
 // localActivityWrite is a write of the Local Activity call of the run, dispatched by task
 // started, with the run's last completed task (0 before the first), as the crate's S110 test has.
 func localActivityWrite(call string, started, completed int64, topic string) *streamservice.AppendRecordsRequest {
