@@ -111,8 +111,8 @@ func (s *Stream) armReadersCheck(ctx chasm.MutableContext, limits Limits) {
 		&streampb.StreamReadersCheckTask{Deadline: s.ReadersCheckTime})
 }
 
-// readersCheckTaskHandler drops the floors of the reader runs that closed. A run that continued
-// as new is closed too, since the new run's History has none of its reads.
+// readersCheckTaskHandler drops the floors and the waiting reads of the reader runs that closed.
+// A run that continued as new is closed too, since the new run's History has none of its reads.
 type readersCheckTaskHandler struct {
 	chasm.SideEffectTaskHandlerBase[*streampb.StreamReadersCheckTask]
 

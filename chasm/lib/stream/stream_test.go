@@ -717,6 +717,40 @@ func TestReaderFloorKeepsItsRecords(t *testing.T) {
 	require.ErrorContains(t, err, ReasonExpired)
 }
 
+// The readers check drops the wake of a run that closed, so dead wakes don't fill the cap of
+// waiting reads until their wait ends.
+func TestReadersCheckDropsTheWakeOfAClosedRun(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	result, err := chasm.UpdateWithStartExecution(h.ctx, h.key, StartForRead, (*Stream).ReadOrPark,
+		ReadInput{
+			Request:   &streamservice.ReadRecordsRequest{WakeOnly: true},
+			RequestID: "wake",
+			Callback: &commonpb.Callback{Variant: &commonpb.Callback_Nexus_{
+				Nexus: &commonpb.Callback_Nexus{Url: chasm.NexusCompletionHandlerURL},
+			}},
+			Reader: &ReaderRun{WorkflowID: "wf", RunID: "run-1"},
+			Limits: h.limits,
+		},
+		chasm.WithBusinessIDPolicy(
+			chasm.BusinessIDReusePolicyRejectDuplicate, chasm.BusinessIDConflictPolicyUseExisting),
+	)
+	require.NoError(t, err)
+	require.Nil(t, result.UpdateOutput)
+	require.False(t, h.parked("wake").GetResolved())
+
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(),
+		func(s *Stream, mctx chasm.MutableContext, _ struct{}) (struct{}, error) {
+			s.dropReaders(mctx, []string{"run-1"})
+			return struct{}{}, nil
+		}, struct{}{})
+	require.NoError(t, err)
+	read := h.parked("wake")
+	require.True(t, read.GetResolved())
+	require.NotNil(t, read.GetFailure().GetCanceledFailureInfo())
+}
+
 // A client's Stream keeps the floor of a Workflow reader too, so the size cap can't drop what the
 // reader's replay reads again. The append that would drop it fails instead.
 func TestReaderFloorKeepsTheRecordsOfAClientStream(t *testing.T) {

@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"slices"
 	"strings"
 
 	"go.temporal.io/api/streamservice/v1"
@@ -84,10 +85,16 @@ func (s *Stream) setReader(ctx chasm.MutableContext, run ReaderRun, offset int64
 	}
 }
 
-// dropReaders drops the floors of runs that closed, and finds the lowest floor of the rest.
+// dropReaders drops the floors and the waiting reads of runs that closed, and finds the lowest
+// floor of the rest. A closed run takes no answer, and its wake would hold a slot for days.
 func (s *Stream) dropReaders(ctx chasm.MutableContext, runIDs []string) {
 	for _, runID := range runIDs {
 		delete(s.Readers, runID)
+	}
+	if len(runIDs) > 0 {
+		s.resolveReads(ctx, func(read *ParkedRead) (readOutcome, bool) {
+			return readOutcome{err: errCanceled}, slices.Contains(runIDs, read.GetReaderRunId())
+		})
 	}
 	s.Floor = 0
 	for runID := range s.Readers {
