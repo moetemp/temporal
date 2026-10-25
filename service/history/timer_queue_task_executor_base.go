@@ -152,7 +152,12 @@ func (t *timerQueueTaskExecutorBase) executeDeleteHistoryEventTask(
 				BranchToken:         task.BranchToken,
 				ArchetypeID:         task.ArchetypeID,
 			})
-			return weContext.SubmitClosedWorkflowSnapshot(ctx, t.shardContext, historyi.TransactionPolicyActive)
+			// A standby cluster writes the closed run as its replication does.
+			policy := historyi.TransactionPolicyActive
+			if !t.isActive {
+				policy = historyi.TransactionPolicyPassive
+			}
+			return weContext.SubmitClosedWorkflowSnapshot(ctx, t.shardContext, policy)
 		}
 	}
 
