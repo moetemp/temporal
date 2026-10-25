@@ -133,13 +133,7 @@ func (w *Workflow) HasChainStreams(ctx chasm.Context, firstRunID string) bool {
 // namespace retention that would delete it. A chain that continues as new keeps writing to the
 // Streams of its first run.
 func (w *Workflow) HoldsStreams(ctx chasm.Context) bool {
-	for _, field := range w.Streams {
-		if s, ok := field.TryGet(ctx); ok && s.Phase != streampb.STREAM_PHASE_EXPIRED &&
-			s.Phase != streampb.STREAM_PHASE_ABANDONED {
-			return true
-		}
-	}
-	return false
+	return stream.HoldsStreams(ctx, w.Streams)
 }
 
 // EndChainStreams closes the chain's close-with-run Streams with this run's close event. The

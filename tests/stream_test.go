@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -1157,24 +1158,7 @@ func (s *StreamTestSuite) TestWorkflowReadsDirectlyWithNoRecordsInHistory() {
 // The first run of a chain keeps the chain's Streams after it closes, so the namespace retention
 // can't delete them while a later run still writes.
 func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
-	env := testcore.NewEnv(s.T(),
-		testcore.WithDedicatedCluster(),
-		testcore.WithDynamicConfig(stream.Enabled, true),
-		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionGlobal, time.Duration(0)),
-		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionLocal, time.Duration(0)),
-		testcore.WithDynamicConfig(dynamicconfig.RetentionTimerJitterDuration, time.Duration(0)),
-	)
-	_, err := env.FrontendClient().
-		UpdateNamespace(s.Context(), &workflowservice.UpdateNamespaceRequest{
-			Namespace: env.Namespace().String(),
-			Config: &namespacepb.NamespaceConfig{
-				WorkflowExecutionRetentionTtl: durationpb.New(time.Second),
-			},
-		})
-	s.NoError(err)
-	// Wait for the namespace cache to see the new retention.
-	<-time.After(2 * testcore.NamespaceCacheRefreshInterval)
-
+	env := s.retentionEnv()
 	sc := s.streamClient(env)
 	c := s.newCaller(env)
 	owned := s.closeWithRun(sc, env, c)
@@ -1182,7 +1166,7 @@ func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
 	// Several retentions of the first run pass while run 2 is open.
 	<-time.After(4 * time.Second)
 
-	_, err = sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
+	_, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
 		Namespace: env.Namespace().String(), Stream: owned,
 		Producer: workflowWriter(c.current, 3), Sequence: 1, Records: records("late"),
 	})
@@ -1195,9 +1179,9 @@ func (s *StreamTestSuite) TestChainOutlivesTheRetentionOfItsFirstRun() {
 	s.Equal([]string{"late"}, kindsAndTopics(page))
 }
 
-// A closed Standalone Activity keeps its Streams readable for their Retention, so the namespace
-// retention can't delete them with the Activity.
-func (s *StreamTestSuite) TestActivityStreamOutlivesTheRetentionOfItsActivity() {
+// retentionEnv is a cluster whose namespace retention is 1 s, so a retention delete shows in
+// seconds.
+func (s *StreamTestSuite) retentionEnv() *testcore.TestEnv {
 	env := testcore.NewEnv(s.T(),
 		testcore.WithDedicatedCluster(),
 		testcore.WithDynamicConfig(stream.Enabled, true),
@@ -1205,18 +1189,31 @@ func (s *StreamTestSuite) TestActivityStreamOutlivesTheRetentionOfItsActivity() 
 		testcore.WithDynamicConfig(dynamicconfig.NamespaceMinRetentionLocal, time.Duration(0)),
 		testcore.WithDynamicConfig(dynamicconfig.RetentionTimerJitterDuration, time.Duration(0)),
 	)
-	ctx := s.Context()
-	ns := env.Namespace().String()
-	_, err := env.FrontendClient().UpdateNamespace(ctx, &workflowservice.UpdateNamespaceRequest{
-		Namespace: ns,
-		Config: &namespacepb.NamespaceConfig{
-			WorkflowExecutionRetentionTtl: durationpb.New(time.Second),
-		},
-	})
+	_, err := env.FrontendClient().UpdateNamespace(s.Context(),
+		&workflowservice.UpdateNamespaceRequest{
+			Namespace: env.Namespace().String(),
+			Config: &namespacepb.NamespaceConfig{
+				WorkflowExecutionRetentionTtl: durationpb.New(time.Second),
+			},
+		})
 	s.NoError(err)
 	// Wait for the namespace cache to see the new retention.
 	<-time.After(2 * testcore.NamespaceCacheRefreshInterval)
+	return env
+}
 
+// activityStream is a Stream of a Standalone Activity's first attempt, with one Record.
+type activityStream struct {
+	ref  *streamservice.StreamRef
+	task *workflowservice.PollActivityTaskQueueResponse
+}
+
+func (s *StreamTestSuite) startActivityStream(
+	env *testcore.TestEnv,
+	retention *durationpb.Duration,
+) activityStream {
+	ctx := s.Context()
+	ns := env.Namespace().String()
 	activityID := "tool-" + uuid.NewString()
 	taskQueue := &taskqueuepb.TaskQueue{
 		Name: "tools-" + uuid.NewString(),
@@ -1234,27 +1231,25 @@ func (s *StreamTestSuite) TestActivityStreamOutlivesTheRetentionOfItsActivity() 
 	s.NoError(err)
 	task, err := env.FrontendClient().PollActivityTaskQueue(ctx,
 		&workflowservice.PollActivityTaskQueueRequest{
-			Namespace: ns,
-			TaskQueue: taskQueue,
-			Identity:  "test",
+			Namespace: ns, TaskQueue: taskQueue, Identity: "test",
 		})
 	s.NoError(err)
 	id := testcore.RandomizeStr("tokens")
 	owned := &streamservice.StreamRef{
-		Id:            id,
-		ActivityId:    activityID,
-		ActivityRunId: started.GetRunId(),
+		Id: id, ActivityId: activityID, ActivityRunId: started.GetRunId(),
 	}
 	owner := &streamservice.Producer{
 		Kind: streamservice.PRODUCER_KIND_STANDALONE_ACTIVITY,
 		Id:   "sa:" + activityID + ":" + started.GetRunId(),
 		Epoch: &streamservice.ProducerEpoch{
-			AttemptScheduledTime: task.GetCurrentAttemptScheduledTime(), Attempt: task.GetAttempt(),
+			AttemptScheduledTime: task.GetCurrentAttemptScheduledTime(),
+			Attempt:              task.GetAttempt(),
 		},
 	}
 	sc := s.streamClient(env)
 	_, err = sc.CreateStream(ctx, &streamservice.CreateStreamRequest{
-		Namespace: ns, StreamId: id, Ref: owned, Owner: owner, TaskToken: task.GetTaskToken(),
+		Namespace: ns, StreamId: id, Ref: owned, Owner: owner, Retention: retention,
+		TaskToken: task.GetTaskToken(),
 	})
 	s.NoError(err)
 	_, err = sc.AppendRecords(ctx, &streamservice.AppendRecordsRequest{
@@ -1262,20 +1257,133 @@ func (s *StreamTestSuite) TestActivityStreamOutlivesTheRetentionOfItsActivity() 
 		TaskToken: task.GetTaskToken(),
 	})
 	s.NoError(err)
-	_, err = env.FrontendClient().RespondActivityTaskCompleted(ctx,
+	return activityStream{ref: owned, task: task}
+}
+
+// completeActivity completes the attempt of an Activity Stream, which closes the Stream.
+func (s *StreamTestSuite) completeActivity(env *testcore.TestEnv, a activityStream) {
+	_, err := env.FrontendClient().RespondActivityTaskCompleted(s.Context(),
 		&workflowservice.RespondActivityTaskCompletedRequest{
-			Namespace: ns, TaskToken: task.GetTaskToken(), Identity: "test",
+			Namespace: env.Namespace().String(), TaskToken: a.task.GetTaskToken(), Identity: "test",
 		})
 	s.NoError(err)
+}
+
+// A closed Standalone Activity keeps its Streams readable for their Retention, so the namespace
+// retention can't delete them with the Activity.
+func (s *StreamTestSuite) TestActivityStreamOutlivesTheRetentionOfItsActivity() {
+	env := s.retentionEnv()
+	a := s.startActivityStream(env, nil)
+	s.completeActivity(env, a)
 	// Several namespace retentions pass after the Activity's end.
 	<-time.After(4 * time.Second)
 
-	page, err := sc.ReadRecords(
-		ctx,
-		&streamservice.ReadRecordsRequest{Namespace: ns, Stream: owned},
-	)
+	page, err := s.streamClient(env).ReadRecords(s.Context(),
+		&streamservice.ReadRecordsRequest{Namespace: env.Namespace().String(), Stream: a.ref})
 	s.NoError(err)
 	s.Equal([]string{"tokens", "close"}, kindsAndTopics(page))
+}
+
+// A closed Activity's Stream expires on its own timer, and then the namespace retention deletes
+// the Activity, though nobody reads the Stream.
+func (s *StreamTestSuite) TestClosedActivityIsDeletedAfterItsStreamExpires() {
+	env := s.retentionEnv()
+	a := s.startActivityStream(env, durationpb.New(time.Second))
+	s.completeActivity(env, a)
+
+	s.AwaitTrue(func() bool {
+		_, err := env.FrontendClient().DescribeActivityExecution(s.Context(),
+			&workflowservice.DescribeActivityExecutionRequest{
+				Namespace:  env.Namespace().String(),
+				ActivityId: a.ref.GetActivityId(),
+				RunId:      a.ref.GetActivityRunId(),
+			})
+		var notFound *serviceerror.NotFound
+		return errors.As(err, &notFound)
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+// A chain's first run keeps its Streams after it continues as new. Their tasks still run there,
+// so an unread closed Stream expires, and then the namespace retention deletes the first run.
+func (s *StreamTestSuite) TestUnreadFirstRunIsDeletedAfterItsStreamExpires() {
+	env := s.retentionEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	ns := env.Namespace().String()
+	id := testcore.RandomizeStr("chat")
+	first := c.run.GetRunID()
+	owned := &streamservice.StreamRef{Id: id, WorkflowId: c.run.GetID(), FirstExecutionRunId: first}
+	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
+		Namespace: ns, StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+		Owner: workflowWriter(first, 3), CloseWithRun: true,
+	})
+	s.NoError(err)
+	c.respond(c.continueAsNew())
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), c.run.GetID(), c.current, "stop"))
+
+	s.AwaitTrue(func() bool {
+		_, err := env.AdminClient().DescribeMutableState(s.Context(),
+			&adminservice.DescribeMutableStateRequest{
+				Namespace: ns,
+				Execution: &commonpb.WorkflowExecution{WorkflowId: c.run.GetID(), RunId: first},
+				Archetype: chasm.WorkflowArchetype,
+			})
+		var notFound *serviceerror.NotFound
+		return errors.As(err, &notFound)
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+// A wake on a Stream of a first run that continued as new ends at its wait, since the Stream's
+// tasks run under the closed run.
+func (s *StreamTestSuite) TestWakeInAClosedFirstRunEndsAtItsWait() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
+	c.respond(c.continueAsNew())
+
+	reader := s.newCaller(env)
+	var woke streamservice.ReadRecordsResponse
+	failure, started := reader.outcome(reader.schedule(streamOp{"ReadRecords",
+		&streamservice.ReadRecordsRequest{
+			Stream: owned, WakeOnly: true, Wait: durationpb.New(2 * time.Second),
+		}})[0], &woke)
+	s.Nil(failure)
+	s.True(started)
+	s.Empty(woke.GetRecords())
+	s.False(woke.GetDone())
+}
+
+// The readers check runs in a first run that continued as new, so the floor of a reader that
+// closed goes, and the Retention trims its range.
+func (s *StreamTestSuite) TestReadersCheckRunsInAClosedFirstRun() {
+	env := s.newEnv(testcore.WithDynamicConfig(stream.ReaderCheckInterval, time.Second))
+	sc := s.streamClient(env)
+	c := s.newCaller(env)
+	readerRun := s.newCaller(env).run
+	owned, appended := s.createWithRetention(sc, env, c)
+	page, failure := s.directRead(env, &streamservice.ReadRecordsRequest{Stream: owned},
+		readerLink(env, readerRun))
+	s.Nil(failure)
+	s.Equal([]string{"a"}, kindsAndTopics(page))
+	c.respond(c.continueAsNew())
+
+	// Past the Retention, the floor still keeps the range.
+	time.Sleep(2 * time.Second) //nolint:forbidigo // The Retention runs on real time.
+	again, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+		Stream: owned, ToOffset: page.GetNextOffset(),
+	})
+	s.Nil(failure)
+	s.Equal(page.GetRecords(), again.GetRecords())
+	s.NoError(env.SdkClient().TerminateWorkflow(s.Context(), readerRun.GetID(),
+		readerRun.GetRunID(), "reader done"))
+
+	s.AwaitTrue(func() bool {
+		_, failure := s.directRead(env, &streamservice.ReadRecordsRequest{
+			Stream: owned, FromOffset: appended.GetFirstOffset(),
+		})
+		return failure != nil && causeType(failure) == stream.ReasonExpired
+	}, 10*time.Second, 200*time.Millisecond)
 }
 
 // An append that names a Workflow Stream by its bare id, or a Stream that doesn't exist, fails.
@@ -1471,17 +1579,15 @@ func (s *StreamTestSuite) createWithRetention(
 		WorkflowId:          c.run.GetID(),
 		FirstExecutionRunId: c.run.GetRunID(),
 	}
+	ns := env.Namespace().String()
 	_, err := sc.CreateStream(s.Context(), &streamservice.CreateStreamRequest{
-		Namespace: env.Namespace().
-			String(),
-		StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
+		Namespace: ns, StreamId: id, Ref: owned, Retention: durationpb.New(time.Second),
 		Owner: workflowWriter(c.run.GetRunID(), 3),
 	})
 	s.NoError(err)
 	appended, err := sc.AppendRecords(s.Context(), &streamservice.AppendRecordsRequest{
-		Namespace: env.Namespace().
-			String(),
-		Stream: owned, Producer: clientProducer(), Sequence: 1, Records: records("a"),
+		Namespace: ns, Stream: owned, Producer: clientProducer(), Sequence: 1,
+		Records: records("a"),
 	})
 	s.NoError(err)
 	return owned, appended

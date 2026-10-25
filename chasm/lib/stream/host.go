@@ -3,7 +3,6 @@ package stream
 import (
 	"context"
 	"errors"
-	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -65,13 +64,16 @@ func (s *Stream) EndChain(ctx chasm.MutableContext, end RunEnd, limits Limits) {
 	s.finish(ctx, limits)
 }
 
-// HeldUntil is when a closed Stream expires, false for a Stream that isn't closed. A closed host
-// runs no task of its Streams, so the close time and the Retention tell when the Stream expires.
-func (s *Stream) HeldUntil() (time.Time, bool) {
-	if s.Phase != streampb.STREAM_PHASE_CLOSED {
-		return time.Time{}, false
+// HoldsStreams says whether a Stream of a closed host is still readable, so the host must outlive
+// the namespace retention that would delete it.
+func HoldsStreams(ctx chasm.Context, streams chasm.Map[string, *Stream]) bool {
+	for _, field := range streams {
+		if s, ok := field.TryGet(ctx); ok && s.Phase != streampb.STREAM_PHASE_EXPIRED &&
+			s.Phase != streampb.STREAM_PHASE_ABANDONED {
+			return true
+		}
 	}
-	return s.closedExpiryAt(), true
+	return false
 }
 
 // EndOwner closes a Standalone Activity's Stream with the Activity's end, in the transition that
@@ -196,7 +198,9 @@ func update[O any](
 			if err != nil {
 				return zero, err
 			}
-			streams[t.id] = chasm.NewComponentField(mctx, s)
+			// A Stream outlives its host's close, as in a chain's first run or an ended Activity,
+			// so its timers, wakes and readers check must run under a closed host.
+			streams[t.id] = chasm.NewComponentField(mctx, s, chasm.ComponentFieldDetached())
 			return out, nil
 		}, struct{}{})
 	return out, uncarry(err)
