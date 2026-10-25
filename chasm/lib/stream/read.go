@@ -101,7 +101,8 @@ func (s *Stream) scan(
 			if end := req.GetToOffset(); end > 0 && entry.GetOffset() >= end {
 				return resp, nil
 			}
-			if resp.Done || len(resp.Records) >= limit || scanned >= maxScan {
+			full := len(resp.Records) >= limit || (scanned >= maxScan && len(resp.Records) > 0)
+			if resp.Done || full {
 				return resp, nil
 			}
 			if entry.GetOffset() >= retained && overBytes(req, resp, entry, size) {

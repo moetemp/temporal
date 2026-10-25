@@ -883,6 +883,45 @@ func TestPageStopsAtMaxBytes(t *testing.T) {
 	require.Equal(t, []string{"big"}, topics(second))
 }
 
+// skipped is one batch with more entries of another Topic than one page scans, then a match.
+func skipped() []string {
+	out := make([]string, 0, maxScan+2)
+	for range maxScan + 1 {
+		out = append(out, "other")
+	}
+	return append(out, "turns")
+}
+
+// A filtered page scans past the scan cap while it has no Record, so a read with no wait doesn't
+// take an empty page for the end of the Stream.
+func TestFilteredPageScansPastTheCapToAMatch(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	_, err = h.append(activityProducer(1), 1, skipped()...)
+	require.NoError(t, err)
+
+	page, err := h.read(&streamservice.ReadRecordsRequest{Topics: []string{"turns"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"turns"}, topics(page))
+}
+
+// A parked read's look scans past the scan cap too, so it wakes with no later append.
+func TestParkedReadWakesForAMatchPastTheCap(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	resp, err := h.readOrPark("read-1", &streamservice.ReadRecordsRequest{
+		Topics: []string{"turns"}, WakeOnly: true,
+	})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	_, err = h.append(activityProducer(1), 1, skipped()...)
+	require.NoError(t, err)
+	require.True(t, h.parked("read-1").GetResolved())
+}
+
 // A last read gives the newest Records that pass the filter, oldest first, and leaves out the
 // Records of a withdrawn Workflow Task.
 func TestLastReadsTheNewestRecords(t *testing.T) {

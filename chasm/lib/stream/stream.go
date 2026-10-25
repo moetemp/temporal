@@ -27,7 +27,8 @@ const (
 	MaxRecords = 1000
 	// MaxStreamIDBytes is the longest Stream id.
 	MaxStreamIDBytes = 4096
-	// The most entries one page scans, since a Topic filter can skip many.
+	// The most entries a page with Records scans, since a Topic filter can skip many. An empty
+	// page scans on to the end, so a reader never takes it for the end with a match left.
 	maxScan = 10 * MaxRecords
 	// An offset is the append time in ms shifted by these bits, plus a sequence, as the Redis
 	// Store packs its entry ids. So the offsets of the two backends sort the same way, and the
