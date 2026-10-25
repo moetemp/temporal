@@ -526,15 +526,27 @@ func (s *StreamTestSuite) TestWorkflowCloseCommandClosesItsStream() {
 	s.Equal("wf:"+stream.EncodeIDPart(c.run.GetRunID()), closed.GetProducer().GetId())
 }
 
-// A run of another chain can't close the Stream, and neither can a call with no link to its run.
 func (s *StreamTestSuite) TestCloseCommandOfAnotherChainIsRefused() {
 	env := s.newEnv()
 	sc := s.streamClient(env)
-	ns := env.Namespace().String()
 	owned := s.closeWithRun(sc, env, s.newCaller(env))
 
 	failure := s.newCaller(env).call(closeOp(owned, "answer"), &streamservice.CloseStreamResponse{})
 	s.Equal(stream.ReasonNotOwner, causeType(failure))
+
+	described, err := sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{Namespace: env.Namespace().String(), Stream: owned})
+	s.NoError(err)
+	s.Equal(streamservice.STREAM_STATUS_OPEN, described.GetStatus())
+}
+
+// A direct System Nexus call waits for no Workflow Task to commit, so it can't close the Stream,
+// even with the link of the owner run.
+func (s *StreamTestSuite) TestDirectCloseCallIsRefused() {
+	env := s.newEnv()
+	sc := s.streamClient(env)
+	ns := env.Namespace().String()
+	c := s.newCaller(env)
+	owned := s.closeWithRun(sc, env, c)
 
 	resp, err := env.FrontendClient().StartNexusOperation(s.Context(), &workflowservice.StartNexusOperationRequest{
 		Namespace: ns,
@@ -542,9 +554,10 @@ func (s *StreamTestSuite) TestCloseCommandOfAnotherChainIsRefused() {
 		Service:   stream.ServiceName,
 		Operation: "CloseStream",
 		Input:     payloads.MustEncodeSingle(closeOp(owned, "answer").request),
+		Links:     []*commonpb.Link{readerLink(env, c.run)},
 	})
 	s.NoError(err)
-	s.Equal(stream.ReasonNotOwner, causeType(resp.GetOperationFailure().GetFailure()))
+	s.Equal(stream.ReasonInvalid, causeType(resp.GetOperationFailure().GetFailure()))
 
 	described, err := sc.DescribeStream(s.Context(), &streamservice.DescribeStreamRequest{Namespace: ns, Stream: owned})
 	s.NoError(err)

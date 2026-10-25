@@ -63,6 +63,11 @@ func newNexusService(h *handler) *nexus.Service {
 			}),
 		nexus.NewSyncOperation("CloseStream",
 			func(ctx context.Context, req *streamservice.CloseStreamRequest, options nexus.StartOperationOptions) (*streamservice.CloseStreamResponse, error) {
+				// A command's start always has the system callback, and a direct call never has
+				// one. A direct call waits for no Workflow Task to commit, so it can't close.
+				if options.CallbackURL == "" {
+					return nil, nexusError(invalid("A direct System Nexus call can't close a Stream, so use the gRPC CloseStream"))
+				}
 				resp, err := h.CloseFromRun(ctx, req, readerRunOf(options.Links))
 				return resp, nexusError(err)
 			}),
