@@ -379,13 +379,17 @@ func (s *Stream) Close(ctx chasm.MutableContext, in CloseInput) (*streamservice.
 		return nil, err
 	}
 	s.applyDue(ctx, in.Limits)
+	// The owner check goes first, as in the crate, so a second close succeeds only for a caller
+	// that may close.
+	if s.Exists() {
+		if err := s.checkCloser(producer); err != nil {
+			return nil, err
+		}
+	}
 	if s.Phase == streampb.STREAM_PHASE_CLOSED {
 		return &streamservice.CloseStreamResponse{}, nil
 	}
 	if err := s.writable(); err != nil {
-		return nil, err
-	}
-	if err := s.checkCloser(producer); err != nil {
 		return nil, err
 	}
 	if in.Command {

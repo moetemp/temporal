@@ -300,6 +300,20 @@ func TestCloseEndsEveryRead(t *testing.T) {
 	require.Equal(t, CreateOutput{Status: streamservice.STREAM_STATUS_CLOSED}, out)
 }
 
+// A second close does nothing, but only for a caller that may close the Stream.
+func TestSecondCloseChecksTheOwner(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.create(&streamservice.CreateStreamRequest{StreamId: "chat-1"})
+	require.NoError(t, err)
+	require.NoError(t, h.close("done"))
+	_, _, err = chasm.UpdateComponent(h.ctx, h.ref(), (*Stream).Close, CloseInput{
+		Request: &streamservice.CloseStreamRequest{Producer: activityProducer(1)},
+		Limits:  h.limits,
+	})
+	require.ErrorContains(t, err, ReasonNotOwner)
+	require.NoError(t, h.close("again"))
+}
+
 // A command close has no epoch, so the epoch of the run's earlier writes doesn't fence it.
 func TestCommandCloseOfTheOwnerRun(t *testing.T) {
 	h := newHarness(t)
